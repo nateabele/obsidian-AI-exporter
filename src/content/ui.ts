@@ -1,6 +1,7 @@
 /**
  * UI components for content script
- * Floating button, toast notifications, loading states
+ * Toast notifications and shared style injection. The sync icon itself
+ * lives in src/content/sync-icon.ts.
  */
 
 import {
@@ -13,57 +14,113 @@ import { getMessage } from '../lib/i18n';
 
 // CSS styles for UI components
 const STYLES = `
-  #g2o-sync-button {
+  #g2o-sync-icon {
     position: fixed;
     bottom: 20px;
     right: 20px;
     z-index: 10000;
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 12px 20px;
-    background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
-    color: white;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    padding: 0;
     border: none;
-    border-radius: 12px;
-    font-size: 14px;
-    font-weight: 600;
+    border-radius: 50%;
+    color: white;
+    font-size: 18px;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     cursor: pointer;
-    box-shadow: 0 4px 12px rgba(124, 58, 237, 0.4);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
     transition: all 0.2s ease;
+    background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
   }
 
-  #g2o-sync-button:hover {
+  #g2o-sync-icon[data-state='offline'] {
+    background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  }
+
+  #g2o-sync-icon[data-state='syncing'] {
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+  }
+
+  #g2o-sync-icon[data-state='synced'] {
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  }
+
+  #g2o-sync-icon[data-state='suggestions'] {
+    background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
+  }
+
+  #g2o-sync-icon:hover {
     transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(124, 58, 237, 0.5);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
   }
 
-  #g2o-sync-button:active {
+  #g2o-sync-icon:active {
     transform: translateY(0);
   }
 
-  #g2o-sync-button:disabled {
-    opacity: 0.7;
-    cursor: not-allowed;
-    transform: none;
-  }
-
-  #g2o-sync-button .icon {
-    font-size: 16px;
-  }
-
-  #g2o-sync-button .spinner {
-    width: 16px;
-    height: 16px;
-    border: 2px solid rgba(255,255,255,0.3);
-    border-top-color: white;
-    border-radius: 50%;
+  #g2o-sync-icon[data-state='syncing'] .glyph {
+    display: inline-block;
     animation: g2o-spin 0.8s linear infinite;
+  }
+
+  #g2o-sync-icon .badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    background: #ef4444;
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
   }
 
   @keyframes g2o-spin {
     to { transform: rotate(360deg); }
+  }
+
+  #g2o-sync-menu {
+    position: fixed;
+    bottom: 68px;
+    right: 20px;
+    z-index: 10000;
+    display: flex;
+    flex-direction: column;
+    min-width: 200px;
+    padding: 8px;
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 14px;
+  }
+
+  #g2o-sync-menu .entry {
+    padding: 8px 12px;
+    border: none;
+    border-radius: 8px;
+    background: none;
+    color: #111827;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  #g2o-sync-menu .entry:hover {
+    background: #f3f4f6;
+  }
+
+  #g2o-sync-menu .error-detail {
+    padding: 4px 12px 8px;
+    color: #dc2626;
+    font-size: 12px;
   }
 
   .g2o-toast {
@@ -144,9 +201,13 @@ let styleInjected = false;
 let currentToast: HTMLDivElement | null = null;
 
 /**
- * Inject CSS styles into the page
+ * Inject CSS styles into the page.
+ *
+ * Exported so sync-icon.ts (which owns the `#g2o-sync-icon` / `#g2o-sync-menu`
+ * rules defined in STYLES above) can share the same injected `<style>` tag
+ * and the same "only once" guard as toast rendering.
  */
-function injectStyles(): void {
+export function injectStyles(): void {
   if (styleInjected) return;
 
   const style = document.createElement('style');
@@ -154,69 +215,6 @@ function injectStyles(): void {
   style.textContent = STYLES;
   document.head.appendChild(style);
   styleInjected = true;
-}
-
-/**
- * Create and inject the sync button
- */
-export function injectSyncButton(onClick: () => void): HTMLButtonElement {
-  injectStyles();
-
-  // Remove existing button if present
-  const existing = document.getElementById('g2o-sync-button');
-  if (existing) {
-    existing.remove();
-  }
-
-  const button = document.createElement('button');
-  button.id = 'g2o-sync-button';
-
-  const icon = document.createElement('span');
-  icon.className = 'icon';
-  icon.textContent = '📥';
-
-  const text = document.createElement('span');
-  text.className = 'text';
-  text.textContent = getMessage('ui_syncButton');
-
-  button.appendChild(icon);
-  button.appendChild(text);
-
-  button.addEventListener('click', onClick);
-  document.body.appendChild(button);
-
-  return button;
-}
-
-/**
- * Set button loading state
- */
-export function setButtonLoading(loading: boolean): void {
-  const button = document.getElementById('g2o-sync-button') as HTMLButtonElement | null;
-  if (!button) return;
-
-  button.disabled = loading;
-
-  const icon = button.querySelector('.icon');
-  const text = button.querySelector('.text');
-
-  if (loading) {
-    if (icon) {
-      const spinner = document.createElement('div');
-      spinner.className = 'spinner';
-      icon.replaceWith(spinner);
-    }
-    if (text) text.textContent = getMessage('ui_syncing');
-  } else {
-    const spinner = button.querySelector('.spinner');
-    if (spinner) {
-      const newIcon = document.createElement('span');
-      newIcon.className = 'icon';
-      newIcon.textContent = '📥';
-      spinner.replaceWith(newIcon);
-    }
-    if (text) text.textContent = getMessage('ui_syncButton');
-  }
 }
 
 type ToastType = 'success' | 'error' | 'warning' | 'info';

@@ -1,12 +1,11 @@
 /**
  * UI component tests
  *
- * Tests the sync button injection, loading states, and toast notifications.
+ * Tests toast notifications and shared style injection. The sync icon
+ * itself (injectSyncIcon / setSyncState) is tested in sync-icon.test.ts.
  */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import {
-  injectSyncButton,
-  setButtonLoading,
   showToast,
   showSuccessToast,
   showErrorToast,
@@ -24,151 +23,6 @@ describe('ui', () => {
   afterEach(() => {
     document.body.innerHTML = '';
     document.head.innerHTML = '';
-  });
-
-  describe('injectSyncButton', () => {
-    it('creates a button with correct id', () => {
-      const onClick = vi.fn();
-      const button = injectSyncButton(onClick);
-
-      expect(button.id).toBe('g2o-sync-button');
-      expect(document.getElementById('g2o-sync-button')).toBe(button);
-    });
-
-    it('injects styles into document head', async () => {
-      // Reset the module to clear the styleInjected flag
-      vi.resetModules();
-      const { injectSyncButton: freshInjectSyncButton } = await import(
-        '../../src/content/ui'
-      );
-
-      document.body.innerHTML = '';
-      document.head.innerHTML = '';
-
-      const onClick = vi.fn();
-      freshInjectSyncButton(onClick);
-
-      const styleElement = document.getElementById('g2o-styles');
-      expect(styleElement).not.toBeNull();
-      expect(styleElement?.tagName).toBe('STYLE');
-    });
-
-    it('button is appended to document body', () => {
-      const onClick = vi.fn();
-      injectSyncButton(onClick);
-
-      expect(document.body.querySelector('#g2o-sync-button')).not.toBeNull();
-    });
-
-    it('calls onClick when button is clicked', () => {
-      const onClick = vi.fn();
-      injectSyncButton(onClick);
-
-      const button = document.getElementById('g2o-sync-button');
-      button?.click();
-
-      expect(onClick).toHaveBeenCalledTimes(1);
-    });
-
-    it('removes existing button before creating new one', () => {
-      const onClick1 = vi.fn();
-      const onClick2 = vi.fn();
-
-      injectSyncButton(onClick1);
-      injectSyncButton(onClick2);
-
-      // Should only have one button
-      const buttons = document.querySelectorAll('#g2o-sync-button');
-      expect(buttons.length).toBe(1);
-
-      // New button should have the new handler
-      const button = document.getElementById('g2o-sync-button');
-      button?.click();
-      expect(onClick1).not.toHaveBeenCalled();
-      expect(onClick2).toHaveBeenCalledTimes(1);
-    });
-
-    it('button contains icon and text spans', () => {
-      const onClick = vi.fn();
-      injectSyncButton(onClick);
-
-      const button = document.getElementById('g2o-sync-button');
-      const icon = button?.querySelector('.icon');
-      const text = button?.querySelector('.text');
-
-      expect(icon).not.toBeNull();
-      expect(text).not.toBeNull();
-    });
-
-    it('only injects styles once', async () => {
-      // Reset the module to clear the styleInjected flag
-      vi.resetModules();
-      const { injectSyncButton: freshInjectSyncButton } = await import(
-        '../../src/content/ui'
-      );
-
-      document.body.innerHTML = '';
-      document.head.innerHTML = '';
-
-      const onClick = vi.fn();
-      freshInjectSyncButton(onClick);
-      freshInjectSyncButton(onClick);
-      freshInjectSyncButton(onClick);
-
-      const styles = document.querySelectorAll('#g2o-styles');
-      expect(styles.length).toBe(1);
-    });
-  });
-
-  describe('setButtonLoading', () => {
-    beforeEach(() => {
-      const onClick = vi.fn();
-      injectSyncButton(onClick);
-    });
-
-    it('disables button when loading', () => {
-      setButtonLoading(true);
-
-      const button = document.getElementById('g2o-sync-button') as HTMLButtonElement;
-      expect(button.disabled).toBe(true);
-    });
-
-    it('enables button when not loading', () => {
-      setButtonLoading(true);
-      setButtonLoading(false);
-
-      const button = document.getElementById('g2o-sync-button') as HTMLButtonElement;
-      expect(button.disabled).toBe(false);
-    });
-
-    it('shows spinner when loading', () => {
-      setButtonLoading(true);
-
-      const button = document.getElementById('g2o-sync-button');
-      const spinner = button?.querySelector('.spinner');
-
-      expect(spinner).not.toBeNull();
-    });
-
-    it('removes spinner when not loading', () => {
-      setButtonLoading(true);
-      setButtonLoading(false);
-
-      const button = document.getElementById('g2o-sync-button');
-      const spinner = button?.querySelector('.spinner');
-      const icon = button?.querySelector('.icon');
-
-      expect(spinner).toBeNull();
-      expect(icon).not.toBeNull();
-    });
-
-    it('does nothing when button does not exist', () => {
-      document.body.innerHTML = '';
-
-      // Should not throw
-      expect(() => setButtonLoading(true)).not.toThrow();
-      expect(() => setButtonLoading(false)).not.toThrow();
-    });
   });
 
   describe('showToast', () => {
@@ -338,21 +192,21 @@ describe('ui', () => {
 
       const toast = document.querySelector('.g2o-toast');
       expect(toast?.classList.contains('warning')).toBe(true);
-      expect(document.querySelector('.g2o-toast .message')?.textContent).toBe(
-        'This is a warning'
-      );
+      expect(document.querySelector('.g2o-toast .message')?.textContent).toBe('This is a warning');
     });
   });
 
   describe('getMessage error fallback', () => {
-    it('returns raw key when chrome.i18n.getMessage throws', () => {
+    it('still renders a toast when chrome.i18n.getMessage throws', () => {
       vi.mocked(chrome.i18n.getMessage).mockImplementation(() => {
         throw new Error('i18n not available');
       });
 
-      const button = injectSyncButton(() => {});
-      expect(button).toBeDefined();
-      expect(button.id).toBe('g2o-sync-button');
+      // showSuccessToast() calls getMessage() internally; it should fall
+      // back to the raw message key rather than propagate the throw.
+      expect(() => showSuccessToast('test.md', true)).not.toThrow();
+      const toast = document.querySelector('.g2o-toast');
+      expect(toast).not.toBeNull();
     });
   });
 });

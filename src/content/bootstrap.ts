@@ -14,14 +14,8 @@ import { NotebookLMExtractor } from './extractors/notebooklm';
 import { extractErrorMessage } from '../lib/error-utils';
 import type { IConversationExtractor } from '../lib/types';
 import { conversationToNote } from './markdown';
-import {
-  injectSyncButton,
-  setButtonLoading,
-  showSuccessToast,
-  showErrorToast,
-  showWarningToast,
-  showToast,
-} from './ui';
+import { showSuccessToast, showErrorToast, showWarningToast, showToast } from './ui';
+import { injectSyncIcon, setSyncState, deriveState } from './sync-icon';
 import { sendMessage } from '../lib/messaging';
 import {
   AUTO_SAVE_CHECK_INTERVAL,
@@ -32,6 +26,7 @@ import {
 } from '../lib/constants';
 import type {
   AIPlatform,
+  ChatSyncRequest,
   ChatSyncResponse,
   ContentScriptSettings,
   ObsidianNote,
@@ -199,6 +194,36 @@ export function stopAutoSync(): void {
 }
 
 /**
+ * Send the chatSync request and update the sync icon to reflect the
+ * outcome. Returns the response on success (and advances the manifest
+ * baseline), or null on failure — the icon is already left in the
+ * `offline` state with the error detail.
+ */
+async function sendChatSync(
+  data: ChatSyncRequest,
+  manifest: string[]
+): Promise<ChatSyncResponse | null> {
+  setSyncState('syncing');
+  const response = await sendMessage({ action: 'chatSync', data });
+  if ('error' in response) {
+    console.warn('[G2O] Auto-sync failed:', response.error);
+    setSyncState('offline', { error: response.error });
+    return null;
+  }
+  // Only advance the baseline on confirmed success: advancing on a failed
+  // send would mean the next successful sync diffs against blocks the
+  // server never actually received, permanently losing them.
+  previousManifest = manifest;
+  const suggestionCount =
+    response.suggestions.transcripts.length + response.suggestions.pages.length;
+  setSyncState(deriveState({ configured: true, syncing: false, error: null, suggestionCount }), {
+    suggestionCount,
+    notePath: response.notePath,
+  });
+  return response;
+}
+
+/**
  * Continuously sync the current conversation to the companion listener.
  *
  * Driven by a MutationObserver on the platform's observation root (see
@@ -257,9 +282,8 @@ export async function runAutoSync(): Promise<ChatSyncResponse | null> {
       return null;
     }
 
-    const response = await sendMessage({
-      action: 'chatSync',
-      data: {
+    return await sendChatSync(
+      {
         conversationId: result.data.id,
         platform: result.data.source,
         title: result.data.title,
@@ -267,16 +291,8 @@ export async function runAutoSync(): Promise<ChatSyncResponse | null> {
         manifest,
         newBlocks: diffBlocks(previousManifest, manifest, blocks),
       },
-    });
-    if ('error' in response) {
-      console.warn('[G2O] Auto-sync failed:', response.error);
-      return null;
-    }
-    // Only advance the baseline on confirmed success: advancing on a failed
-    // send would mean the next successful sync diffs against blocks the
-    // server never actually received, permanently losing them.
-    previousManifest = manifest;
-    return response;
+      manifest
+    );
   } finally {
     autoSyncInFlight = false;
   }
@@ -320,8 +336,17 @@ export async function initialize(): Promise<void> {
 
   // Apply throttle to sync handler (NEW-06)
   const throttledHandleSync = throttle(handleSync, EVENT_THROTTLE_DELAY);
-  injectSyncButton(throttledHandleSync);
-  console.info('[G2O] Sync button injected');
+  injectSyncIcon({
+    onOpenOptions: () =>
+      showToast('Open the extension icon in the toolbar to add your companion token', 'info'),
+    onRetry: () => void runAutoSync(),
+    onSyncNow: () => void throttledHandleSync(),
+    // Actually opening the note in Obsidian is wired up in Task 11 (the
+    // `openInObsidian` message action doesn't exist yet); for now just
+    // surface where it was saved.
+    onOpenPath: path => showToast(`Note saved to ${path}`, 'info'),
+  });
+  console.info('[G2O] Sync icon injected');
 
   // Continuous background sync: drive runAutoSync off DOM mutations on the
   // same observation root used to detect the conversation container, so an
@@ -424,11 +449,11 @@ function displaySaveResults(
 }
 
 /**
- * Handle sync button click
+ * Handle a manual sync request (icon menu's "Sync now" entry).
  */
 export async function handleSync(): Promise<void> {
   console.info('[G2O] Sync initiated');
-  setButtonLoading(true);
+  setSyncState('syncing');
 
   try {
     // Get settings first (L-01: use type-safe messaging)
@@ -489,7 +514,7 @@ export async function handleSync(): Promise<void> {
     console.error('[G2O] Sync error:', error);
     showErrorToast(extractErrorMessage(error));
   } finally {
-    setButtonLoading(false);
+    setSyncState('synced');
   }
 }
 

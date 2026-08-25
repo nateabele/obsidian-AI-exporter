@@ -17,12 +17,16 @@ import {
 } from '../fixtures/dom-helpers';
 
 vi.mock('../../src/content/ui', () => ({
-  injectSyncButton: vi.fn(),
-  setButtonLoading: vi.fn(),
   showSuccessToast: vi.fn(),
   showErrorToast: vi.fn(),
   showWarningToast: vi.fn(),
   showToast: vi.fn(),
+}));
+
+vi.mock('../../src/content/sync-icon', () => ({
+  injectSyncIcon: vi.fn(),
+  setSyncState: vi.fn(),
+  deriveState: vi.fn(() => 'synced'),
 }));
 
 vi.mock('../../src/lib/messaging', () => ({
@@ -30,13 +34,12 @@ vi.mock('../../src/lib/messaging', () => ({
 }));
 
 import {
-  injectSyncButton,
-  setButtonLoading,
   showSuccessToast,
   showErrorToast,
   showWarningToast,
   showToast,
 } from '../../src/content/ui';
+import { injectSyncIcon, setSyncState } from '../../src/content/sync-icon';
 import { sendMessage } from '../../src/lib/messaging';
 import { AUTO_SYNC_DEBOUNCE } from '../../src/lib/constants';
 import type { ChatSyncResponse, MessageErrorResponse } from '../../src/lib/types';
@@ -154,14 +157,21 @@ describe('content/bootstrap', () => {
     it('skips initialization on unsupported pages', async () => {
       setNonGeminiLocation('example.com');
       await initialize();
-      expect(injectSyncButton).not.toHaveBeenCalled();
+      expect(injectSyncIcon).not.toHaveBeenCalled();
     });
 
-    it('injects the sync button on a Gemini conversation page', async () => {
+    it('injects the sync icon on a Gemini conversation page', async () => {
       loadGeminiConversation();
       await initialize();
-      expect(injectSyncButton).toHaveBeenCalledTimes(1);
-      expect(injectSyncButton).toHaveBeenCalledWith(expect.any(Function));
+      expect(injectSyncIcon).toHaveBeenCalledTimes(1);
+      expect(injectSyncIcon).toHaveBeenCalledWith(
+        expect.objectContaining({
+          onOpenOptions: expect.any(Function),
+          onRetry: expect.any(Function),
+          onSyncNow: expect.any(Function),
+          onOpenPath: expect.any(Function),
+        })
+      );
     });
   });
 
@@ -172,7 +182,7 @@ describe('content/bootstrap', () => {
       loadFixture('<main id="root"></main>');
 
       const pending = initialize();
-      expect(injectSyncButton).not.toHaveBeenCalled();
+      expect(injectSyncIcon).not.toHaveBeenCalled();
 
       // Container arrives later (lazy render)
       document.querySelector('main')!.innerHTML = createGeminiConversationDOM([
@@ -180,7 +190,7 @@ describe('content/bootstrap', () => {
       ]);
 
       await pending;
-      expect(injectSyncButton).toHaveBeenCalledTimes(1);
+      expect(injectSyncIcon).toHaveBeenCalledTimes(1);
     });
 
     it('falls back to document.body observation without a platform root', async () => {
@@ -194,7 +204,7 @@ describe('content/bootstrap', () => {
       );
 
       await pending;
-      expect(injectSyncButton).toHaveBeenCalledTimes(1);
+      expect(injectSyncIcon).toHaveBeenCalledTimes(1);
     });
 
     it('gives up waiting after the fallback timeout', async () => {
@@ -207,8 +217,8 @@ describe('content/bootstrap', () => {
         await vi.advanceTimersByTimeAsync(10_000);
         await pending;
 
-        // Initialization still completes (button injected on a bare page)
-        expect(injectSyncButton).toHaveBeenCalledTimes(1);
+        // Initialization still completes (icon injected on a bare page)
+        expect(injectSyncIcon).toHaveBeenCalledTimes(1);
       } finally {
         vi.useRealTimers();
       }
@@ -460,7 +470,7 @@ describe('content/bootstrap', () => {
     it('initializes immediately when the DOM is already ready', async () => {
       loadGeminiConversation();
       startContentScript();
-      await vi.waitFor(() => expect(injectSyncButton).toHaveBeenCalled());
+      await vi.waitFor(() => expect(injectSyncIcon).toHaveBeenCalled());
     });
 
     it('waits for DOMContentLoaded while the document is loading', async () => {
@@ -471,10 +481,10 @@ describe('content/bootstrap', () => {
       });
       try {
         startContentScript();
-        expect(injectSyncButton).not.toHaveBeenCalled();
+        expect(injectSyncIcon).not.toHaveBeenCalled();
 
         document.dispatchEvent(new Event('DOMContentLoaded'));
-        await vi.waitFor(() => expect(injectSyncButton).toHaveBeenCalled());
+        await vi.waitFor(() => expect(injectSyncIcon).toHaveBeenCalled());
       } finally {
         Object.defineProperty(document, 'readyState', {
           value: 'complete',
@@ -485,7 +495,7 @@ describe('content/bootstrap', () => {
 
     it('logs initialization failures instead of throwing', async () => {
       loadGeminiConversation();
-      vi.mocked(injectSyncButton).mockImplementation(() => {
+      vi.mocked(injectSyncIcon).mockImplementation(() => {
         throw new Error('inject failed');
       });
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -513,7 +523,7 @@ describe('content/bootstrap', () => {
       expect(showErrorToast).toHaveBeenCalledWith(
         'Please select at least one output destination in settings'
       );
-      expect(setButtonLoading).toHaveBeenLastCalledWith(false);
+      expect(setSyncState).toHaveBeenLastCalledWith('synced');
     });
 
     it('shows an error when Obsidian is enabled without an API key', async () => {
@@ -587,8 +597,8 @@ describe('content/bootstrap', () => {
         })
       );
       expect(showSuccessToast).toHaveBeenCalledWith(expect.stringMatching(/\.md$/), true);
-      expect(setButtonLoading).toHaveBeenNthCalledWith(1, true);
-      expect(setButtonLoading).toHaveBeenLastCalledWith(false);
+      expect(setSyncState).toHaveBeenNthCalledWith(1, 'syncing');
+      expect(setSyncState).toHaveBeenLastCalledWith('synced');
     });
 
     it('shows the ACTUAL file name when a collision forced a rename (issue #327)', async () => {
@@ -678,7 +688,7 @@ describe('content/bootstrap', () => {
       expect(showErrorToast).toHaveBeenCalledWith('Failed to save');
     });
 
-    it('catches messaging errors and resets the button state', async () => {
+    it('catches messaging errors and resets the icon state', async () => {
       loadGeminiConversation();
       vi.mocked(sendMessage).mockRejectedValue(new Error('Extension context invalidated.'));
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -686,7 +696,7 @@ describe('content/bootstrap', () => {
       await handleSync();
 
       expect(showErrorToast).toHaveBeenCalledWith('Extension context invalidated.');
-      expect(setButtonLoading).toHaveBeenLastCalledWith(false);
+      expect(setSyncState).toHaveBeenLastCalledWith('synced');
       errorSpy.mockRestore();
     });
   });
