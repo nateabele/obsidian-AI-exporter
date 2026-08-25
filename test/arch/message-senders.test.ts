@@ -32,9 +32,7 @@ function collectSources(rel: string): string[] {
 
 // Extract the whitelist from constants.ts without importing chrome-flavored code.
 const constantsSource = read('src/lib/constants.ts');
-const whitelistMatch = constantsSource.match(
-  /VALID_MESSAGE_ACTIONS\s*=\s*\[([^\]]+)\]/
-);
+const whitelistMatch = constantsSource.match(/VALID_MESSAGE_ACTIONS\s*=\s*\[([^\]]+)\]/);
 if (!whitelistMatch) {
   throw new Error('VALID_MESSAGE_ACTIONS not found in src/lib/constants.ts');
 }
@@ -42,30 +40,18 @@ const actions = [...whitelistMatch[1].matchAll(/'([^']+)'/g)].map(m => m[1]);
 
 const clientSources = [...collectSources('src/content'), ...collectSources('src/popup')];
 
-/**
- * Actions whose sender lands in a later task of the same plan. The
- * companion-sync client (src/lib/companion-client.ts) and its `chatSync`
- * route are wired into the background worker ahead of the content-script
- * caller that will drive it (auto-sync-companion plan). Remove an entry
- * here once its sender exists.
- */
-const PENDING_SENDER_EXEMPTIONS = new Set(['chatSync']);
-
 describe('architecture: message actions have live senders', () => {
   it('extracts a non-empty whitelist', () => {
     expect(actions.length).toBeGreaterThan(0);
   });
 
-  it.each(actions.filter(action => !PENDING_SENDER_EXEMPTIONS.has(action)))(
-    'action "%s" is sent by at least one client',
-    action => {
-      const sender = new RegExp(`action:\\s*'${action}'`);
-      const hasSender = clientSources.some(src => sender.test(src));
-      expect(
-        hasSender,
-        `"${action}" is whitelisted in VALID_MESSAGE_ACTIONS but no client in ` +
-          `src/content/ or src/popup/ sends it — remove the action or its whitelist entry`
-      ).toBe(true);
-    }
-  );
+  it.each(actions)('action "%s" is sent by at least one client', action => {
+    const sender = new RegExp(`action:\\s*'${action}'`);
+    const hasSender = clientSources.some(src => sender.test(src));
+    expect(
+      hasSender,
+      `"${action}" is whitelisted in VALID_MESSAGE_ACTIONS but no client in ` +
+        `src/content/ or src/popup/ sends it — remove the action or its whitelist entry`
+    ).toBe(true);
+  });
 });

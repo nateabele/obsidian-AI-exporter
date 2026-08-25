@@ -25,12 +25,14 @@ import {
 import { sendMessage } from '../lib/messaging';
 import {
   AUTO_SAVE_CHECK_INTERVAL,
+  AUTO_SYNC_DEBOUNCE,
   EVENT_THROTTLE_DELAY,
   INFO_TOAST_DURATION,
   MUTATION_DEBOUNCE_DELAY,
 } from '../lib/constants';
 import type {
   AIPlatform,
+  ChatSyncResponse,
   ContentScriptSettings,
   ObsidianNote,
   OutputDestination,
@@ -39,6 +41,7 @@ import type {
 } from '../lib/types';
 import { platformForHost } from '../lib/platform-registry';
 import { throttle } from '../lib/throttle';
+import { buildManifest, diffBlocks } from '../lib/manifest';
 
 /**
  * Platform-specific main content container selectors for optimized observation.
@@ -161,6 +164,81 @@ export function getExtractor(): IConversationExtractor | null {
   return platform ? new EXTRACTOR_CONSTRUCTORS[platform]() : null;
 }
 
+// Manifest of the last conversation state synced to the companion, kept
+// module-level so an unchanged conversation costs nothing on repeated
+// MutationObserver callbacks.
+let previousManifest: string[] = [];
+let lastHref = location.href;
+
+// The auto-sync observer, tracked so a re-run of initialize() (or a test
+// harness that drives it repeatedly against a shared document) disconnects
+// the previous one instead of accumulating observers on the same root.
+let autoSyncObserver: MutationObserver | null = null;
+
+/**
+ * Stop the continuous auto-sync observer, if one is attached.
+ *
+ * Exported for test teardown: a shared jsdom document across a test file
+ * would otherwise let an observer from one test fire on DOM mutations made
+ * by a later, unrelated test (e.g. `clearFixture()`).
+ */
+export function stopAutoSync(): void {
+  autoSyncObserver?.disconnect();
+  autoSyncObserver = null;
+}
+
+/**
+ * Continuously sync the current conversation to the companion listener.
+ *
+ * Driven by a MutationObserver on the platform's observation root (see
+ * `initialize()`), throttled to AUTO_SYNC_DEBOUNCE. Only sends an increment
+ * when the manifest actually changed, so idle pages and unrelated DOM churn
+ * cost nothing beyond a settings read and an extraction.
+ */
+export async function runAutoSync(): Promise<ChatSyncResponse | null> {
+  // SPAs navigate between conversations without a reload, so a manifest built
+  // for the previous conversation must never be sent under the new one's id.
+  if (location.href !== lastHref) {
+    previousManifest = [];
+    lastHref = location.href;
+  }
+
+  const settings = await getSettings();
+  if (!settings.isCompanionConfigured) return null;
+
+  const extractor = getExtractor();
+  if (!extractor || !extractor.canExtract()) return null;
+  if (!settings.autoSyncPlatforms.includes(extractor.platform)) return null;
+
+  extractor.applySettings(settings);
+  const result = await extractor.extract();
+  if (!result.data) return null;
+
+  const { manifest, blocks } = buildManifest(result.data.messages);
+  const unchanged =
+    manifest.length === previousManifest.length &&
+    manifest.every((h, i) => h === previousManifest[i]);
+  if (unchanged) return null;
+
+  const response = await sendMessage({
+    action: 'chatSync',
+    data: {
+      conversationId: result.data.id,
+      platform: result.data.source,
+      title: result.data.title,
+      url: result.data.url,
+      manifest,
+      newBlocks: diffBlocks(previousManifest, manifest, blocks),
+    },
+  });
+  previousManifest = manifest;
+  if ('error' in response) {
+    console.warn('[G2O] Auto-sync failed:', response.error);
+    return null;
+  }
+  return response;
+}
+
 /**
  * Start the content script when the DOM is ready.
  * Called once by the index.ts entry shim; exported so tests can drive it.
@@ -201,6 +279,14 @@ export async function initialize(): Promise<void> {
   const throttledHandleSync = throttle(handleSync, EVENT_THROTTLE_DELAY);
   injectSyncButton(throttledHandleSync);
   console.info('[G2O] Sync button injected');
+
+  // Continuous background sync: drive runAutoSync off DOM mutations on the
+  // same observation root used to detect the conversation container, so an
+  // idle page costs nothing between edits.
+  stopAutoSync();
+  autoSyncObserver = new MutationObserver(throttle(runAutoSync, AUTO_SYNC_DEBOUNCE));
+  autoSyncObserver.observe(getObservationRoot(), { childList: true, subtree: true });
+  console.info('[G2O] Auto-sync observer attached');
 }
 
 /**

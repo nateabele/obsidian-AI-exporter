@@ -43,6 +43,7 @@ import {
   handleSync,
   getExtractor,
   startContentScript,
+  stopAutoSync,
 } from '../../src/content/bootstrap';
 
 const baseSettings: ContentScriptSettings = {
@@ -109,6 +110,10 @@ describe('content/bootstrap', () => {
   });
 
   afterEach(() => {
+    // A test's initialize() attaches an auto-sync MutationObserver to the
+    // shared jsdom document; disconnect it before mutating the DOM below so
+    // it doesn't fire against the next test's (already-reset) mocks.
+    stopAutoSync();
     clearFixture();
     resetLocation();
   });
