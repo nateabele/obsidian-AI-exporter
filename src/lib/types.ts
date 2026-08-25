@@ -380,6 +380,19 @@ export interface ChatSyncResponse {
 }
 
 /**
+ * Generic failure shape the background worker sends back when a message
+ * handler throws (see the `onMessage` listener in
+ * src/background/service-worker.ts). Message actions whose success response
+ * has no `success`/`error` fields of its own (e.g. {@link ChatSyncResponse})
+ * must union it in so callers are compiler-forced to check for failure
+ * instead of reading `undefined` off a success-shaped type.
+ */
+export interface MessageErrorResponse {
+  success: false;
+  error: string;
+}
+
+/**
  * Extraction result from content script
  */
 export interface ExtractionResult {

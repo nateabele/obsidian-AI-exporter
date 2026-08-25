@@ -45,6 +45,25 @@ export async function enqueue(request: ChatSyncRequest): Promise<void> {
   await chrome.storage.local.set({ [QUEUE_KEY]: withoutStale.slice(-MAX_QUEUED) });
 }
 
+/**
+ * Remove any queued request for a conversation.
+ *
+ * A queued failure can go stale the moment a *later* sync for the same
+ * conversation succeeds via the direct postSync() path: flushQueue() would
+ * otherwise still replay the older manifest afterwards, which the companion
+ * server would classify as a divergence and demote the newer, already-synced
+ * blocks to superseded. Call this right after a successful postSync() for a
+ * conversation, before flushQueue() runs.
+ */
+export async function dropQueued(conversationId: string): Promise<void> {
+  const stored = await chrome.storage.local.get(QUEUE_KEY);
+  const queue: ChatSyncRequest[] = stored[QUEUE_KEY] ?? [];
+  const withoutStale = queue.filter(q => q.conversationId !== conversationId);
+  if (withoutStale.length !== queue.length) {
+    await chrome.storage.local.set({ [QUEUE_KEY]: withoutStale });
+  }
+}
+
 export async function flushQueue(settings: CompanionSettings): Promise<number> {
   const stored = await chrome.storage.local.get(QUEUE_KEY);
   const queue: ChatSyncRequest[] = stored[QUEUE_KEY] ?? [];

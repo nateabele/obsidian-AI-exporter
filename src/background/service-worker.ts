@@ -8,7 +8,7 @@ import { getSettings, migrateSettings } from '../lib/storage';
 import { validateSender, validateMessageContent } from './validation';
 import { handleTestConnection } from './obsidian-handlers';
 import { handleMultiOutput } from './output-handlers';
-import { postSync, enqueue, flushQueue } from '../lib/companion-client';
+import { postSync, enqueue, flushQueue, dropQueued } from '../lib/companion-client';
 import type { ExtensionMessage, ContentScriptSettings, ExtensionSettings } from '../lib/types';
 
 // Run settings migration on service worker startup (C-01)
@@ -126,10 +126,24 @@ async function handleMessage(
       };
       try {
         const result = await postSync(companion, message.data);
+        // Purge any queued (stale) entry for this conversation BEFORE flushing
+        // the rest of the queue: replaying an older manifest after this newer
+        // one has already landed would read as a divergence server-side and
+        // demote the blocks we just synced to superseded.
+        await dropQueued(message.data.conversationId);
         await flushQueue(companion);
         return result;
       } catch (error) {
-        await enqueue(message.data);
+        // Queueing the failed request must not mask the original failure —
+        // a storage-quota error from enqueue() should never hide why the
+        // sync itself failed. The original error still propagates below;
+        // the top-level onMessage handler converts it into a
+        // MessageErrorResponse for the caller.
+        try {
+          await enqueue(message.data);
+        } catch (enqueueError) {
+          console.error('[G2O Background] Failed to enqueue chatSync retry:', enqueueError);
+        }
         throw error;
       }
     }

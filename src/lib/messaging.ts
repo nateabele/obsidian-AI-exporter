@@ -8,6 +8,7 @@ import type {
   ContentScriptSettings,
   MultiOutputResponse,
   ChatSyncResponse,
+  MessageErrorResponse,
 } from './types';
 
 /** User-friendly message for extension context invalidation */
@@ -20,7 +21,7 @@ interface MessageResponseMap {
   getSettings: ContentScriptSettings;
   testConnection: { success: boolean; error?: string };
   saveToOutputs: MultiOutputResponse;
-  chatSync: ChatSyncResponse;
+  chatSync: ChatSyncResponse | MessageErrorResponse;
 }
 
 /**

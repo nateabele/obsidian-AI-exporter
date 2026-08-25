@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { postSync, flushQueue } from '../../src/lib/companion-client';
+import { postSync, flushQueue, enqueue, dropQueued } from '../../src/lib/companion-client';
 import type { ChatSyncRequest } from '../../src/lib/types';
 
 const settings = { companionUrl: 'http://127.0.0.1:3447', companionToken: 'tok' };
@@ -103,5 +103,51 @@ describe('flushQueue', () => {
 
     expect(await flushQueue(settings)).toBe(0);
     expect(stored.companionQueue).toHaveLength(1);
+  });
+});
+
+describe('dropQueued', () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it('prevents flushQueue from replaying a stale entry after a newer sync for the same conversation succeeds', async () => {
+    // Sync A for conversation X fails and is queued with a stale manifest.
+    const staleRequest: ChatSyncRequest = { ...request, manifest: ['h1', 'h2'] };
+    const stored: Record<string, unknown> = {};
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: async (key: string) => ({ [key]: stored[key] }),
+          set: async (patch: Record<string, unknown>) => Object.assign(stored, patch),
+        },
+      },
+    });
+    await enqueue(staleRequest);
+    expect(stored.companionQueue).toEqual([staleRequest]);
+
+    // Sync B for the same conversation succeeds directly via postSync with a
+    // newer manifest (as service-worker.ts's chatSync handler does).
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        notePath: 'n.md',
+        mode: 'append',
+        appended: 2,
+        superseded: 0,
+        suggestions: { transcripts: [], pages: [] },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const newerRequest: ChatSyncRequest = { ...request, manifest: ['h1', 'h2', 'h3', 'h4'] };
+    await postSync(settings, newerRequest);
+
+    // The handler purges the stale queue entry for this conversation before
+    // flushing — flushQueue must not re-send the older manifest afterwards.
+    await dropQueued(newerRequest.conversationId);
+    expect(stored.companionQueue).toEqual([]);
+
+    fetchMock.mockClear();
+    expect(await flushQueue(settings)).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(stored.companionQueue).toEqual([]);
   });
 });
