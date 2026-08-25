@@ -40,7 +40,7 @@ import type {
   MultiOutputResponse,
 } from '../lib/types';
 import { platformForHost } from '../lib/platform-registry';
-import { throttle } from '../lib/throttle';
+import { throttle, debounce } from '../lib/throttle';
 import { buildManifest, diffBlocks } from '../lib/manifest';
 
 /**
@@ -174,24 +174,30 @@ let lastHref = location.href;
 // harness that drives it repeatedly against a shared document) disconnects
 // the previous one instead of accumulating observers on the same root.
 let autoSyncObserver: MutationObserver | null = null;
+// The debounced runAutoSync callback, tracked so its pending trailing-edge
+// timer can be cancelled alongside the observer (see stopAutoSync()).
+let debouncedAutoSync: (((...args: unknown[]) => void) & { cancel: () => void }) | null = null;
 
 /**
  * Stop the continuous auto-sync observer, if one is attached.
  *
  * Exported for test teardown: a shared jsdom document across a test file
  * would otherwise let an observer from one test fire on DOM mutations made
- * by a later, unrelated test (e.g. `clearFixture()`).
+ * by a later, unrelated test (e.g. `clearFixture()`). Also cancels any
+ * pending debounce timer so it can't fire after teardown.
  */
 export function stopAutoSync(): void {
   autoSyncObserver?.disconnect();
   autoSyncObserver = null;
+  debouncedAutoSync?.cancel();
+  debouncedAutoSync = null;
 }
 
 /**
  * Continuously sync the current conversation to the companion listener.
  *
  * Driven by a MutationObserver on the platform's observation root (see
- * `initialize()`), throttled to AUTO_SYNC_DEBOUNCE. Only sends an increment
+ * `initialize()`), debounced by AUTO_SYNC_DEBOUNCE. Only sends an increment
  * when the manifest actually changed, so idle pages and unrelated DOM churn
  * cost nothing beyond a settings read and an extraction.
  */
@@ -282,9 +288,13 @@ export async function initialize(): Promise<void> {
 
   // Continuous background sync: drive runAutoSync off DOM mutations on the
   // same observation root used to detect the conversation container, so an
-  // idle page costs nothing between edits.
+  // idle page costs nothing between edits. Debounced (trailing-edge only,
+  // no max wait) rather than throttled: a streaming response mutates the
+  // DOM continuously, and a leading-edge throttle would sync the first
+  // partial token as if it were the finished message.
   stopAutoSync();
-  autoSyncObserver = new MutationObserver(throttle(runAutoSync, AUTO_SYNC_DEBOUNCE));
+  debouncedAutoSync = debounce(runAutoSync, AUTO_SYNC_DEBOUNCE);
+  autoSyncObserver = new MutationObserver(debouncedAutoSync);
   autoSyncObserver.observe(getObservationRoot(), { childList: true, subtree: true });
   console.info('[G2O] Auto-sync observer attached');
 }

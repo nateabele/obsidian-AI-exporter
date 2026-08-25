@@ -38,6 +38,8 @@ import {
   showToast,
 } from '../../src/content/ui';
 import { sendMessage } from '../../src/lib/messaging';
+import { AUTO_SYNC_DEBOUNCE } from '../../src/lib/constants';
+import type { ChatSyncResponse, MessageErrorResponse } from '../../src/lib/types';
 import {
   initialize,
   handleSync,
@@ -74,11 +76,20 @@ const okSave: MultiOutputResponse = {
   messagesAppended: undefined,
 };
 
+const okChatSync: ChatSyncResponse = {
+  notePath: 'AI/gemini/hello-gemini.md',
+  mode: 'append',
+  appended: 1,
+  superseded: 0,
+  suggestions: { transcripts: [], pages: [] },
+};
+
 /** Route mocked sendMessage responses by action */
 function mockMessaging(overrides: {
   settings?: Partial<ContentScriptSettings>;
   connection?: { success: boolean; error?: string };
   save?: MultiOutputResponse;
+  chatSync?: ChatSyncResponse | MessageErrorResponse;
 }): void {
   vi.mocked(sendMessage).mockImplementation(message => {
     switch ((message as { action: string }).action) {
@@ -88,6 +99,8 @@ function mockMessaging(overrides: {
         return Promise.resolve(overrides.connection ?? { success: true });
       case 'saveToOutputs':
         return Promise.resolve(overrides.save ?? okSave);
+      case 'chatSync':
+        return Promise.resolve(overrides.chatSync ?? okChatSync);
       default:
         return Promise.reject(new Error('unexpected action'));
     }
@@ -195,6 +208,107 @@ describe('content/bootstrap', () => {
         // Initialization still completes (button injected on a bare page)
         expect(injectSyncButton).toHaveBeenCalledTimes(1);
       } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe('auto-sync (debounced observer)', () => {
+    /**
+     * Stub the global MutationObserver so the test can drive the auto-sync
+     * observer's callback directly (simulating a burst of streaming-response
+     * mutations) instead of depending on jsdom's real mutation-record timing.
+     * Safe here because the conversation container already exists before
+     * initialize() runs, so waitForConversationContainer() never constructs
+     * its own MutationObserver (see its early-return branch).
+     */
+    function stubMutationObserver(): {
+      getCallback: () => MutationCallback;
+      restore: () => void;
+    } {
+      const OriginalMutationObserver = globalThis.MutationObserver;
+      let captured: MutationCallback | undefined;
+      vi.stubGlobal(
+        'MutationObserver',
+        vi.fn(function MockMutationObserver(this: unknown, callback: MutationCallback) {
+          captured = callback;
+          return { observe: vi.fn(), disconnect: vi.fn() };
+        })
+      );
+      return {
+        getCallback: () => {
+          if (!captured) throw new Error('MutationObserver was never constructed');
+          return captured;
+        },
+        restore: () => vi.stubGlobal('MutationObserver', OriginalMutationObserver),
+      };
+    }
+
+    it('collapses a burst of mutation callbacks into exactly one sync, after the quiet period settles', async () => {
+      vi.useFakeTimers();
+      const stub = stubMutationObserver();
+      try {
+        setGeminiLocation('auto-sync-burst');
+        loadFixture(
+          createGeminiConversationDOM([
+            { role: 'user', content: 'Hello Gemini' },
+            { role: 'assistant', content: '<p>Hi there!</p>' },
+          ])
+        );
+        mockMessaging({
+          settings: { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] },
+        });
+
+        await initialize();
+        const callback = stub.getCallback();
+
+        // Simulate rapid mutations arriving mid-stream (e.g. streamed tokens).
+        callback([], {} as MutationObserver);
+        callback([], {} as MutationObserver);
+        callback([], {} as MutationObserver);
+
+        // Only the settled state matters: no sync until the quiet period
+        // has fully elapsed since the LAST mutation in the burst.
+        await vi.advanceTimersByTimeAsync(AUTO_SYNC_DEBOUNCE);
+
+        const chatSyncCalls = vi
+          .mocked(sendMessage)
+          .mock.calls.filter(([message]) => (message as { action: string }).action === 'chatSync');
+        expect(chatSyncCalls).toHaveLength(1);
+      } finally {
+        stub.restore();
+        vi.useRealTimers();
+      }
+    });
+
+    it('never fires a pending sync once stopAutoSync() has run', async () => {
+      vi.useFakeTimers();
+      const stub = stubMutationObserver();
+      try {
+        setGeminiLocation('auto-sync-cancel');
+        loadFixture(
+          createGeminiConversationDOM([
+            { role: 'user', content: 'Hello Gemini' },
+            { role: 'assistant', content: '<p>Hi there!</p>' },
+          ])
+        );
+        mockMessaging({
+          settings: { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] },
+        });
+
+        await initialize();
+        const callback = stub.getCallback();
+
+        callback([], {} as MutationObserver);
+        stopAutoSync();
+        await vi.advanceTimersByTimeAsync(AUTO_SYNC_DEBOUNCE + 1000);
+
+        const chatSyncCalls = vi
+          .mocked(sendMessage)
+          .mock.calls.filter(([message]) => (message as { action: string }).action === 'chatSync');
+        expect(chatSyncCalls).toHaveLength(0);
+      } finally {
+        stub.restore();
         vi.useRealTimers();
       }
     });
