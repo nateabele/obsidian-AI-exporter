@@ -38,6 +38,12 @@ describe('deriveState', () => {
       'synced'
     );
   });
+
+  it('is syncing even when a stale error from the previous attempt is still present', () => {
+    expect(
+      deriveState({ configured: true, syncing: true, error: 'ECONNREFUSED', suggestionCount: 0 })
+    ).toBe('syncing');
+  });
 });
 
 function makeHandlers(overrides: Partial<SyncIconHandlers> = {}): SyncIconHandlers {
@@ -216,7 +222,10 @@ describe('the icon menu', () => {
     const entries = Array.from(document.querySelectorAll('#g2o-sync-menu .entry')).map(
       e => e.textContent
     );
-    expect(entries).toEqual(['Open settings']);
+    // chrome.i18n.getMessage is stubbed in test/setup.ts to return the raw
+    // key, so entries assert against the i18n keys rather than the English
+    // copy that only renders in the real extension.
+    expect(entries).toEqual(['syncIcon_openSettings']);
 
     document.querySelector('#g2o-sync-menu .entry')?.dispatchEvent(new Event('click'));
     expect(handlers.onOpenOptions).toHaveBeenCalledTimes(1);
@@ -235,7 +244,19 @@ describe('the icon menu', () => {
     const entries = Array.from(document.querySelectorAll('#g2o-sync-menu .entry')).map(
       e => e.textContent
     );
-    expect(entries).toEqual(['Retry', 'Sync now', 'Open transcript']);
+    expect(entries).toEqual(['syncIcon_retry', 'syncIcon_syncNow', 'syncIcon_openTranscript']);
+  });
+
+  it('falls back to a generic message when no error detail is known', () => {
+    const handlers = makeHandlers();
+    injectSyncIcon(handlers);
+    setSyncState('offline');
+
+    document.getElementById('g2o-sync-icon')?.click();
+
+    expect(document.querySelector('#g2o-sync-menu .error-detail')?.textContent).toBe(
+      'syncIcon_syncFailed'
+    );
   });
 
   it('offers "Sync now" and "Open transcript" once synced', () => {
@@ -246,9 +267,165 @@ describe('the icon menu', () => {
     document.getElementById('g2o-sync-icon')?.click();
 
     const entries = Array.from(document.querySelectorAll('#g2o-sync-menu .entry'));
-    expect(entries.map(e => e.textContent)).toEqual(['Sync now', 'Open transcript']);
+    expect(entries.map(e => e.textContent)).toEqual([
+      'syncIcon_syncNow',
+      'syncIcon_openTranscript',
+    ]);
 
     entries[1].dispatchEvent(new Event('click'));
     expect(handlers.onOpenPath).toHaveBeenCalledWith('AI/gemini/hello.md');
+  });
+
+  it('omits "Sync now" while a sync is already in flight', () => {
+    const handlers = makeHandlers();
+    injectSyncIcon(handlers);
+    setSyncState('syncing');
+
+    document.getElementById('g2o-sync-icon')?.click();
+
+    const entries = Array.from(document.querySelectorAll('#g2o-sync-menu .entry')).map(
+      e => e.textContent
+    );
+    expect(entries).toEqual(['syncIcon_openTranscript']);
+  });
+});
+
+describe('menu close paths', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+    vi.useRealTimers();
+  });
+
+  it('removes the outside-click listener when the menu is closed by an entry', () => {
+    const handlers = makeHandlers();
+    injectSyncIcon(handlers);
+    setSyncState('synced');
+
+    const addSpy = vi.spyOn(document, 'addEventListener');
+    const removeSpy = vi.spyOn(document, 'removeEventListener');
+
+    document.getElementById('g2o-sync-icon')?.click();
+    vi.advanceTimersByTime(0); // flush the deferred outside-click registration
+
+    const clickAdds = addSpy.mock.calls.filter(([type]) => type === 'click').length;
+    expect(clickAdds).toBe(1);
+
+    document.querySelector('#g2o-sync-menu .entry')?.dispatchEvent(new Event('click'));
+
+    const clickRemoves = removeSpy.mock.calls.filter(([type]) => type === 'click').length;
+    expect(clickRemoves).toBe(1);
+    expect(document.getElementById('g2o-sync-menu')).toBeNull();
+
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
+  });
+
+  it('removes the outside-click listener when the icon is clicked again', () => {
+    injectSyncIcon(makeHandlers());
+    setSyncState('synced');
+
+    const removeSpy = vi.spyOn(document, 'removeEventListener');
+
+    const button = document.getElementById('g2o-sync-icon');
+    button?.click();
+    vi.advanceTimersByTime(0);
+    button?.click();
+
+    const clickRemoves = removeSpy.mock.calls.filter(([type]) => type === 'click').length;
+    expect(clickRemoves).toBe(1);
+    expect(document.getElementById('g2o-sync-menu')).toBeNull();
+
+    removeSpy.mockRestore();
+  });
+
+  it('removes the outside-click listener on a genuine outside click', () => {
+    injectSyncIcon(makeHandlers());
+    setSyncState('synced');
+
+    document.getElementById('g2o-sync-icon')?.click();
+    vi.advanceTimersByTime(0);
+
+    const removeSpy = vi.spyOn(document, 'removeEventListener');
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    const clickRemoves = removeSpy.mock.calls.filter(([type]) => type === 'click').length;
+    expect(clickRemoves).toBe(1);
+    expect(document.getElementById('g2o-sync-menu')).toBeNull();
+
+    removeSpy.mockRestore();
+  });
+
+  it('does not leak a listener across repeated open/close cycles', () => {
+    injectSyncIcon(makeHandlers());
+    setSyncState('synced');
+
+    const button = document.getElementById('g2o-sync-icon');
+    for (let i = 0; i < 5; i++) {
+      button?.click();
+      vi.advanceTimersByTime(0);
+      document.querySelector('#g2o-sync-menu .entry')?.dispatchEvent(new Event('click'));
+    }
+
+    // A leaked listener from an earlier cycle would still be attached and
+    // would remove the (already-removed) menu again without error, but a
+    // genuine outside click afterwards should only ever find zero or one
+    // listener doing real work — assert indirectly via removeEventListener
+    // call count staying in lockstep with addEventListener's.
+    const addSpy = vi.spyOn(document, 'addEventListener');
+    const removeSpy = vi.spyOn(document, 'removeEventListener');
+    button?.click();
+    vi.advanceTimersByTime(0);
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    const clickAdds = addSpy.mock.calls.filter(([type]) => type === 'click').length;
+    const clickRemoves = removeSpy.mock.calls.filter(([type]) => type === 'click').length;
+    expect(clickRemoves).toBe(clickAdds);
+
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
+  });
+
+  it('closes the menu on Escape', () => {
+    injectSyncIcon(makeHandlers());
+    setSyncState('synced');
+
+    document.getElementById('g2o-sync-icon')?.click();
+    vi.advanceTimersByTime(0);
+    expect(document.getElementById('g2o-sync-menu')).not.toBeNull();
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(document.getElementById('g2o-sync-menu')).toBeNull();
+  });
+});
+
+describe('accessibility attributes', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+    vi.useRealTimers();
+  });
+
+  it('exposes aria-haspopup and toggles aria-expanded with the menu', () => {
+    injectSyncIcon(makeHandlers());
+    setSyncState('synced');
+
+    const button = document.getElementById('g2o-sync-icon');
+    expect(button?.getAttribute('aria-haspopup')).toBe('menu');
+    expect(button?.getAttribute('aria-expanded')).toBe('false');
+
+    button?.click();
+    expect(button?.getAttribute('aria-expanded')).toBe('true');
+
+    button?.click();
+    expect(button?.getAttribute('aria-expanded')).toBe('false');
   });
 });

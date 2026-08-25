@@ -6,11 +6,23 @@
     "message": "Gemini、Claude、ChatGPT、Perplexity、NotebookLM の AI 会話を Obsidian へエクスポート（Local REST API 経由）"
   },
 
-  "ui_syncButton": {
-    "message": "Obsidian に同期"
+  "syncIcon_ariaLabel": {
+    "message": "Obsidian 同期"
   },
-  "ui_syncing": {
-    "message": "同期中..."
+  "syncIcon_openSettings": {
+    "message": "設定を開く"
+  },
+  "syncIcon_retry": {
+    "message": "再試行"
+  },
+  "syncIcon_syncNow": {
+    "message": "今すぐ同期"
+  },
+  "syncIcon_openTranscript": {
+    "message": "会話を開く"
+  },
+  "syncIcon_syncFailed": {
+    "message": "同期に失敗しました"
   },
 
   "settings_title": {

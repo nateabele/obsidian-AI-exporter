@@ -7,6 +7,7 @@
  */
 
 import { injectStyles } from './ui';
+import { getMessage } from '../lib/i18n';
 
 export type SyncIconState = 'unconfigured' | 'offline' | 'syncing' | 'synced' | 'suggestions';
 
@@ -38,8 +39,9 @@ const GLYPHS: Record<SyncIconState, string> = {
  * Precedence is deliberate: setup (`unconfigured`) beats everything else, so
  * a user who hasn't configured the companion token is always offered setup
  * first, even if a stale error or suggestions are also present. An in-flight
- * request (`syncing`) beats a stale `error` from the previous attempt.
- * Errors beat suggestions, since a broken connection is more urgent than a
+ * request (`syncing`) beats a stale `error` from the previous attempt — a
+ * sync already underway supersedes whatever the last one left behind. Errors
+ * beat suggestions, since a broken connection is more urgent than a
  * related-note nudge. `synced` is the quiet fallback.
  */
 export function deriveState(input: SyncStateInput): SyncIconState {
@@ -50,25 +52,60 @@ export function deriveState(input: SyncStateInput): SyncIconState {
   return 'synced';
 }
 
-// Last known error/note path, retained so the menu can render "Retry" with
-// the failure detail and "Open transcript" with somewhere to go, even
-// though setSyncState() only touches the DOM (it doesn't return state to
-// the caller).
+// Last known error/note path/suggestion count, retained so the menu can
+// render "Retry" with the failure detail and "Open transcript" with
+// somewhere to go, and so the badge doesn't flicker to zero on every state
+// change that doesn't itself carry a suggestion count (e.g. `syncing`).
 let lastError: string | null = null;
 let lastNotePath: string | null = null;
+let lastSuggestionCount = 0;
+
+/**
+ * The last known suggestion count, as last reported via `setSyncState`.
+ * Callers that need to derive a follow-up state (e.g. after a sync
+ * completes) without clobbering an existing suggestion badge should read
+ * this rather than hardcoding 0.
+ */
+export function getSuggestionCount(): number {
+  return lastSuggestionCount;
+}
+
+// The currently-open menu and its outside-click listener, tracked in module
+// scope so `closeMenu()` can always find and remove both, regardless of
+// which code path (entry activation, icon re-click, outside click, Escape)
+// triggered the close.
+let activeMenu: HTMLElement | null = null;
+let activeOutsideClickListener: ((event: MouseEvent) => void) | null = null;
+let activeKeydownListener: ((event: KeyboardEvent) => void) | null = null;
+
+function closeMenu(): void {
+  if (activeOutsideClickListener) {
+    document.removeEventListener('click', activeOutsideClickListener);
+    activeOutsideClickListener = null;
+  }
+  if (activeKeydownListener) {
+    document.removeEventListener('keydown', activeKeydownListener);
+    activeKeydownListener = null;
+  }
+  activeMenu?.remove();
+  activeMenu = null;
+  document.getElementById('g2o-sync-icon')?.setAttribute('aria-expanded', 'false');
+}
 
 /**
  * Create and inject the sync icon.
  */
 export function injectSyncIcon(handlers: SyncIconHandlers): HTMLButtonElement {
   injectStyles();
+  closeMenu();
   document.getElementById('g2o-sync-icon')?.remove();
-  document.getElementById('g2o-sync-menu')?.remove();
 
   const button = document.createElement('button');
   button.id = 'g2o-sync-icon';
   button.dataset.state = 'unconfigured';
-  button.setAttribute('aria-label', 'Obsidian sync');
+  button.setAttribute('aria-label', getMessage('syncIcon_ariaLabel'));
+  button.setAttribute('aria-haspopup', 'menu');
+  button.setAttribute('aria-expanded', 'false');
 
   const glyph = document.createElement('span');
   glyph.className = 'glyph';
@@ -98,32 +135,94 @@ export function setSyncState(
   button.title = detail.error ?? state;
   lastError = detail.error ?? null;
   if (detail.notePath) lastNotePath = detail.notePath;
+  if (detail.suggestionCount !== undefined) lastSuggestionCount = detail.suggestionCount;
 
   const glyph = button.querySelector('.glyph');
   if (glyph) glyph.textContent = GLYPHS[state];
 
   const badge = button.querySelector('.badge') as HTMLElement | null;
   if (badge) {
-    const count = detail.suggestionCount ?? 0;
-    badge.hidden = count === 0;
-    badge.textContent = String(count);
+    badge.hidden = lastSuggestionCount === 0;
+    badge.textContent = String(lastSuggestionCount);
   }
 }
 
 /**
- * Build (or, on a second click, tear down) the menu anchored above the icon.
- * Its entries depend on the icon's current `data-state`:
+ * Populate the menu's entries for the given state:
  * - `unconfigured`: only "Open settings".
  * - `offline`: the last error plus "Retry".
- * - any configured state: "Sync now" and "Open transcript".
+ * - any other configured state: "Open transcript", plus "Sync now" unless a
+ *   sync is already in flight (`syncing`), in which case it's omitted so it
+ *   can't be re-triggered mid-request.
  *
  * Suggestion groups (related transcripts/topics) are appended here in
  * Task 11, once `ChatSyncResponse.suggestions` is threaded through.
  */
+function buildMenuEntries(
+  menu: HTMLElement,
+  state: SyncIconState,
+  handlers: SyncIconHandlers
+): void {
+  const addEntry = (label: string, onClick: () => void): void => {
+    const entry = document.createElement('button');
+    entry.className = 'entry';
+    entry.textContent = label;
+    entry.addEventListener('click', () => {
+      onClick();
+      closeMenu();
+    });
+    menu.appendChild(entry);
+  };
+
+  if (state === 'unconfigured') {
+    addEntry(getMessage('syncIcon_openSettings'), handlers.onOpenOptions);
+    return;
+  }
+
+  if (state === 'offline') {
+    const errorDetail = document.createElement('div');
+    errorDetail.className = 'error-detail';
+    errorDetail.textContent = lastError ?? getMessage('syncIcon_syncFailed');
+    menu.appendChild(errorDetail);
+    addEntry(getMessage('syncIcon_retry'), handlers.onRetry);
+  }
+  if (state !== 'syncing') {
+    addEntry(getMessage('syncIcon_syncNow'), handlers.onSyncNow);
+  }
+  addEntry(getMessage('syncIcon_openTranscript'), () => handlers.onOpenPath(lastNotePath ?? ''));
+  // Suggestion groups (related transcripts/topics) slot in here — Task 11.
+}
+
+/**
+ * Wire up the two ways a menu can be closed without an explicit entry
+ * click: Escape, and a click outside both the menu and the icon (deferred
+ * one tick so the click that opened the menu doesn't immediately close it).
+ * Both listeners are tracked in module scope so `closeMenu()` can always
+ * detach them, regardless of which path actually triggers the close.
+ */
+function attachMenuCloseListeners(menu: HTMLElement, icon: HTMLElement | null): void {
+  const closeOnKeydown = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape') closeMenu();
+  };
+  activeKeydownListener = closeOnKeydown;
+  document.addEventListener('keydown', closeOnKeydown);
+
+  setTimeout(() => {
+    const closeOnOutsideClick = (event: MouseEvent): void => {
+      if (menu.contains(event.target as Node) || icon?.contains(event.target as Node)) return;
+      closeMenu();
+    };
+    activeOutsideClickListener = closeOnOutsideClick;
+    document.addEventListener('click', closeOnOutsideClick);
+  }, 0);
+}
+
+/**
+ * Build (or, on a second click, tear down) the menu anchored above the icon.
+ */
 function toggleMenu(handlers: SyncIconHandlers): void {
-  const existing = document.getElementById('g2o-sync-menu');
-  if (existing) {
-    existing.remove();
+  if (activeMenu) {
+    closeMenu();
     return;
   }
 
@@ -132,43 +231,10 @@ function toggleMenu(handlers: SyncIconHandlers): void {
 
   const menu = document.createElement('div');
   menu.id = 'g2o-sync-menu';
-
-  const addEntry = (label: string, onClick: () => void): void => {
-    const entry = document.createElement('button');
-    entry.className = 'entry';
-    entry.textContent = label;
-    entry.addEventListener('click', () => {
-      onClick();
-      menu.remove();
-    });
-    menu.appendChild(entry);
-  };
-
-  if (state === 'unconfigured') {
-    addEntry('Open settings', handlers.onOpenOptions);
-  } else {
-    if (state === 'offline') {
-      const errorDetail = document.createElement('div');
-      errorDetail.className = 'error-detail';
-      errorDetail.textContent = lastError ?? 'Sync failed';
-      menu.appendChild(errorDetail);
-      addEntry('Retry', handlers.onRetry);
-    }
-    addEntry('Sync now', handlers.onSyncNow);
-    addEntry('Open transcript', () => handlers.onOpenPath(lastNotePath ?? ''));
-    // Suggestion groups (related transcripts/topics) slot in here — Task 11.
-  }
+  buildMenuEntries(menu, state, handlers);
 
   document.body.appendChild(menu);
-
-  // Close the menu on an outside click, one tick after opening so the click
-  // that opened it doesn't immediately close it again.
-  setTimeout(() => {
-    const closeOnOutsideClick = (event: MouseEvent): void => {
-      if (menu.contains(event.target as Node) || icon?.contains(event.target as Node)) return;
-      menu.remove();
-      document.removeEventListener('click', closeOnOutsideClick);
-    };
-    document.addEventListener('click', closeOnOutsideClick);
-  }, 0);
+  activeMenu = menu;
+  icon?.setAttribute('aria-expanded', 'true');
+  attachMenuCloseListeners(menu, icon);
 }

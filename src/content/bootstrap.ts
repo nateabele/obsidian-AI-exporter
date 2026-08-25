@@ -15,7 +15,7 @@ import { extractErrorMessage } from '../lib/error-utils';
 import type { IConversationExtractor } from '../lib/types';
 import { conversationToNote } from './markdown';
 import { showSuccessToast, showErrorToast, showWarningToast, showToast } from './ui';
-import { injectSyncIcon, setSyncState, deriveState } from './sync-icon';
+import { injectSyncIcon, setSyncState, deriveState, getSuggestionCount } from './sync-icon';
 import { sendMessage } from '../lib/messaging';
 import {
   AUTO_SAVE_CHECK_INTERVAL,
@@ -449,73 +449,123 @@ function displaySaveResults(
 }
 
 /**
+ * Reflect a manual sync's actual outcome on the icon.
+ *
+ * A failure always lands on `offline` with the error detail, so the icon
+ * never lies about a sync that didn't succeed. A success derives its state
+ * via `deriveState()` rather than hardcoding `synced`, so an existing
+ * suggestion badge survives instead of being silently cleared. Skipped
+ * entirely while a background `runAutoSync` is in flight — it owns the icon
+ * state for that request and a concurrent manual sync must not race it.
+ */
+function reportSyncOutcome(errorMessage: string | null): void {
+  if (autoSyncInFlight) return;
+  if (errorMessage) {
+    setSyncState('offline', { error: errorMessage });
+    return;
+  }
+  const suggestionCount = getSuggestionCount();
+  setSyncState(deriveState({ configured: true, syncing: false, error: null, suggestionCount }), {
+    suggestionCount,
+  });
+}
+
+/**
+ * Run the manual-sync steps (settings → validate → extract → save),
+ * returning the error message on failure or `null` on success. Split out
+ * from `handleSync` purely to keep both under the line-count lint limit.
+ */
+async function performSync(): Promise<string | null> {
+  // Get settings first (L-01: use type-safe messaging)
+  const settings = await getSettings();
+  const enabledOutputs = getEnabledOutputs(settings);
+
+  // Validate output configuration
+  const configError = await validateOutputConfig(settings, enabledOutputs);
+  if (configError) {
+    showErrorToast(configError);
+    return configError;
+  }
+
+  // Extract conversation using appropriate extractor
+  const extractor = getExtractor();
+  if (!extractor || !extractor.canExtract()) {
+    const message = 'Not on a valid conversation page';
+    showErrorToast(message);
+    return message;
+  }
+
+  showToast('Extracting conversation...', 'info', INFO_TOAST_DURATION);
+  extractor.applySettings(settings);
+  const result = await extractor.extract();
+
+  // Validate extraction
+  const validation = extractor.validate(result);
+  if (!validation.isValid) {
+    const message = validation.errors.join(', ') || 'Extraction failed';
+    showErrorToast(message);
+    return message;
+  }
+
+  if (validation.warnings.length > 0) {
+    validation.warnings.forEach(warning => {
+      console.warn('[G2O] Warning:', warning);
+    });
+  }
+
+  if (!result.data) {
+    const message = 'No conversation data extracted';
+    showErrorToast(message);
+    return message;
+  }
+
+  // Convert to Obsidian note
+  const note = conversationToNote(result.data, settings.templateOptions);
+
+  console.info('[G2O] Generated note:', {
+    fileName: note.fileName,
+    messageCount: result.data.messages.length,
+    outputs: enabledOutputs,
+  });
+
+  // Save to enabled outputs
+  showToast('Saving...', 'info', INFO_TOAST_DURATION);
+  const saveResult = await saveToOutputs(note, enabledOutputs);
+  const errorMessage = saveResult.anySuccessful
+    ? null
+    : saveResult.results
+        .map((r: OutputResult) => r.error)
+        .filter(Boolean)
+        .join('; ') || 'Failed to save';
+
+  displaySaveResults(saveResult, note.fileName, result.warnings);
+  return errorMessage;
+}
+
+/**
+ * Run `performSync()`, catching and reporting any thrown error the same way
+ * a validation failure is reported — as an error message, never a rethrow.
+ */
+async function trySync(): Promise<string | null> {
+  try {
+    return await performSync();
+  } catch (error) {
+    console.error('[G2O] Sync error:', error);
+    const message = extractErrorMessage(error);
+    showErrorToast(message);
+    return message;
+  }
+}
+
+/**
  * Handle a manual sync request (icon menu's "Sync now" entry).
  */
 export async function handleSync(): Promise<void> {
   console.info('[G2O] Sync initiated');
-  setSyncState('syncing');
+  if (!autoSyncInFlight) setSyncState('syncing');
 
-  try {
-    // Get settings first (L-01: use type-safe messaging)
-    const settings = await getSettings();
-    const enabledOutputs = getEnabledOutputs(settings);
-
-    // Validate output configuration
-    const configError = await validateOutputConfig(settings, enabledOutputs);
-    if (configError) {
-      showErrorToast(configError);
-      return;
-    }
-
-    // Extract conversation using appropriate extractor
-    const extractor = getExtractor();
-    if (!extractor || !extractor.canExtract()) {
-      showErrorToast('Not on a valid conversation page');
-      return;
-    }
-
-    showToast('Extracting conversation...', 'info', INFO_TOAST_DURATION);
-    extractor.applySettings(settings);
-    const result = await extractor.extract();
-
-    // Validate extraction
-    const validation = extractor.validate(result);
-    if (!validation.isValid) {
-      showErrorToast(validation.errors.join(', ') || 'Extraction failed');
-      return;
-    }
-
-    if (validation.warnings.length > 0) {
-      validation.warnings.forEach(warning => {
-        console.warn('[G2O] Warning:', warning);
-      });
-    }
-
-    if (!result.data) {
-      showErrorToast('No conversation data extracted');
-      return;
-    }
-
-    // Convert to Obsidian note
-    const note = conversationToNote(result.data, settings.templateOptions);
-
-    console.info('[G2O] Generated note:', {
-      fileName: note.fileName,
-      messageCount: result.data.messages.length,
-      outputs: enabledOutputs,
-    });
-
-    // Save to enabled outputs
-    showToast('Saving...', 'info', INFO_TOAST_DURATION);
-    const saveResult = await saveToOutputs(note, enabledOutputs);
-
-    displaySaveResults(saveResult, note.fileName, result.warnings);
-  } catch (error) {
-    console.error('[G2O] Sync error:', error);
-    showErrorToast(extractErrorMessage(error));
-  } finally {
-    setSyncState('synced');
-  }
+  const errorMessage = await trySync();
+  reportSyncOutcome(errorMessage);
 }
 
 /**

@@ -27,6 +27,7 @@ vi.mock('../../src/content/sync-icon', () => ({
   injectSyncIcon: vi.fn(),
   setSyncState: vi.fn(),
   deriveState: vi.fn(() => 'synced'),
+  getSuggestionCount: vi.fn(() => 0),
 }));
 
 vi.mock('../../src/lib/messaging', () => ({
@@ -523,7 +524,9 @@ describe('content/bootstrap', () => {
       expect(showErrorToast).toHaveBeenCalledWith(
         'Please select at least one output destination in settings'
       );
-      expect(setSyncState).toHaveBeenLastCalledWith('synced');
+      expect(setSyncState).toHaveBeenLastCalledWith('offline', {
+        error: 'Please select at least one output destination in settings',
+      });
     });
 
     it('shows an error when Obsidian is enabled without an API key', async () => {
@@ -598,7 +601,7 @@ describe('content/bootstrap', () => {
       );
       expect(showSuccessToast).toHaveBeenCalledWith(expect.stringMatching(/\.md$/), true);
       expect(setSyncState).toHaveBeenNthCalledWith(1, 'syncing');
-      expect(setSyncState).toHaveBeenLastCalledWith('synced');
+      expect(setSyncState).toHaveBeenLastCalledWith('synced', { suggestionCount: 0 });
     });
 
     it('shows the ACTUAL file name when a collision forced a rename (issue #327)', async () => {
@@ -696,8 +699,42 @@ describe('content/bootstrap', () => {
       await handleSync();
 
       expect(showErrorToast).toHaveBeenCalledWith('Extension context invalidated.');
-      expect(setSyncState).toHaveBeenLastCalledWith('synced');
+      expect(setSyncState).toHaveBeenLastCalledWith('offline', {
+        error: 'Extension context invalidated.',
+      });
       errorSpy.mockRestore();
+    });
+
+    it('does not touch the icon state while a background auto-sync is in flight', async () => {
+      loadGeminiConversation();
+
+      let resolveGetSettings!: (value: ContentScriptSettings) => void;
+      const pendingSettings = new Promise<ContentScriptSettings>(resolve => {
+        resolveGetSettings = resolve;
+      });
+      vi.mocked(sendMessage).mockImplementation(message => {
+        const action = (message as { action: string }).action;
+        if (action === 'getSettings') return pendingSettings;
+        if (action === 'chatSync') return Promise.resolve(okChatSync);
+        return Promise.reject(new Error('unexpected action'));
+      });
+
+      // Starts runAutoSync and suspends it awaiting getSettings, which sets
+      // the module-level autoSyncInFlight guard before handleSync ever runs.
+      const autoSync = runAutoSync();
+
+      vi.mocked(setSyncState).mockClear();
+      mockMessaging({});
+      await handleSync();
+
+      expect(setSyncState).not.toHaveBeenCalled();
+
+      resolveGetSettings({
+        ...baseSettings,
+        isCompanionConfigured: true,
+        autoSyncPlatforms: ['gemini'],
+      });
+      await autoSync;
     });
   });
 });

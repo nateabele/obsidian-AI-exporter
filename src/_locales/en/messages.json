@@ -8,13 +8,29 @@
     "description": "Extension description shown in browser and store"
   },
 
-  "ui_syncButton": {
-    "message": "Sync to Obsidian",
-    "description": "Text on the floating sync button"
+  "syncIcon_ariaLabel": {
+    "message": "Obsidian sync",
+    "description": "Accessible label for the sync status icon"
   },
-  "ui_syncing": {
-    "message": "Syncing...",
-    "description": "Text shown while syncing"
+  "syncIcon_openSettings": {
+    "message": "Open settings",
+    "description": "Sync icon menu entry: open the extension's settings"
+  },
+  "syncIcon_retry": {
+    "message": "Retry",
+    "description": "Sync icon menu entry: retry a failed sync"
+  },
+  "syncIcon_syncNow": {
+    "message": "Sync now",
+    "description": "Sync icon menu entry: trigger a sync immediately"
+  },
+  "syncIcon_openTranscript": {
+    "message": "Open transcript",
+    "description": "Sync icon menu entry: open the last saved note"
+  },
+  "syncIcon_syncFailed": {
+    "message": "Sync failed",
+    "description": "Fallback detail shown in the sync icon menu when no specific error is known"
   },
 
   "settings_title": {
