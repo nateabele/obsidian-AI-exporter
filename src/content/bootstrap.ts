@@ -169,6 +169,11 @@ export function getExtractor(): IConversationExtractor | null {
 // MutationObserver callbacks.
 let previousManifest: string[] = [];
 let lastHref = location.href;
+// Re-entrancy guard: debounce serialises calls INTO runAutoSync but never
+// awaits the previous invocation, so a slow postSync could otherwise let two
+// invocations overlap and race on previousManifest. The next mutation
+// re-triggers a fresh run once the in-flight one finishes.
+let autoSyncInFlight = false;
 
 // The auto-sync observer, tracked so a re-run of initialize() (or a test
 // harness that drives it repeatedly against a shared document) disconnects
@@ -202,47 +207,79 @@ export function stopAutoSync(): void {
  * cost nothing beyond a settings read and an extraction.
  */
 export async function runAutoSync(): Promise<ChatSyncResponse | null> {
-  // SPAs navigate between conversations without a reload, so a manifest built
-  // for the previous conversation must never be sent under the new one's id.
-  if (location.href !== lastHref) {
-    previousManifest = [];
-    lastHref = location.href;
+  // debounce() never awaits the previous call, so guard against two
+  // invocations overlapping and racing on previousManifest — the next
+  // mutation re-triggers a fresh run once this one finishes.
+  if (autoSyncInFlight) return null;
+  autoSyncInFlight = true;
+
+  try {
+    // SPAs navigate between conversations without a reload, so a manifest
+    // built for the previous conversation must never be sent under the new
+    // one's id.
+    if (location.href !== lastHref) {
+      previousManifest = [];
+      lastHref = location.href;
+    }
+
+    const settings = await getSettings();
+    if (!settings.isCompanionConfigured) return null;
+
+    const extractor = getExtractor();
+    if (!extractor || !extractor.canExtract()) return null;
+    if (!settings.autoSyncPlatforms.includes(extractor.platform)) return null;
+
+    // Auto-scroll is a good fit for the manual sync button (the user
+    // triggered it and expects the page to move), but not for a background
+    // cycle that fires every few seconds while the user is reading — force
+    // it off here regardless of the user's setting.
+    extractor.applySettings({ ...settings, enableAutoScroll: false });
+    const result = await extractor.extract();
+    if (!result.data) return null;
+
+    const { manifest, blocks } = buildManifest(result.data.messages);
+    const unchanged =
+      manifest.length === previousManifest.length &&
+      manifest.every((h, i) => h === previousManifest[i]);
+    if (unchanged) return null;
+
+    // Virtualized platforms (ADR-017) drop off-screen messages from the DOM,
+    // so an extraction taken without scrolling can return a *window* of the
+    // conversation instead of a prefix. A window that no longer starts where
+    // the last synced manifest started mismatches at index 0, which the
+    // server reads as a divergence and would supersede the ENTIRE transcript
+    // over. Refuse to send rather than risk that.
+    if (previousManifest.length > 0 && manifest[0] !== previousManifest[0]) {
+      console.warn(
+        '[G2O] Auto-sync skipped: manifest no longer starts where the previous one did ' +
+          '(likely a virtualized window, not a true prefix) — not sending'
+      );
+      return null;
+    }
+
+    const response = await sendMessage({
+      action: 'chatSync',
+      data: {
+        conversationId: result.data.id,
+        platform: result.data.source,
+        title: result.data.title,
+        url: result.data.url,
+        manifest,
+        newBlocks: diffBlocks(previousManifest, manifest, blocks),
+      },
+    });
+    if ('error' in response) {
+      console.warn('[G2O] Auto-sync failed:', response.error);
+      return null;
+    }
+    // Only advance the baseline on confirmed success: advancing on a failed
+    // send would mean the next successful sync diffs against blocks the
+    // server never actually received, permanently losing them.
+    previousManifest = manifest;
+    return response;
+  } finally {
+    autoSyncInFlight = false;
   }
-
-  const settings = await getSettings();
-  if (!settings.isCompanionConfigured) return null;
-
-  const extractor = getExtractor();
-  if (!extractor || !extractor.canExtract()) return null;
-  if (!settings.autoSyncPlatforms.includes(extractor.platform)) return null;
-
-  extractor.applySettings(settings);
-  const result = await extractor.extract();
-  if (!result.data) return null;
-
-  const { manifest, blocks } = buildManifest(result.data.messages);
-  const unchanged =
-    manifest.length === previousManifest.length &&
-    manifest.every((h, i) => h === previousManifest[i]);
-  if (unchanged) return null;
-
-  const response = await sendMessage({
-    action: 'chatSync',
-    data: {
-      conversationId: result.data.id,
-      platform: result.data.source,
-      title: result.data.title,
-      url: result.data.url,
-      manifest,
-      newBlocks: diffBlocks(previousManifest, manifest, blocks),
-    },
-  });
-  previousManifest = manifest;
-  if ('error' in response) {
-    console.warn('[G2O] Auto-sync failed:', response.error);
-    return null;
-  }
-  return response;
 }
 
 /**

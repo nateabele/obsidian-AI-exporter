@@ -46,7 +46,9 @@ import {
   getExtractor,
   startContentScript,
   stopAutoSync,
+  runAutoSync,
 } from '../../src/content/bootstrap';
+import { GeminiExtractor } from '../../src/content/extractors/gemini';
 
 const baseSettings: ContentScriptSettings = {
   obsidianUrl: 'http://127.0.0.1:27123',
@@ -311,6 +313,146 @@ describe('content/bootstrap', () => {
         stub.restore();
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe('runAutoSync', () => {
+    function chatSyncCallsOf(): unknown[] {
+      return vi
+        .mocked(sendMessage)
+        .mock.calls.filter(([message]) => (message as { action: string }).action === 'chatSync');
+    }
+
+    it('does not advance the manifest after a failed sync, so the next attempt resends the same blocks', async () => {
+      setGeminiLocation('auto-sync-retry');
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+
+      let chatSyncCallCount = 0;
+      const sentManifests: string[][] = [];
+      vi.mocked(sendMessage).mockImplementation(message => {
+        const action = (message as { action: string }).action;
+        if (action === 'getSettings') {
+          return Promise.resolve({
+            ...baseSettings,
+            isCompanionConfigured: true,
+            autoSyncPlatforms: ['gemini'],
+          });
+        }
+        if (action === 'chatSync') {
+          chatSyncCallCount += 1;
+          sentManifests.push((message as { data: { manifest: string[] } }).data.manifest);
+          const failure: MessageErrorResponse = { success: false, error: 'network blip' };
+          return Promise.resolve(chatSyncCallCount === 1 ? failure : okChatSync);
+        }
+        return Promise.reject(new Error('unexpected action'));
+      });
+
+      await runAutoSync(); // fails
+      await runAutoSync(); // same DOM, must resend the identical manifest/blocks
+
+      expect(chatSyncCallCount).toBe(2);
+      expect(sentManifests[1]).toEqual(sentManifests[0]);
+    });
+
+    it('returns without sending when a sync is already in flight', async () => {
+      setGeminiLocation('auto-sync-inflight');
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+
+      let resolveGetSettings!: (value: ContentScriptSettings) => void;
+      const pendingSettings = new Promise<ContentScriptSettings>(resolve => {
+        resolveGetSettings = resolve;
+      });
+
+      let chatSyncCallCount = 0;
+      vi.mocked(sendMessage).mockImplementation(message => {
+        const action = (message as { action: string }).action;
+        if (action === 'getSettings') return pendingSettings;
+        if (action === 'chatSync') {
+          chatSyncCallCount += 1;
+          return Promise.resolve(okChatSync);
+        }
+        return Promise.reject(new Error('unexpected action'));
+      });
+
+      const first = runAutoSync(); // starts, suspends awaiting getSettings
+      const second = runAutoSync(); // must see the in-flight guard and bail immediately
+
+      await expect(second).resolves.toBeNull();
+
+      resolveGetSettings({
+        ...baseSettings,
+        isCompanionConfigured: true,
+        autoSyncPlatforms: ['gemini'],
+      });
+      await first;
+
+      expect(chatSyncCallCount).toBe(1);
+    });
+
+    it('never triggers auto-scroll even when the user setting is enabled', async () => {
+      setGeminiLocation('auto-sync-noscroll');
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+      mockMessaging({
+        settings: {
+          isCompanionConfigured: true,
+          autoSyncPlatforms: ['gemini'],
+          enableAutoScroll: true,
+        },
+      });
+
+      const applySettingsSpy = vi.spyOn(GeminiExtractor.prototype, 'applySettings');
+      try {
+        await runAutoSync();
+
+        expect(applySettingsSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ enableAutoScroll: false })
+        );
+      } finally {
+        applySettingsSpy.mockRestore();
+      }
+    });
+
+    it("does not send when the manifest's first hash diverges from a non-empty previousManifest (virtualization window guard)", async () => {
+      setGeminiLocation('auto-sync-window');
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Original first message' },
+          { role: 'assistant', content: '<p>reply</p>' },
+        ])
+      );
+      mockMessaging({
+        settings: { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] },
+      });
+
+      await runAutoSync();
+      expect(chatSyncCallsOf()).toHaveLength(1);
+
+      // Same conversation (same href — no navigation), but the DOM now looks
+      // like a virtualized window that dropped the true first message.
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'A completely different first message' },
+          { role: 'assistant', content: '<p>reply</p>' },
+        ])
+      );
+
+      await runAutoSync();
+      expect(chatSyncCallsOf()).toHaveLength(1); // unchanged: the second attempt was refused
     });
   });
 

@@ -46,4 +46,9 @@ describe('diffBlocks', () => {
     const { manifest, blocks } = buildManifest(messages);
     expect(diffBlocks([], manifest, blocks)).toHaveLength(2);
   });
+
+  it('returns an empty array when the previous manifest is longer than the current one (truncation)', () => {
+    const { manifest, blocks } = buildManifest(messages);
+    expect(diffBlocks([...manifest, 'extra-hash'], manifest, blocks)).toEqual([]);
+  });
 });
