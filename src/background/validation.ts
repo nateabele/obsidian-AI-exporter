@@ -78,6 +78,25 @@ export function validateMessageContent(message: ExtensionMessage): boolean {
     }
   }
 
+  // Detailed validation for chatSync action
+  if (message.action === 'chatSync') {
+    const data = message.data;
+    if (!data || typeof data !== 'object') return false;
+    if (typeof data.conversationId !== 'string' || data.conversationId.length === 0) return false;
+    if (!VALID_SOURCES.includes(data.platform as (typeof VALID_SOURCES)[number])) return false;
+    if (!Array.isArray(data.manifest) || !data.manifest.every(h => typeof h === 'string')) {
+      return false;
+    }
+    if (!Array.isArray(data.newBlocks)) return false;
+    if (
+      data.newBlocks.some(
+        b => typeof b?.markdown !== 'string' || b.markdown.length > MAX_CONTENT_SIZE
+      )
+    ) {
+      return false;
+    }
+  }
+
   return true;
 }
 

@@ -256,6 +256,36 @@
                   Messages longer than this many lines are saved as plain text (Obsidian only).
                 </p>
               </div>
+
+              <div class="form-group">
+                <label for="companion-token" data-i18n="settings_companionToken"
+                  >Mail API companion token</label
+                >
+                <input
+                  type="password"
+                  id="companion-token"
+                  data-i18n-placeholder="settings_companionTokenPlaceholder"
+                  placeholder="Enter your companion listener token"
+                  autocomplete="off"
+                />
+                <p class="help" data-i18n="settings_companionTokenHelp">
+                  Bearer token for the local Mail API companion listener (continuous sync).
+                </p>
+              </div>
+
+              <div class="form-group">
+                <label for="companion-url" data-i18n="settings_companionUrl">Companion URL</label>
+                <input
+                  type="url"
+                  id="companion-url"
+                  value="http://127.0.0.1:3447"
+                  data-i18n-placeholder="settings_companionUrlPlaceholder"
+                  placeholder="http://127.0.0.1:3447"
+                />
+                <p class="help" data-i18n="settings_companionUrlHelp">
+                  Mail API companion listener URL (default: http://127.0.0.1:3447)
+                </p>
+              </div>
             </section>
 
             <!-- Message Format -->

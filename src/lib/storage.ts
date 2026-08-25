@@ -13,7 +13,11 @@ import type {
   TemplateOptions,
   OutputOptions,
 } from './types';
-import { DEFAULT_OBSIDIAN_URL, DEFAULT_MAX_CALLOUT_LINES } from './constants';
+import {
+  DEFAULT_OBSIDIAN_URL,
+  DEFAULT_MAX_CALLOUT_LINES,
+  DEFAULT_COMPANION_URL,
+} from './constants';
 
 const DEFAULT_TEMPLATE_OPTIONS: TemplateOptions = {
   includeId: true,
@@ -37,6 +41,7 @@ const DEFAULT_OUTPUT_OPTIONS: OutputOptions = {
 
 const DEFAULT_SECURE_SETTINGS: SecureSettings = {
   obsidianApiKey: '',
+  companionToken: '',
 };
 
 const DEFAULT_SYNC_SETTINGS: SyncSettings = {
@@ -51,6 +56,8 @@ const DEFAULT_SYNC_SETTINGS: SyncSettings = {
   imageVaultPath: 'AI/{platform}/images',
   flattenLargeCallouts: true,
   maxCalloutLines: DEFAULT_MAX_CALLOUT_LINES,
+  companionUrl: DEFAULT_COMPANION_URL,
+  autoSyncPlatforms: ['claude', 'chatgpt'],
 };
 
 const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -90,6 +97,8 @@ export async function getSettings(): Promise<ExtensionSettings> {
       'enableImageExport',
       'flattenLargeCallouts',
       'maxCalloutLines',
+      'companionUrl',
+      'autoSyncPlatforms',
     ] as const;
     const scalars = Object.fromEntries(
       scalarKeys.map(key => [key, stored[key] ?? DEFAULT_SYNC_SETTINGS[key]])
@@ -98,6 +107,8 @@ export async function getSettings(): Promise<ExtensionSettings> {
     return {
       obsidianApiKey:
         localResult.secureSettings?.obsidianApiKey ?? DEFAULT_SECURE_SETTINGS.obsidianApiKey,
+      companionToken:
+        localResult.secureSettings?.companionToken ?? DEFAULT_SECURE_SETTINGS.companionToken,
       obsidianUrl,
       templateOptions: { ...DEFAULT_TEMPLATE_OPTIONS, ...stored.templateOptions },
       outputOptions: { ...DEFAULT_OUTPUT_OPTIONS, ...stored.outputOptions },
@@ -121,10 +132,22 @@ export async function saveSettings(settings: Partial<ExtensionSettings>): Promis
     const syncResult = await chrome.storage.sync.get('settings');
     const currentSync = syncResult.settings ?? {};
 
-    // Save secure data to local storage
-    if (settings.obsidianApiKey !== undefined) {
+    // Save secure data to local storage. Merge with any existing secureSettings
+    // so that saving one secret (e.g. companionToken) never clobbers the other
+    // (e.g. obsidianApiKey) — the two are edited independently in the popup.
+    if (settings.obsidianApiKey !== undefined || settings.companionToken !== undefined) {
+      const localResult = await chrome.storage.local.get('secureSettings');
+      const currentSecure = localResult.secureSettings ?? {};
       await chrome.storage.local.set({
-        secureSettings: { obsidianApiKey: settings.obsidianApiKey },
+        secureSettings: {
+          ...currentSecure,
+          ...(settings.obsidianApiKey !== undefined && {
+            obsidianApiKey: settings.obsidianApiKey,
+          }),
+          ...(settings.companionToken !== undefined && {
+            companionToken: settings.companionToken,
+          }),
+        },
       });
     }
 
@@ -141,6 +164,8 @@ export async function saveSettings(settings: Partial<ExtensionSettings>): Promis
       'enableImageExport',
       'flattenLargeCallouts',
       'maxCalloutLines',
+      'companionUrl',
+      'autoSyncPlatforms',
     ] as const;
     for (const key of PASS_THROUGH_KEYS) {
       if (settings[key] !== undefined) {

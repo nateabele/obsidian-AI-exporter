@@ -287,5 +287,23 @@
   },
   "settings_maxCalloutLinesHelp": {
     "message": "この行数を超えるメッセージはプレーンテキストで保存されます（Obsidian のみ）。"
+  },
+  "settings_companionToken": {
+    "message": "Mail API コンパニオントークン"
+  },
+  "settings_companionTokenPlaceholder": {
+    "message": "コンパニオンリスナーのトークンを入力"
+  },
+  "settings_companionTokenHelp": {
+    "message": "ローカルの Mail API コンパニオンリスナー（継続同期）用のベアラートークン。"
+  },
+  "settings_companionUrl": {
+    "message": "コンパニオン URL"
+  },
+  "settings_companionUrlPlaceholder": {
+    "message": "http://127.0.0.1:3447"
+  },
+  "settings_companionUrlHelp": {
+    "message": "Mail API コンパニオンリスナーの URL（デフォルト: http://127.0.0.1:3447）"
   }
 }

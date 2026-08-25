@@ -200,6 +200,8 @@ export interface MultiOutputResponse {
  */
 export interface SecureSettings {
   obsidianApiKey: string;
+  /** Bearer token for the Mail API companion listener. Local-only, never synced. */
+  companionToken: string;
 }
 
 /**
@@ -235,6 +237,10 @@ export interface SyncSettings {
   flattenLargeCallouts: boolean;
   /** Line threshold for {@link flattenLargeCallouts}. Default 200. */
   maxCalloutLines: number;
+  /** Base URL of the Mail API companion listener. */
+  companionUrl: string;
+  /** Platforms on which continuous sync is active. */
+  autoSyncPlatforms: AIPlatform[];
 }
 
 /**
@@ -252,6 +258,7 @@ export interface ExtensionSettings extends SecureSettings, SyncSettings {}
  */
 export interface ContentScriptSettings extends SyncSettings {
   isApiKeyConfigured: boolean;
+  isCompanionConfigured: boolean;
 }
 
 /**
@@ -301,7 +308,8 @@ export interface TemplateOptions {
 export type ExtensionMessage =
   | { action: 'saveToOutputs'; data: ObsidianNote; outputs: OutputDestination[] }
   | { action: 'getSettings' }
-  | { action: 'testConnection' };
+  | { action: 'testConnection' }
+  | { action: 'chatSync'; data: ChatSyncRequest };
 
 /**
  * Message sent from the background worker to the offscreen document.
@@ -324,6 +332,51 @@ export interface SaveResponse {
   messagesAppended?: number;
   /** Actual file name when a collision forced an alternative (issue #327) */
   savedAs?: string;
+}
+
+/**
+ * A single new block (message) sent to the Mail API companion listener for
+ * continuous sync.
+ */
+export interface ChatSyncBlock {
+  role: 'user' | 'assistant';
+  markdown: string;
+  hash: string;
+}
+
+/**
+ * Request body for `POST /api/chat/sync` against the Mail API companion
+ * listener (continuous background sync, as opposed to the manual
+ * saveToOutputs flow above).
+ */
+export interface ChatSyncRequest {
+  conversationId: string;
+  platform: AIPlatform;
+  title: string;
+  url: string;
+  manifest: string[];
+  newBlocks: ChatSyncBlock[];
+}
+
+/**
+ * A suggested related note surfaced by the companion listener (e.g. a prior
+ * transcript or topic page that may be relevant to the synced conversation).
+ */
+export interface ChatSuggestion {
+  kind: 'transcript' | 'topic';
+  title: string;
+  path: string;
+}
+
+/**
+ * Response from `POST /api/chat/sync`.
+ */
+export interface ChatSyncResponse {
+  notePath: string;
+  mode: 'noop' | 'append' | 'diverge';
+  appended: number;
+  superseded: number;
+  suggestions: { transcripts: ChatSuggestion[]; pages: ChatSuggestion[] };
 }
 
 /**

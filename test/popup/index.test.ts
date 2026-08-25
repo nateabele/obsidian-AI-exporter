@@ -34,6 +34,9 @@ const storedSettings: ExtensionSettings = {
   enableToolContent: false,
   enableImageExport: true,
   flattenLargeCallouts: true,
+  companionToken: '',
+  companionUrl: 'http://127.0.0.1:3447',
+  autoSyncPlatforms: ['claude', 'chatgpt'],
   outputOptions: { obsidian: true, file: false, clipboard: true },
   templateOptions: {
     messageFormat: 'callout',
@@ -82,6 +85,8 @@ function buildPopupDom(): void {
       <input type="text" id="vaultPath" />
       <input type="text" id="imageVaultPath" />
       <input type="number" id="maxCalloutLines" />
+      <input type="password" id="companion-token" />
+      <input type="text" id="companion-url" />
     </section>
     ${switches}
     <select id="messageFormat">

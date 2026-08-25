@@ -8,6 +8,7 @@ import { getSettings, migrateSettings } from '../lib/storage';
 import { validateSender, validateMessageContent } from './validation';
 import { handleTestConnection } from './obsidian-handlers';
 import { handleMultiOutput } from './output-handlers';
+import { postSync, enqueue, flushQueue } from '../lib/companion-client';
 import type { ExtensionMessage, ContentScriptSettings, ExtensionSettings } from '../lib/types';
 
 // Run settings migration on service worker startup (C-01)
@@ -90,10 +91,11 @@ function isContentScriptSender(sender: chrome.runtime.MessageSender): boolean {
  * Content scripts only need to know IF an API key is configured, not the key itself.
  */
 function redactSettingsForContentScript(settings: ExtensionSettings): ContentScriptSettings {
-  const { obsidianApiKey, ...syncSettings } = settings;
+  const { obsidianApiKey, companionToken, ...syncSettings } = settings;
   return {
     ...syncSettings,
     isApiKeyConfigured: obsidianApiKey.length > 0,
+    isCompanionConfigured: companionToken.length > 0,
   };
 }
 
@@ -116,6 +118,21 @@ async function handleMessage(
     case 'getSettings':
       // Security: Redact API key for content scripts (they run on third-party pages)
       return isContentScriptSender(sender) ? redactSettingsForContentScript(settings) : settings;
+
+    case 'chatSync': {
+      const companion = {
+        companionUrl: settings.companionUrl,
+        companionToken: settings.companionToken,
+      };
+      try {
+        const result = await postSync(companion, message.data);
+        await flushQueue(companion);
+        return result;
+      } catch (error) {
+        await enqueue(message.data);
+        throw error;
+      }
+    }
 
     default:
       return { success: false, error: 'Unknown action' };

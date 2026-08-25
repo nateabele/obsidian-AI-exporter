@@ -36,6 +36,9 @@ const defaultSettings = {
   imageVaultPath: 'AI/{platform}/images',
   flattenLargeCallouts: true,
   maxCalloutLines: 200,
+  companionToken: 'test-companion-token',
+  companionUrl: 'http://127.0.0.1:3447',
+  autoSyncPlatforms: ['claude', 'chatgpt'],
 };
 
 let mockGetSettings = vi.fn(() => Promise.resolve(defaultSettings));

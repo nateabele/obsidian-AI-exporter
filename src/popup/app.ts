@@ -8,7 +8,7 @@
  */
 
 import { getSettings, saveSettings } from '../lib/storage';
-import type { ExtensionSettings, TemplateOptions, OutputOptions } from '../lib/types';
+import type { ExtensionSettings, TemplateOptions, OutputOptions, AIPlatform } from '../lib/types';
 import {
   validateCalloutType,
   validateVaultPath,
@@ -18,6 +18,7 @@ import {
 import {
   DEFAULT_OBSIDIAN_URL,
   DEFAULT_MAX_CALLOUT_LINES,
+  DEFAULT_COMPANION_URL,
   VALID_MESSAGE_FORMATS,
 } from '../lib/constants';
 import { getMessage } from '../lib/i18n';
@@ -102,6 +103,8 @@ function queryElements() {
     imageVaultPath: getElement<HTMLInputElement>('imageVaultPath'),
     flattenLargeCallouts: getElement<HTMLInputElement>('flattenLargeCallouts'),
     maxCalloutLines: getElement<HTMLInputElement>('maxCalloutLines'),
+    companionToken: getElement<HTMLInputElement>('companion-token'),
+    companionUrl: getElement<HTMLInputElement>('companion-url'),
     timezone: getElement<HTMLSelectElement>('timezone'),
     timezoneGroup: getElement<HTMLElement>('timezoneGroup'),
     testBtn: getElement<HTMLButtonElement>('testBtn'),
@@ -114,6 +117,11 @@ type PopupElements = ReturnType<typeof queryElements>;
 
 // Assigned by initPopup() before any UI handler can run
 let elements: PopupElements;
+
+// autoSyncPlatforms has no dedicated form control yet (a later task adds the
+// toggle UI); populateForm() captures the loaded value so collectSettings()
+// round-trips it unchanged on save instead of silently resetting it.
+let loadedAutoSyncPlatforms: AIPlatform[] = [];
 
 /**
  * Initialize popup — queries the DOM and wires the UI.
@@ -159,6 +167,9 @@ function populateForm(settings: ExtensionSettings): void {
   elements.apiKey.value = settings.obsidianApiKey || '';
   elements.obsidianUrl.value = settings.obsidianUrl || DEFAULT_OBSIDIAN_URL;
   elements.vaultPath.value = settings.vaultPath || '';
+  elements.companionToken.value = settings.companionToken || '';
+  elements.companionUrl.value = settings.companionUrl || DEFAULT_COMPANION_URL;
+  loadedAutoSyncPlatforms = settings.autoSyncPlatforms ?? [];
 
   const { templateOptions } = settings;
   elements.messageFormat.value = templateOptions.messageFormat || 'callout';
@@ -381,6 +392,9 @@ function collectSettings(): ExtensionSettings {
     imageVaultPath: elements.imageVaultPath.value.trim() || 'AI/{platform}/images',
     flattenLargeCallouts: elements.flattenLargeCallouts.checked,
     maxCalloutLines: parseCalloutLines(elements.maxCalloutLines.value),
+    companionToken: elements.companionToken.value.trim(),
+    companionUrl: elements.companionUrl.value.trim() || DEFAULT_COMPANION_URL,
+    autoSyncPlatforms: loadedAutoSyncPlatforms,
   };
 }
 

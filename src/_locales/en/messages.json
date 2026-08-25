@@ -400,6 +400,30 @@
     "message": "Messages longer than this many lines are saved as plain text (Obsidian only).",
     "description": "Help text for max callout lines input"
   },
+  "settings_companionToken": {
+    "message": "Mail API companion token",
+    "description": "Label for companion listener token input"
+  },
+  "settings_companionTokenPlaceholder": {
+    "message": "Enter your companion listener token",
+    "description": "Placeholder for companion listener token input"
+  },
+  "settings_companionTokenHelp": {
+    "message": "Bearer token for the local Mail API companion listener (continuous sync).",
+    "description": "Help text for companion listener token input"
+  },
+  "settings_companionUrl": {
+    "message": "Companion URL",
+    "description": "Label for companion listener URL input"
+  },
+  "settings_companionUrlPlaceholder": {
+    "message": "http://127.0.0.1:3447",
+    "description": "Placeholder for companion listener URL input"
+  },
+  "settings_companionUrlHelp": {
+    "message": "Mail API companion listener URL (default: http://127.0.0.1:3447)",
+    "description": "Help text for companion listener URL input"
+  },
 
   "toast_appended": {
     "message": "$COUNT$ new message(s) appended",
