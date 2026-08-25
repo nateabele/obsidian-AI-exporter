@@ -195,10 +195,18 @@ function buildMenuEntries(
 
 /**
  * Wire up the two ways a menu can be closed without an explicit entry
- * click: Escape, and a click outside both the menu and the icon (deferred
- * one tick so the click that opened the menu doesn't immediately close it).
- * Both listeners are tracked in module scope so `closeMenu()` can always
- * detach them, regardless of which path actually triggers the close.
+ * click: Escape, and a click outside both the menu and the icon. Both
+ * listeners are tracked in module scope so `closeMenu()` can always detach
+ * them, regardless of which path actually triggers the close.
+ *
+ * Registered synchronously, not deferred — the click that opened the menu
+ * (on the icon) is still bubbling when this runs, and `closeOnOutsideClick`
+ * already returns early for it via `icon?.contains(event.target)`, so a
+ * `setTimeout` isn't needed to dodge it. A deferred registration was a race:
+ * a close-then-reopen inside the same tick could leave a stale timer that
+ * fires later and clobbers `activeOutsideClickListener` with a listener for
+ * an already-removed menu, orphaning the real one so `closeMenu()` could
+ * never reach it.
  */
 function attachMenuCloseListeners(menu: HTMLElement, icon: HTMLElement | null): void {
   const closeOnKeydown = (event: KeyboardEvent): void => {
@@ -207,14 +215,12 @@ function attachMenuCloseListeners(menu: HTMLElement, icon: HTMLElement | null): 
   activeKeydownListener = closeOnKeydown;
   document.addEventListener('keydown', closeOnKeydown);
 
-  setTimeout(() => {
-    const closeOnOutsideClick = (event: MouseEvent): void => {
-      if (menu.contains(event.target as Node) || icon?.contains(event.target as Node)) return;
-      closeMenu();
-    };
-    activeOutsideClickListener = closeOnOutsideClick;
-    document.addEventListener('click', closeOnOutsideClick);
-  }, 0);
+  const closeOnOutsideClick = (event: MouseEvent): void => {
+    if (menu.contains(event.target as Node) || icon?.contains(event.target as Node)) return;
+    closeMenu();
+  };
+  activeOutsideClickListener = closeOnOutsideClick;
+  document.addEventListener('click', closeOnOutsideClick);
 }
 
 /**

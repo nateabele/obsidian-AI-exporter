@@ -410,6 +410,40 @@ describe('content/bootstrap', () => {
       expect(chatSyncCallCount).toBe(1);
     });
 
+    it('settles the icon to a resting state on the unchanged-manifest early return, not stuck on syncing', async () => {
+      // Regression pin: handleSync's reportSyncOutcome() defers entirely to
+      // an in-flight runAutoSync on the assumption that it will always leave
+      // the icon in a terminal state. That assumption only holds if every
+      // early return in runAutoSync reports one — including the common
+      // "manifest unchanged" case, which used to return null without
+      // touching the icon at all, leaving it stuck on 'syncing' forever if
+      // a manual sync had set that state right before this fired.
+      setGeminiLocation('auto-sync-unchanged-icon');
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+      mockMessaging({
+        settings: { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] },
+      });
+
+      // Establishes previousManifest for the current (unchanging) DOM, so
+      // the next run below takes the unchanged-manifest early return.
+      await runAutoSync();
+
+      // Simulate the icon reading 'syncing', exactly as a concurrent
+      // handleSync would leave it while reportSyncOutcome() defers to this
+      // in-flight run.
+      vi.mocked(setSyncState).mockClear();
+      vi.mocked(setSyncState)('syncing');
+
+      await runAutoSync(); // same DOM: takes the unchanged-manifest early return
+
+      expect(setSyncState).toHaveBeenLastCalledWith('synced');
+    });
+
     it('never triggers auto-scroll even when the user setting is enabled', async () => {
       setGeminiLocation('auto-sync-noscroll');
       loadFixture(

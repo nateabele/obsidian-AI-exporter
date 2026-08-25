@@ -224,6 +224,56 @@ async function sendChatSync(
 }
 
 /**
+ * Return the icon to a resting state after a background auto-sync exits
+ * early without ever reaching `sendChatSync` — e.g. an unchanged manifest,
+ * the common case on a quiet page. Every early return in `runAutoSync` must
+ * call this so `handleSync`'s `reportSyncOutcome()` can safely defer to an
+ * in-flight auto-sync: that deferral is only correct if the in-flight run
+ * is guaranteed to leave the icon in *some* terminal state, rather than
+ * (as before this fix) sometimes leaving it stuck on `syncing` forever.
+ */
+function settleIcon(configured: boolean): void {
+  setSyncState(
+    deriveState({
+      configured,
+      syncing: false,
+      error: null,
+      suggestionCount: getSuggestionCount(),
+    })
+  );
+}
+
+/**
+ * Whether the freshly-extracted manifest should actually be sent: false for
+ * an unchanged manifest (nothing new since the last sync) or one that no
+ * longer starts where the last synced manifest did. Both are routine, not
+ * errors — split out from `runAutoSync` purely to keep it under the
+ * line-count lint limit.
+ */
+function shouldSendManifest(manifest: string[]): boolean {
+  const unchanged =
+    manifest.length === previousManifest.length &&
+    manifest.every((h, i) => h === previousManifest[i]);
+  if (unchanged) return false;
+
+  // Virtualized platforms (ADR-017) drop off-screen messages from the DOM,
+  // so an extraction taken without scrolling can return a *window* of the
+  // conversation instead of a prefix. A window that no longer starts where
+  // the last synced manifest started mismatches at index 0, which the
+  // server reads as a divergence and would supersede the ENTIRE transcript
+  // over. Refuse to send rather than risk that.
+  if (previousManifest.length > 0 && manifest[0] !== previousManifest[0]) {
+    console.warn(
+      '[G2O] Auto-sync skipped: manifest no longer starts where the previous one did ' +
+        '(likely a virtualized window, not a true prefix) — not sending'
+    );
+    return false;
+  }
+
+  return true;
+}
+
+/**
  * Continuously sync the current conversation to the companion listener.
  *
  * Driven by a MutationObserver on the platform's observation root (see
@@ -248,11 +298,20 @@ export async function runAutoSync(): Promise<ChatSyncResponse | null> {
     }
 
     const settings = await getSettings();
-    if (!settings.isCompanionConfigured) return null;
+    if (!settings.isCompanionConfigured) {
+      settleIcon(false);
+      return null;
+    }
 
     const extractor = getExtractor();
-    if (!extractor || !extractor.canExtract()) return null;
-    if (!settings.autoSyncPlatforms.includes(extractor.platform)) return null;
+    if (!extractor || !extractor.canExtract()) {
+      settleIcon(true);
+      return null;
+    }
+    if (!settings.autoSyncPlatforms.includes(extractor.platform)) {
+      settleIcon(true);
+      return null;
+    }
 
     // Auto-scroll is a good fit for the manual sync button (the user
     // triggered it and expects the page to move), but not for a background
@@ -260,25 +319,14 @@ export async function runAutoSync(): Promise<ChatSyncResponse | null> {
     // it off here regardless of the user's setting.
     extractor.applySettings({ ...settings, enableAutoScroll: false });
     const result = await extractor.extract();
-    if (!result.data) return null;
+    if (!result.data) {
+      settleIcon(true);
+      return null;
+    }
 
     const { manifest, blocks } = buildManifest(result.data.messages);
-    const unchanged =
-      manifest.length === previousManifest.length &&
-      manifest.every((h, i) => h === previousManifest[i]);
-    if (unchanged) return null;
-
-    // Virtualized platforms (ADR-017) drop off-screen messages from the DOM,
-    // so an extraction taken without scrolling can return a *window* of the
-    // conversation instead of a prefix. A window that no longer starts where
-    // the last synced manifest started mismatches at index 0, which the
-    // server reads as a divergence and would supersede the ENTIRE transcript
-    // over. Refuse to send rather than risk that.
-    if (previousManifest.length > 0 && manifest[0] !== previousManifest[0]) {
-      console.warn(
-        '[G2O] Auto-sync skipped: manifest no longer starts where the previous one did ' +
-          '(likely a virtualized window, not a true prefix) — not sending'
-      );
+    if (!shouldSendManifest(manifest)) {
+      settleIcon(true);
       return null;
     }
 

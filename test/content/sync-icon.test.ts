@@ -293,12 +293,10 @@ describe('the icon menu', () => {
 describe('menu close paths', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
-    vi.useFakeTimers();
   });
 
   afterEach(() => {
     document.body.innerHTML = '';
-    vi.useRealTimers();
   });
 
   it('removes the outside-click listener when the menu is closed by an entry', () => {
@@ -310,7 +308,6 @@ describe('menu close paths', () => {
     const removeSpy = vi.spyOn(document, 'removeEventListener');
 
     document.getElementById('g2o-sync-icon')?.click();
-    vi.advanceTimersByTime(0); // flush the deferred outside-click registration
 
     const clickAdds = addSpy.mock.calls.filter(([type]) => type === 'click').length;
     expect(clickAdds).toBe(1);
@@ -333,7 +330,6 @@ describe('menu close paths', () => {
 
     const button = document.getElementById('g2o-sync-icon');
     button?.click();
-    vi.advanceTimersByTime(0);
     button?.click();
 
     const clickRemoves = removeSpy.mock.calls.filter(([type]) => type === 'click').length;
@@ -348,7 +344,6 @@ describe('menu close paths', () => {
     setSyncState('synced');
 
     document.getElementById('g2o-sync-icon')?.click();
-    vi.advanceTimersByTime(0);
 
     const removeSpy = vi.spyOn(document, 'removeEventListener');
     document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -367,7 +362,6 @@ describe('menu close paths', () => {
     const button = document.getElementById('g2o-sync-icon');
     for (let i = 0; i < 5; i++) {
       button?.click();
-      vi.advanceTimersByTime(0);
       document.querySelector('#g2o-sync-menu .entry')?.dispatchEvent(new Event('click'));
     }
 
@@ -379,7 +373,6 @@ describe('menu close paths', () => {
     const addSpy = vi.spyOn(document, 'addEventListener');
     const removeSpy = vi.spyOn(document, 'removeEventListener');
     button?.click();
-    vi.advanceTimersByTime(0);
     document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     const clickAdds = addSpy.mock.calls.filter(([type]) => type === 'click').length;
@@ -395,10 +388,30 @@ describe('menu close paths', () => {
     setSyncState('synced');
 
     document.getElementById('g2o-sync-icon')?.click();
-    vi.advanceTimersByTime(0);
     expect(document.getElementById('g2o-sync-menu')).not.toBeNull();
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(document.getElementById('g2o-sync-menu')).toBeNull();
+  });
+
+  it('reaches the current menu with an outside click after a same-tick close-then-reopen', () => {
+    // Regression pin: a deferred (setTimeout) registration meant a
+    // close-then-reopen inside the same tick could leave a stale timer that
+    // fired later and clobbered the tracked listener with one for an
+    // already-removed menu, orphaning the listener for the menu that's
+    // actually on screen. Registration is now synchronous, so this can't
+    // happen — a genuine outside click must always close the current menu.
+    const handlers = makeHandlers();
+    injectSyncIcon(handlers);
+    setSyncState('synced');
+
+    const button = document.getElementById('g2o-sync-icon');
+    button?.click(); // open
+    button?.click(); // close, same tick
+    button?.click(); // reopen, same tick
+    expect(document.getElementById('g2o-sync-menu')).not.toBeNull();
+
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(document.getElementById('g2o-sync-menu')).toBeNull();
   });
 });
@@ -406,12 +419,10 @@ describe('menu close paths', () => {
 describe('accessibility attributes', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
-    vi.useFakeTimers();
   });
 
   afterEach(() => {
     document.body.innerHTML = '';
-    vi.useRealTimers();
   });
 
   it('exposes aria-haspopup and toggles aria-expanded with the menu', () => {
