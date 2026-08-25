@@ -70,6 +70,18 @@ export function getSuggestionCount(): number {
   return lastSuggestionCount;
 }
 
+/**
+ * The last known sync error, as last reported via `setSyncState`, or `null`
+ * if the last thing that actually resolved (rather than merely bailed out
+ * without checking) was a success. Callers deriving a follow-up state for a
+ * path that never checked for an error itself — e.g. a background bail-out
+ * — should read this rather than asserting `null`, which would silently
+ * clear a real, still-unresolved error off the icon.
+ */
+export function getLastError(): string | null {
+  return lastError;
+}
+
 // The currently-open menu and its outside-click listener, tracked in module
 // scope so `closeMenu()` can always find and remove both, regardless of
 // which code path (entry activation, icon re-click, outside click, Escape)
@@ -132,8 +144,12 @@ export function setSyncState(
   if (!button) return;
 
   button.dataset.state = state;
-  button.title = detail.error ?? state;
-  lastError = detail.error ?? null;
+  // Retain the last error across calls that don't know one way or the other
+  // (e.g. a background bail-out settling to a resting state) rather than
+  // clearing it — only a call that explicitly passes `error` (a real
+  // failure, or `null` for a real success) should update it.
+  if (detail.error !== undefined) lastError = detail.error;
+  button.title = lastError ?? state;
   if (detail.notePath) lastNotePath = detail.notePath;
   if (detail.suggestionCount !== undefined) lastSuggestionCount = detail.suggestionCount;
 

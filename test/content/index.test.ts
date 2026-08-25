@@ -23,12 +23,24 @@ vi.mock('../../src/content/ui', () => ({
   showToast: vi.fn(),
 }));
 
-vi.mock('../../src/content/sync-icon', () => ({
-  injectSyncIcon: vi.fn(),
-  setSyncState: vi.fn(),
-  deriveState: vi.fn(() => 'synced'),
-  getSuggestionCount: vi.fn(() => 0),
-}));
+vi.mock('../../src/content/sync-icon', async () => {
+  // deriveState is wrapped around the REAL implementation (not stubbed to
+  // always return 'synced') so tests can assert on both the arguments it's
+  // called with and the state it actually derives from them — a stub that
+  // ignores its input would let a wrong `configured`/`error` argument pass
+  // silently, which is exactly how the round-3 bug (settleIcon asserting
+  // `error: null` on paths that never checked) stayed invisible here.
+  const actual = await vi.importActual<typeof import('../../src/content/sync-icon')>(
+    '../../src/content/sync-icon'
+  );
+  return {
+    injectSyncIcon: vi.fn(),
+    setSyncState: vi.fn(),
+    deriveState: vi.fn(actual.deriveState),
+    getSuggestionCount: vi.fn(() => 0),
+    getLastError: vi.fn(() => null),
+  };
+});
 
 vi.mock('../../src/lib/messaging', () => ({
   sendMessage: vi.fn(),
@@ -40,7 +52,12 @@ import {
   showWarningToast,
   showToast,
 } from '../../src/content/ui';
-import { injectSyncIcon, setSyncState } from '../../src/content/sync-icon';
+import {
+  injectSyncIcon,
+  setSyncState,
+  deriveState,
+  getLastError,
+} from '../../src/content/sync-icon';
 import { sendMessage } from '../../src/lib/messaging';
 import { AUTO_SYNC_DEBOUNCE } from '../../src/lib/constants';
 import type { ChatSyncResponse, MessageErrorResponse } from '../../src/lib/types';
@@ -444,6 +461,62 @@ describe('content/bootstrap', () => {
       expect(setSyncState).toHaveBeenLastCalledWith('synced');
     });
 
+    it('keeps the icon offline with the original error intact through a later unchanged-manifest auto-sync tick', async () => {
+      // Regression pin for the third variant of the same bug: settleIcon
+      // must not assert `error: null` on a bail-out that never checked for
+      // one, or it silently clears a real, still-unresolved error left by a
+      // prior failed manual sync the next time a routine background tick
+      // (e.g. unchanged manifest) fires.
+      setGeminiLocation('auto-sync-offline-retained');
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+      mockMessaging({
+        settings: {
+          isCompanionConfigured: true,
+          autoSyncPlatforms: ['gemini'],
+          outputOptions: { obsidian: false, file: false, clipboard: false },
+        },
+      });
+
+      // A manual "Sync now" fails because no output destination is enabled,
+      // leaving the icon offline with an error.
+      await handleSync();
+      expect(setSyncState).toHaveBeenLastCalledWith('offline', {
+        error: 'Please select at least one output destination in settings',
+      });
+
+      // setSyncState is mocked here, so it never actually updates the real
+      // module's retained lastError — stand in for what the real module
+      // would have retained after the call above.
+      vi.mocked(getLastError).mockReturnValue(
+        'Please select at least one output destination in settings'
+      );
+
+      try {
+        // Establishes previousManifest for the current (unchanging) DOM, so
+        // the next run below takes the unchanged-manifest early return.
+        await runAutoSync();
+        vi.mocked(setSyncState).mockClear();
+        vi.mocked(deriveState).mockClear();
+
+        await runAutoSync(); // same DOM: takes the unchanged-manifest early return
+
+        expect(deriveState).toHaveBeenLastCalledWith({
+          configured: true,
+          syncing: false,
+          error: 'Please select at least one output destination in settings',
+          suggestionCount: 0,
+        });
+        expect(setSyncState).toHaveBeenLastCalledWith('offline');
+      } finally {
+        vi.mocked(getLastError).mockReturnValue(null);
+      }
+    });
+
     it('never triggers auto-scroll even when the user setting is enabled', async () => {
       setGeminiLocation('auto-sync-noscroll');
       loadFixture(
@@ -635,7 +708,13 @@ describe('content/bootstrap', () => {
       );
       expect(showSuccessToast).toHaveBeenCalledWith(expect.stringMatching(/\.md$/), true);
       expect(setSyncState).toHaveBeenNthCalledWith(1, 'syncing');
-      expect(setSyncState).toHaveBeenLastCalledWith('synced', { suggestionCount: 0 });
+      expect(deriveState).toHaveBeenLastCalledWith({
+        configured: true,
+        syncing: false,
+        error: null,
+        suggestionCount: 0,
+      });
+      expect(setSyncState).toHaveBeenLastCalledWith('synced', { suggestionCount: 0, error: null });
     });
 
     it('shows the ACTUAL file name when a collision forced a rename (issue #327)', async () => {

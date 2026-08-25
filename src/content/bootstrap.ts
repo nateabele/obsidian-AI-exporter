@@ -15,7 +15,13 @@ import { extractErrorMessage } from '../lib/error-utils';
 import type { IConversationExtractor } from '../lib/types';
 import { conversationToNote } from './markdown';
 import { showSuccessToast, showErrorToast, showWarningToast, showToast } from './ui';
-import { injectSyncIcon, setSyncState, deriveState, getSuggestionCount } from './sync-icon';
+import {
+  injectSyncIcon,
+  setSyncState,
+  deriveState,
+  getSuggestionCount,
+  getLastError,
+} from './sync-icon';
 import { sendMessage } from '../lib/messaging';
 import {
   AUTO_SAVE_CHECK_INTERVAL,
@@ -219,6 +225,10 @@ async function sendChatSync(
   setSyncState(deriveState({ configured: true, syncing: false, error: null, suggestionCount }), {
     suggestionCount,
     notePath: response.notePath,
+    // This is a real, confirmed success — resolve any error a previous
+    // attempt left behind, rather than leaving it retained for a later
+    // bail-out to reassert.
+    error: null,
   });
   return response;
 }
@@ -233,11 +243,17 @@ async function sendChatSync(
  * (as before this fix) sometimes leaving it stuck on `syncing` forever.
  */
 function settleIcon(configured: boolean): void {
+  // A bail-out never checked whether the last attempt actually failed, so
+  // it must not assert `error: null` — that would silently clear a real,
+  // still-unresolved error off the icon (e.g. a failed manual sync,
+  // immediately overwritten by the next quiet background tick). Passing no
+  // `detail` to setSyncState below leaves the retained error untouched
+  // either way.
   setSyncState(
     deriveState({
       configured,
       syncing: false,
-      error: null,
+      error: getLastError(),
       suggestionCount: getSuggestionCount(),
     })
   );
@@ -515,6 +531,9 @@ function reportSyncOutcome(errorMessage: string | null): void {
   const suggestionCount = getSuggestionCount();
   setSyncState(deriveState({ configured: true, syncing: false, error: null, suggestionCount }), {
     suggestionCount,
+    // A real, confirmed success — resolve any error a previous attempt
+    // left behind rather than leaving it retained.
+    error: null,
   });
 }
 

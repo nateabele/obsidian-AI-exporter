@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { deriveState, injectSyncIcon, setSyncState } from '../../src/content/sync-icon';
+import {
+  deriveState,
+  injectSyncIcon,
+  setSyncState,
+  getLastError,
+} from '../../src/content/sync-icon';
 import type { SyncIconHandlers } from '../../src/content/sync-icon';
 
 describe('deriveState', () => {
@@ -202,6 +207,30 @@ describe('setSyncState', () => {
     expect(() => setSyncState('syncing')).not.toThrow();
     expect(() => setSyncState('synced')).not.toThrow();
   });
+
+  it('retains the last error across calls that omit it', () => {
+    try {
+      setSyncState('offline', { error: 'network blip' });
+      // A later call that doesn't know whether the last attempt failed
+      // (e.g. a background bail-out settling to a resting state) must not
+      // clobber the retained error just by omitting it.
+      setSyncState('offline');
+
+      expect(getLastError()).toBe('network blip');
+    } finally {
+      // lastError is module-level state, shared across every test in this
+      // file — restore it so a later test asserting on a clean/no-error
+      // state doesn't inherit this one's error.
+      setSyncState('synced', { error: null });
+    }
+  });
+
+  it('clears the retained error only when a call explicitly passes null', () => {
+    setSyncState('offline', { error: 'network blip' });
+    setSyncState('synced', { error: null });
+
+    expect(getLastError()).toBeNull();
+  });
 });
 
 describe('the icon menu', () => {
@@ -250,7 +279,12 @@ describe('the icon menu', () => {
   it('falls back to a generic message when no error detail is known', () => {
     const handlers = makeHandlers();
     injectSyncIcon(handlers);
-    setSyncState('offline');
+    // Explicit `error: null`, not an omitted `error`: lastError is now
+    // retained across calls that don't pass one, so this test must not
+    // rely on module state left clean by execution order — it's testing
+    // the fallback copy for a genuinely-resolved error, not "whatever the
+    // previous test happened to leave behind."
+    setSyncState('offline', { error: null });
 
     document.getElementById('g2o-sync-icon')?.click();
 
