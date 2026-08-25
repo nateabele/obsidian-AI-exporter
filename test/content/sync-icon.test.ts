@@ -4,6 +4,8 @@ import {
   injectSyncIcon,
   setSyncState,
   getLastError,
+  getSuggestionCount,
+  resetIconContext,
 } from '../../src/content/sync-icon';
 import type { SyncIconHandlers } from '../../src/content/sync-icon';
 
@@ -230,6 +232,59 @@ describe('setSyncState', () => {
     setSyncState('synced', { error: null });
 
     expect(getLastError()).toBeNull();
+  });
+});
+
+describe('resetIconContext', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    injectSyncIcon(makeHandlers());
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('clears the retained error, note path, and suggestion count', () => {
+    setSyncState('offline', {
+      error: 'network blip',
+      notePath: 'AI/claude/conversation-a.md',
+      suggestionCount: 3,
+    });
+
+    resetIconContext();
+
+    expect(getLastError()).toBeNull();
+    expect(getSuggestionCount()).toBe(0);
+
+    // No dedicated getter for the note path (see setSyncState's
+    // `onOpenPath` handler) — assert via the menu entry's behaviour
+    // instead, same as the pre-existing "Open transcript" coverage below.
+    // injectSyncIcon() resets visual state to 'unconfigured', so the new
+    // icon needs setSyncState('synced') again before its menu will even
+    // offer "Open transcript".
+    const handlers = makeHandlers();
+    injectSyncIcon(handlers);
+    setSyncState('synced');
+    document.getElementById('g2o-sync-icon')?.click();
+    const openTranscript = Array.from(document.querySelectorAll('#g2o-sync-menu .entry')).find(
+      e => e.textContent === 'syncIcon_openTranscript'
+    );
+    openTranscript?.dispatchEvent(new Event('click'));
+
+    expect(handlers.onOpenPath).toHaveBeenCalledWith('');
+    expect(handlers.onOpenPath).not.toHaveBeenCalledWith('AI/claude/conversation-a.md');
+  });
+
+  it("does not itself change the icon's current visual state", () => {
+    setSyncState('offline', { error: 'network blip' });
+
+    resetIconContext();
+
+    const button = document.getElementById('g2o-sync-icon');
+    // Retained detail is cleared, but nothing re-derives the visual state
+    // here — that's the caller's job via the next setSyncState/settleIcon.
+    expect(button?.dataset.state).toBe('offline');
   });
 });
 

@@ -39,6 +39,7 @@ vi.mock('../../src/content/sync-icon', async () => {
     deriveState: vi.fn(actual.deriveState),
     getSuggestionCount: vi.fn(() => 0),
     getLastError: vi.fn(() => null),
+    resetIconContext: vi.fn(),
   };
 });
 
@@ -57,6 +58,7 @@ import {
   setSyncState,
   deriveState,
   getLastError,
+  resetIconContext,
 } from '../../src/content/sync-icon';
 import { sendMessage } from '../../src/lib/messaging';
 import { AUTO_SYNC_DEBOUNCE } from '../../src/lib/constants';
@@ -512,6 +514,79 @@ describe('content/bootstrap', () => {
           suggestionCount: 0,
         });
         expect(setSyncState).toHaveBeenLastCalledWith('offline');
+      } finally {
+        vi.mocked(getLastError).mockReturnValue(null);
+      }
+    });
+
+    it("resets retained icon detail on in-app navigation to a new conversation, so a bail-out there does not surface the previous conversation's stale error", async () => {
+      // Regression pin for the fourth variant of the same root cause — a
+      // state transition (here, the href-change branch) that resets the
+      // baseline it owns (previousManifest) but not the retained icon
+      // detail (error/note path/suggestion count) that travels with it.
+      // Without resetIconContext(), a failed manual sync in conversation A
+      // leaves lastError set; navigating in-app to conversation B and
+      // hitting any bail-out there (e.g. B has no messages yet) would
+      // settle the icon offline with A's error against a conversation that
+      // was never attempted.
+      setGeminiLocation('auto-sync-nav-a');
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+      mockMessaging({
+        settings: {
+          isCompanionConfigured: true,
+          autoSyncPlatforms: ['gemini'],
+          outputOptions: { obsidian: false, file: false, clipboard: false },
+        },
+      });
+
+      // A manual "Sync now" fails in conversation A, leaving the icon
+      // offline with A's error.
+      await handleSync();
+      expect(setSyncState).toHaveBeenLastCalledWith('offline', {
+        error: 'Please select at least one output destination in settings',
+      });
+
+      // setSyncState is mocked here, so it never actually updates the real
+      // module's retained lastError — stand in for what the real module
+      // would have retained after the call above (same pattern as the
+      // sibling test above).
+      vi.mocked(getLastError).mockReturnValue(
+        'Please select at least one output destination in settings'
+      );
+
+      try {
+        // In-app navigation to a brand-new, empty conversation B — no
+        // reload, so only location.href changes.
+        setGeminiLocation('auto-sync-nav-b');
+        clearFixture();
+        loadFixture(createGeminiConversationDOM([]));
+
+        expect(resetIconContext).not.toHaveBeenCalled();
+        await runAutoSync(); // B has no messages: extract() fails, settleIcon(true) bail-out
+        expect(resetIconContext).toHaveBeenCalledTimes(1);
+
+        // resetIconContext is mocked, so mirror its real effect (clearing
+        // the retained error) here, same stand-in as above.
+        vi.mocked(getLastError).mockReturnValue(null);
+
+        vi.mocked(setSyncState).mockClear();
+        vi.mocked(deriveState).mockClear();
+        await runAutoSync(); // same empty DOM, same href: routine bail-out only
+
+        expect(deriveState).toHaveBeenLastCalledWith({
+          configured: true,
+          syncing: false,
+          error: null,
+          suggestionCount: 0,
+        });
+        expect(setSyncState).toHaveBeenLastCalledWith('synced');
+        // Already inside conversation B — no further reset on this tick.
+        expect(resetIconContext).toHaveBeenCalledTimes(1);
       } finally {
         vi.mocked(getLastError).mockReturnValue(null);
       }

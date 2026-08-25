@@ -82,6 +82,22 @@ export function getLastError(): string | null {
   return lastError;
 }
 
+/**
+ * Clear the retained error/note path/suggestion count back to their initial
+ * values. Retained detail is scoped to a single conversation — an SPA
+ * navigation to a different conversation must call this alongside resetting
+ * whatever baseline (e.g. `previousManifest`) it accompanies, or a bail-out
+ * in the new conversation will settle the icon using detail left over from
+ * the old one (a stale error, or "Open transcript" pointing at the wrong
+ * note). Does not touch the icon's current visual state — the next
+ * `setSyncState`/`settleIcon` call derives that from the now-clean detail.
+ */
+export function resetIconContext(): void {
+  lastError = null;
+  lastNotePath = null;
+  lastSuggestionCount = 0;
+}
+
 // The currently-open menu and its outside-click listener, tracked in module
 // scope so `closeMenu()` can always find and remove both, regardless of
 // which code path (entry activation, icon re-click, outside click, Escape)
@@ -150,7 +166,7 @@ export function setSyncState(
   // failure, or `null` for a real success) should update it.
   if (detail.error !== undefined) lastError = detail.error;
   button.title = lastError ?? state;
-  if (detail.notePath) lastNotePath = detail.notePath;
+  if (detail.notePath !== undefined) lastNotePath = detail.notePath;
   if (detail.suggestionCount !== undefined) lastSuggestionCount = detail.suggestionCount;
 
   const glyph = button.querySelector('.glyph');

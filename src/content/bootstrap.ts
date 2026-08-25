@@ -21,6 +21,7 @@ import {
   deriveState,
   getSuggestionCount,
   getLastError,
+  resetIconContext,
 } from './sync-icon';
 import { sendMessage } from '../lib/messaging';
 import {
@@ -311,6 +312,12 @@ export async function runAutoSync(): Promise<ChatSyncResponse | null> {
     if (location.href !== lastHref) {
       previousManifest = [];
       lastHref = location.href;
+      // Retained icon detail (error/note path/suggestion count) is scoped
+      // to a single conversation — without this, a bail-out in the new
+      // conversation (e.g. its manifest is empty, same as the freshly-reset
+      // baseline) would settle the icon using the old conversation's error
+      // or "Open transcript" would point at the old conversation's note.
+      resetIconContext();
     }
 
     const settings = await getSettings();
