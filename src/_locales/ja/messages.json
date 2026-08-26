@@ -326,5 +326,26 @@
   },
   "settings_companionUrlHelp": {
     "message": "Mail API コンパニオンリスナーの URL（デフォルト: http://127.0.0.1:3447）"
+  },
+  "settings_autoSyncPlatforms": {
+    "message": "自動同期するプラットフォーム"
+  },
+  "settings_autoSyncPlatformsHelp": {
+    "message": "以下で有効にしたプラットフォームの会話を、バックグラウンドで継続的にVaultへ同期します。"
+  },
+  "settings_autoSyncGemini": {
+    "message": "Gemini"
+  },
+  "settings_autoSyncClaude": {
+    "message": "Claude"
+  },
+  "settings_autoSyncChatgpt": {
+    "message": "ChatGPT"
+  },
+  "settings_autoSyncPerplexity": {
+    "message": "Perplexity"
+  },
+  "settings_autoSyncNotebooklm": {
+    "message": "NotebookLM"
   }
 }

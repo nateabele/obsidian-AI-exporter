@@ -69,6 +69,11 @@ const SWITCH_IDS = [
   'enableToolContent',
   'enableImageExport',
   'flattenLargeCallouts',
+  'autoSyncGemini',
+  'autoSyncClaude',
+  'autoSyncChatgpt',
+  'autoSyncPerplexity',
+  'autoSyncNotebooklm',
 ];
 
 function buildPopupDom(): void {
@@ -353,6 +358,31 @@ describe('popup/app', () => {
         expect.objectContaining({
           templateOptions: expect.objectContaining({ filenameScheme: 'title-date' }),
         })
+      );
+    });
+
+    it('populates the per-platform auto-sync toggles from the loaded settings', async () => {
+      await initWithDefaults(); // storedSettings.autoSyncPlatforms = ['claude', 'chatgpt']
+
+      expect(el<HTMLInputElement>('autoSyncGemini').checked).toBe(false);
+      expect(el<HTMLInputElement>('autoSyncClaude').checked).toBe(true);
+      expect(el<HTMLInputElement>('autoSyncChatgpt').checked).toBe(true);
+      expect(el<HTMLInputElement>('autoSyncPerplexity').checked).toBe(false);
+      expect(el<HTMLInputElement>('autoSyncNotebooklm').checked).toBe(false);
+    });
+
+    it('collects the per-platform auto-sync toggle state on save', async () => {
+      await initWithDefaults();
+      vi.mocked(saveSettings).mockResolvedValue(undefined);
+
+      // Flip Gemini on and Claude off from the loaded ['claude', 'chatgpt'].
+      el<HTMLInputElement>('autoSyncGemini').checked = true;
+      el<HTMLInputElement>('autoSyncClaude').checked = false;
+      el<HTMLButtonElement>('saveBtn').click();
+
+      await vi.waitFor(() => expect(saveSettings).toHaveBeenCalled());
+      expect(saveSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ autoSyncPlatforms: ['gemini', 'chatgpt'] })
       );
     });
 

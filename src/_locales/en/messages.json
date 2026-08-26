@@ -452,6 +452,34 @@
     "message": "Mail API companion listener URL (default: http://127.0.0.1:3447)",
     "description": "Help text for companion listener URL input"
   },
+  "settings_autoSyncPlatforms": {
+    "message": "Auto-sync platforms",
+    "description": "Label for the per-platform auto-sync toggle group"
+  },
+  "settings_autoSyncPlatformsHelp": {
+    "message": "Continuously sync conversations to the vault in the background, for the platforms enabled below.",
+    "description": "Help text for the per-platform auto-sync toggle group"
+  },
+  "settings_autoSyncGemini": {
+    "message": "Gemini",
+    "description": "Auto-sync toggle label for the Gemini platform"
+  },
+  "settings_autoSyncClaude": {
+    "message": "Claude",
+    "description": "Auto-sync toggle label for the Claude platform"
+  },
+  "settings_autoSyncChatgpt": {
+    "message": "ChatGPT",
+    "description": "Auto-sync toggle label for the ChatGPT platform"
+  },
+  "settings_autoSyncPerplexity": {
+    "message": "Perplexity",
+    "description": "Auto-sync toggle label for the Perplexity platform"
+  },
+  "settings_autoSyncNotebooklm": {
+    "message": "NotebookLM",
+    "description": "Auto-sync toggle label for the NotebookLM platform"
+  },
 
   "toast_appended": {
     "message": "$COUNT$ new message(s) appended",

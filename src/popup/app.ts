@@ -23,6 +23,20 @@ import {
 } from '../lib/constants';
 import { getMessage } from '../lib/i18n';
 import { sendMessage } from '../lib/messaging';
+import { ALL_PLATFORMS } from '../lib/platform-registry';
+
+/**
+ * Per-platform auto-sync checkbox element ids, keyed by {@link AIPlatform}.
+ * Record<AIPlatform, string> forces a compile-time update here whenever a
+ * platform is added to the union (ADR-014), same as PLATFORM_REGISTRY.
+ */
+const AUTO_SYNC_CHECKBOX_IDS: Record<AIPlatform, string> = {
+  gemini: 'autoSyncGemini',
+  claude: 'autoSyncClaude',
+  chatgpt: 'autoSyncChatgpt',
+  perplexity: 'autoSyncPerplexity',
+  notebooklm: 'autoSyncNotebooklm',
+};
 
 /**
  * Initialize i18n for all elements with data-i18n attributes
@@ -105,6 +119,9 @@ function queryElements() {
     maxCalloutLines: getElement<HTMLInputElement>('maxCalloutLines'),
     companionToken: getElement<HTMLInputElement>('companion-token'),
     companionUrl: getElement<HTMLInputElement>('companion-url'),
+    autoSyncPlatforms: Object.fromEntries(
+      ALL_PLATFORMS.map(platform => [platform, getElement<HTMLInputElement>(AUTO_SYNC_CHECKBOX_IDS[platform])])
+    ) as Record<AIPlatform, HTMLInputElement>,
     timezone: getElement<HTMLSelectElement>('timezone'),
     timezoneGroup: getElement<HTMLElement>('timezoneGroup'),
     testBtn: getElement<HTMLButtonElement>('testBtn'),
@@ -117,11 +134,6 @@ type PopupElements = ReturnType<typeof queryElements>;
 
 // Assigned by initPopup() before any UI handler can run
 let elements: PopupElements;
-
-// autoSyncPlatforms has no dedicated form control yet (a later task adds the
-// toggle UI); populateForm() captures the loaded value so collectSettings()
-// round-trips it unchanged on save instead of silently resetting it.
-let loadedAutoSyncPlatforms: AIPlatform[] = [];
 
 /**
  * Initialize popup — queries the DOM and wires the UI.
@@ -169,7 +181,10 @@ function populateForm(settings: ExtensionSettings): void {
   elements.vaultPath.value = settings.vaultPath || '';
   elements.companionToken.value = settings.companionToken || '';
   elements.companionUrl.value = settings.companionUrl || DEFAULT_COMPANION_URL;
-  loadedAutoSyncPlatforms = settings.autoSyncPlatforms ?? [];
+  const enabledPlatforms = new Set(settings.autoSyncPlatforms ?? []);
+  for (const platform of ALL_PLATFORMS) {
+    elements.autoSyncPlatforms[platform].checked = enabledPlatforms.has(platform);
+  }
 
   const { templateOptions } = settings;
   elements.messageFormat.value = templateOptions.messageFormat || 'callout';
@@ -394,7 +409,7 @@ function collectSettings(): ExtensionSettings {
     maxCalloutLines: parseCalloutLines(elements.maxCalloutLines.value),
     companionToken: elements.companionToken.value.trim(),
     companionUrl: elements.companionUrl.value.trim() || DEFAULT_COMPANION_URL,
-    autoSyncPlatforms: loadedAutoSyncPlatforms,
+    autoSyncPlatforms: ALL_PLATFORMS.filter(platform => elements.autoSyncPlatforms[platform].checked),
   };
 }
 
