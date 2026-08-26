@@ -443,12 +443,12 @@ export async function initialize(): Promise<void> {
   await waitForConversationContainer();
 
   // Apply throttle to sync handler (NEW-06)
-  const throttledHandleSync = throttle(handleSync, EVENT_THROTTLE_DELAY);
+  const throttledSyncNow = throttle(() => void runAutoSync(), EVENT_THROTTLE_DELAY);
   injectSyncIcon({
     onOpenOptions: () =>
       showToast('Open the extension icon in the toolbar to add your companion token', 'info'),
     onRetry: () => void runAutoSync(),
-    onSyncNow: () => void throttledHandleSync(),
+    onSyncNow: () => throttledSyncNow(),
     onOpenPath: path => {
       if (!path) return;
       // sendMessage() resolves (never rejects) for both real failure modes —

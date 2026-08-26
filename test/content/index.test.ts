@@ -198,6 +198,29 @@ describe('content/bootstrap', () => {
       );
     });
 
+    describe('onSyncNow handler', () => {
+      it('drives the real companion sync (chatSync), not the legacy manual export (saveToOutputs)', async () => {
+        loadGeminiConversation();
+        mockMessaging({
+          settings: { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] },
+        });
+        await initialize();
+        const handlers = vi.mocked(injectSyncIcon).mock.calls[0][0];
+
+        handlers.onSyncNow();
+        await vi.waitFor(() => {
+          const calls = vi
+            .mocked(sendMessage)
+            .mock.calls.filter(([message]) => (message as { action: string }).action === 'chatSync');
+          expect(calls).toHaveLength(1);
+        });
+
+        expect(sendMessage).not.toHaveBeenCalledWith(
+          expect.objectContaining({ action: 'saveToOutputs' })
+        );
+      });
+    });
+
     describe('onOpenPath handler', () => {
       /** The real onOpenPath closure injectSyncIcon() was called with. */
       async function getOnOpenPath(): Promise<(path: string) => void> {
