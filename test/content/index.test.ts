@@ -785,6 +785,88 @@ describe('content/bootstrap', () => {
       expect(chatSyncCallsOf()).toHaveLength(1); // unchanged: the second attempt was refused
     });
 
+    it('does not advance the baseline and paints offline when the server no-ops a non-empty delta (reload stall)', async () => {
+      // Regression pin: after a page reload, previousManifest is empty in
+      // this fresh module instance, so the window guard in
+      // shouldSendManifest() can't fire — the client sends a (possibly
+      // windowed) manifest with a non-empty newBlocks. If the server
+      // rejects it as a no-op (its own index-0 guard), a client that
+      // ignores `response.mode` would advance previousManifest anyway and
+      // paint green, permanently no-opping every later sync.
+      setGeminiLocation('auto-sync-stall');
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+      mockMessaging({
+        settings: { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] },
+        chatSync: { ...okChatSync, mode: 'noop' },
+      });
+
+      await runAutoSync();
+
+      expect(paintFor).toHaveBeenLastCalledWith(location.href, 'offline', {
+        error: expect.any(String),
+      });
+
+      // The baseline must not have advanced: a second run against the same
+      // (still-unsynced) DOM must attempt to send again, not take the
+      // unchanged-manifest early return.
+      vi.mocked(paintFor).mockClear();
+      mockMessaging({
+        settings: { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] },
+        chatSync: okChatSync,
+      });
+      await runAutoSync();
+      expect(chatSyncCallsOf()).toHaveLength(2);
+    });
+
+    it('still settles normally on a genuine noop for an empty delta', async () => {
+      // Contrast case: a `noop` response to an EMPTY newBlocks (nothing new
+      // to actually append) is a real, routine outcome — not a stall — and
+      // must not be treated as an error. Constructed via a manifest that
+      // shrinks (same leading message, fewer trailing ones) so the window
+      // guard still lets it through but diffBlocks() computes an empty
+      // delta, mirroring what the server would legitimately no-op.
+      setGeminiLocation('auto-sync-genuine-noop');
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+          { role: 'user', content: 'Second question' },
+          { role: 'assistant', content: '<p>Second answer</p>' },
+        ])
+      );
+      mockMessaging({
+        settings: { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] },
+        chatSync: okChatSync,
+      });
+      await runAutoSync(); // establishes the 4-message baseline
+
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+      mockMessaging({
+        settings: { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] },
+        chatSync: { ...okChatSync, mode: 'noop' },
+      });
+      vi.mocked(paintFor).mockClear();
+
+      await runAutoSync();
+
+      expect(paintFor).not.toHaveBeenCalledWith(
+        location.href,
+        'offline',
+        expect.objectContaining({ error: expect.any(String) })
+      );
+      expect(paintFor).toHaveBeenLastCalledWith(location.href, 'synced', expect.anything());
+    });
+
     it('records the suggestions from a successful response and paints the icon with their combined count', async () => {
       setGeminiLocation('auto-sync-suggestions');
       loadFixture(

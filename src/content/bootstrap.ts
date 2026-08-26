@@ -46,6 +46,7 @@ import type {
 import { platformForHost } from '../lib/platform-registry';
 import { throttle, debounce } from '../lib/throttle';
 import { buildManifest, diffBlocks } from './manifest';
+import { getMessage } from '../lib/i18n';
 
 /**
  * Platform-specific main content container selectors for optimized observation.
@@ -223,6 +224,20 @@ async function sendChatSync(
   if ('error' in response) {
     console.warn('[G2O] Auto-sync failed:', response.error);
     paintFor(href, 'offline', { error: response.error });
+    return null;
+  }
+  // A non-empty `newBlocks` means the client expected the server to append
+  // or diverge. A `noop` response to that is not a genuine "nothing
+  // changed" — it means the server rejected the delta (e.g. a windowed
+  // manifest sent right after a page reload, before `previousManifest` has
+  // been rebuilt, on a virtualized long conversation). Treat it as a stall:
+  // do NOT advance the baseline (the server never stored anything, so
+  // diffing the next sync against it would skip real content), and surface
+  // an error so the user knows to scroll up or run a manual export instead
+  // of trusting a silently-green icon.
+  if (data.newBlocks.length > 0 && response.mode === 'noop') {
+    console.warn('[G2O] Auto-sync stalled: server reported no-op for a non-empty delta');
+    paintFor(href, 'offline', { error: getMessage('syncIcon_syncStalled') });
     return null;
   }
   // Only advance the baseline on confirmed success: advancing on a failed

@@ -32,6 +32,10 @@
     "message": "Sync failed",
     "description": "Fallback detail shown in the sync icon menu when no specific error is known"
   },
+  "syncIcon_syncStalled": {
+    "message": "Sync stalled: scroll up to load the full conversation, or run a manual export",
+    "description": "Error detail shown when the server reports no-op for a non-empty sync (e.g. after a page reload on a long, virtualized conversation)"
+  },
   "syncIcon_relatedConversations": {
     "message": "Related conversations",
     "description": "Sync icon menu group heading: suggested related transcripts"
