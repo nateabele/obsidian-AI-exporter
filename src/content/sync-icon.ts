@@ -71,8 +71,16 @@ let currentSuggestions: ChatSyncResponse['suggestions'] = { transcripts: [], pag
  * Record the suggestions returned by the latest sync, for the menu to
  * render on next open. Does not itself repaint anything — call alongside
  * `setSyncState`/`paintFor` with the matching `suggestionCount`.
+ *
+ * `href` is the conversation the sync began under (the same one passed to
+ * the matching `paintFor()` call) and is checked against `contextHref`
+ * before writing, exactly like `paintFor()` — this is retained detail, so a
+ * slow response for a conversation the user has since navigated away from
+ * must not clobber the current conversation's suggestions, even though its
+ * icon paint is separately (and correctly) already a no-op.
  */
-export function setSuggestions(suggestions: ChatSyncResponse['suggestions']): void {
+export function setSuggestions(href: string, suggestions: ChatSyncResponse['suggestions']): void {
+  if (href !== contextHref) return;
   currentSuggestions = suggestions;
 }
 

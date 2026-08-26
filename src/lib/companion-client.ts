@@ -41,9 +41,13 @@ export async function postSync(
  * Ask the companion listener to open a note in Obsidian.
  *
  * The companion validates and canonicalises `path` server-side, so this is
- * a thin pass-through: no client-side path handling belongs here.
+ * a thin pass-through: no client-side path handling belongs here. Throws
+ * (rather than resolving `false`) on a non-OK response, mirroring
+ * `postSync` — this lets callers rely on the message listener's single
+ * catch-and-report path (see `service-worker.ts`) instead of duplicating
+ * failure handling here.
  */
-export async function openNote(settings: CompanionSettings, path: string): Promise<boolean> {
+export async function openNote(settings: CompanionSettings, path: string): Promise<void> {
   if (!settings.companionToken) {
     throw new Error('Companion token is not configured');
   }
@@ -55,7 +59,10 @@ export async function openNote(settings: CompanionSettings, path: string): Promi
     },
     body: JSON.stringify({ path }),
   });
-  return response.ok;
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(`Companion open failed (${response.status}): ${detail}`);
+  }
 }
 
 export async function enqueue(request: ChatSyncRequest): Promise<void> {

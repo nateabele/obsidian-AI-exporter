@@ -165,7 +165,7 @@ describe('openNote', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await openNote(settings, 'AI/claude/hello.md');
+    await expect(openNote(settings, 'AI/claude/hello.md')).resolves.toBeUndefined();
 
     expect(fetchMock).toHaveBeenCalledWith(
       'http://127.0.0.1:3447/api/chat/open',
@@ -175,13 +175,17 @@ describe('openNote', () => {
         body: JSON.stringify({ path: 'AI/claude/hello.md' }),
       })
     );
-    expect(result).toBe(true);
   });
 
-  it('resolves false on a non-OK response', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 400 }));
+  it('throws with the response detail on a non-OK response, mirroring postSync', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: false, status: 400, text: async () => 'invalid path' })
+    );
 
-    expect(await openNote(settings, 'AI/claude/hello.md')).toBe(false);
+    await expect(openNote(settings, 'AI/claude/hello.md')).rejects.toThrow(
+      /Companion open failed \(400\): invalid path/
+    );
   });
 
   it('throws when the companion token is empty', async () => {

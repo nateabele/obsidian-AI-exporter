@@ -8,6 +8,7 @@ import {
   getSuggestionCount,
   setIconContext,
   setSuggestions,
+  suggestionCount,
 } from '../../src/content/sync-icon';
 import type { SyncIconHandlers } from '../../src/content/sync-icon';
 import { setClaudeLocation, resetLocation } from '../fixtures/dom-helpers';
@@ -636,7 +637,7 @@ describe('setSuggestions', () => {
   it('shows the combined count on the badge', () => {
     document.body.innerHTML = '';
     injectSyncIcon(handlers);
-    setSuggestions({
+    setSuggestions(location.href, {
       transcripts: [{ kind: 'transcript', title: 'A', path: 'a.md' }],
       pages: [{ kind: 'topic', title: 'B', path: 'b.md' }],
     });
@@ -649,10 +650,24 @@ describe('setSuggestions', () => {
   it('hides the badge when there are no suggestions', () => {
     document.body.innerHTML = '';
     injectSyncIcon(handlers);
-    setSuggestions({ transcripts: [], pages: [] });
+    setSuggestions(location.href, { transcripts: [], pages: [] });
     setSyncState('synced', { suggestionCount: 0 });
     const badge = document.querySelector('#g2o-sync-icon .badge') as HTMLElement;
     expect(badge.hidden).toBe(true);
+  });
+
+  it('does not apply an update for a conversation the context has since left', () => {
+    document.body.innerHTML = '';
+    injectSyncIcon(handlers);
+    const staleHref = location.href;
+    setIconContext('https://claude.ai/chat/elsewhere');
+
+    setSuggestions(staleHref, {
+      transcripts: [{ kind: 'transcript', title: 'A', path: 'a.md' }],
+      pages: [],
+    });
+
+    expect(suggestionCount()).toBe(0);
   });
 });
 
@@ -682,7 +697,7 @@ describe('suggestion groups in the menu', () => {
     };
     injectSyncIcon(handlers);
     setIconContext(location.href);
-    setSuggestions({
+    setSuggestions(location.href, {
       transcripts: [{ kind: 'transcript', title: 'A related chat', path: 'a.md' }],
       pages: [{ kind: 'topic', title: 'A related topic', path: 'b.md' }],
     });
@@ -721,7 +736,7 @@ describe('suggestion groups in the menu', () => {
     };
     injectSyncIcon(handlers);
     setIconContext(location.href);
-    setSuggestions({
+    setSuggestions(location.href, {
       transcripts: [{ kind: 'transcript', title: 'A related chat', path: 'a.md' }],
       pages: [],
     });
@@ -744,7 +759,7 @@ describe('suggestion groups in the menu', () => {
       onOpenPath: () => {},
     });
     setIconContext(location.href);
-    setSuggestions({ transcripts: [], pages: [] });
+    setSuggestions(location.href, { transcripts: [], pages: [] });
     paintFor(location.href, 'synced');
 
     document.getElementById('g2o-sync-icon')?.click();
@@ -752,25 +767,33 @@ describe('suggestion groups in the menu', () => {
     expect(document.querySelectorAll('#g2o-sync-menu .group')).toHaveLength(0);
   });
 
-  it('clears retained suggestions when the conversation context changes', () => {
+  it('drops a suggestions update that arrives after the context has already moved on', () => {
+    // This pins the actual bug: setSuggestions() for conversation A resolves
+    // (e.g. a slow chatSync response) *after* the context has already moved
+    // to B — not merely being called before a later setIconContext(), which
+    // would pass even without the href guard in setSuggestions().
     setClaudeLocation('conversation-a');
-    injectSyncIcon({
+    const handlers = {
       onOpenOptions: () => {},
       onRetry: () => {},
       onSyncNow: () => {},
       onOpenPath: () => {},
-    });
+    };
+    injectSyncIcon(handlers);
     setIconContext(location.href);
-    setSuggestions({
-      transcripts: [{ kind: 'transcript', title: 'A related chat', path: 'a.md' }],
-      pages: [],
-    });
-    paintFor(location.href, 'suggestions', { suggestionCount: 1 });
+    const hrefA = location.href;
 
-    // The SPA navigates to a new conversation before the menu is opened.
+    // The SPA navigates to conversation B before A's sync resolves.
     setClaudeLocation('conversation-b');
     setIconContext(location.href);
     paintFor(location.href, 'synced');
+
+    // A's response finally arrives, captured under the href it started
+    // under — not the current one.
+    setSuggestions(hrefA, {
+      transcripts: [{ kind: 'transcript', title: 'A related chat', path: 'a.md' }],
+      pages: [],
+    });
 
     document.getElementById('g2o-sync-icon')?.click();
 

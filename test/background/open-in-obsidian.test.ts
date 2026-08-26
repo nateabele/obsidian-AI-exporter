@@ -75,7 +75,7 @@ describe('background/service-worker openInObsidian wiring', () => {
   });
 
   it('calls openNote with the companion settings and the requested path', async () => {
-    mockCompanion.openNote.mockResolvedValue(true);
+    mockCompanion.openNote.mockResolvedValue(undefined);
 
     const sendResponse = vi.fn();
     capturedListener(
@@ -96,8 +96,8 @@ describe('background/service-worker openInObsidian wiring', () => {
     expect(sendResponse).toHaveBeenCalledWith({ success: true });
   });
 
-  it('reports success: false when openNote resolves false', async () => {
-    mockCompanion.openNote.mockResolvedValue(false);
+  it('reports success: false with the detail when openNote rejects (e.g. a non-OK response)', async () => {
+    mockCompanion.openNote.mockRejectedValue(new Error('Companion open failed (400): bad path'));
 
     const sendResponse = vi.fn();
     capturedListener(
@@ -107,7 +107,10 @@ describe('background/service-worker openInObsidian wiring', () => {
     );
 
     await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
-    expect(sendResponse).toHaveBeenCalledWith({ success: false });
+    expect(sendResponse).toHaveBeenCalledWith({
+      success: false,
+      error: 'Companion open failed (400): bad path',
+    });
   });
 
   it('converts a thrown error into a MessageErrorResponse', async () => {

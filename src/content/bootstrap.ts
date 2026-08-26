@@ -231,7 +231,9 @@ async function sendChatSync(
   previousManifest = manifest;
   // setSuggestions() first so suggestionCount() below reflects this
   // response, not whatever the previous sync (or conversation) left behind.
-  setSuggestions(response.suggestions);
+  // Pass href so a slow response for a conversation the user has since left
+  // no-ops instead of clobbering the current conversation's suggestions.
+  setSuggestions(href, response.suggestions);
   const count = suggestionCount();
   paintFor(
     href,
@@ -434,10 +436,22 @@ export async function initialize(): Promise<void> {
     onSyncNow: () => void throttledHandleSync(),
     onOpenPath: path => {
       if (!path) return;
-      void sendMessage({ action: 'openInObsidian', data: { path } }).catch(error => {
-        console.error('[G2O] Failed to open note in Obsidian:', error);
-        showErrorToast(extractErrorMessage(error));
-      });
+      // sendMessage() resolves (never rejects) for both real failure modes —
+      // a thrown fetch (companion offline) and a validation/404 response are
+      // both turned into a resolved `{ success: false, error }` by the
+      // service worker's listener — so the resolved value, not just a
+      // rejection, must be inspected to surface a failed open.
+      void sendMessage({ action: 'openInObsidian', data: { path } })
+        .then(response => {
+          if (!response.success) {
+            console.error('[G2O] Failed to open note in Obsidian:', response.error);
+            showErrorToast(response.error);
+          }
+        })
+        .catch(error => {
+          console.error('[G2O] Failed to open note in Obsidian:', error);
+          showErrorToast(extractErrorMessage(error));
+        });
     },
   });
   // Establish the icon's context before any sync can run, so the very

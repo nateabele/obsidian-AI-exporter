@@ -149,11 +149,17 @@ async function handleMessage(
     }
 
     case 'openInObsidian': {
-      const success = await openNote(
+      // openNote throws on failure (missing token, non-OK response) rather
+      // than resolving false, so a real failure here falls through to the
+      // listener's outer `.catch` below, which turns it into a resolved
+      // `{ success: false, error }` — the shape `onOpenPath` inspects to
+      // show a toast, since a rejected promise from `sendMessage` never
+      // actually occurs for either real failure mode (see MessageErrorResponse).
+      await openNote(
         { companionUrl: settings.companionUrl, companionToken: settings.companionToken },
         message.data.path
       );
-      return { success };
+      return { success: true };
     }
 
     default:

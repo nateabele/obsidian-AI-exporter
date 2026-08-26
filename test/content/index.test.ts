@@ -229,14 +229,49 @@ describe('content/bootstrap', () => {
         );
       });
 
-      it('shows an error toast when the open request fails', async () => {
+      // sendMessage() resolves — never rejects — for both realistic failure
+      // modes below: openNote() throwing (companion offline) and a non-OK
+      // response (invalid path) are both converted into a resolved
+      // `{ success: false, error }` by the service worker's listener before
+      // ever reaching the content script. A rejected promise only happens
+      // for a genuinely different failure (extension context invalidated,
+      // covered separately below), so these must resolve with a failure
+      // shape rather than reject to actually exercise onOpenPath's check of
+      // the resolved value.
+      it('shows an error toast when the companion is unreachable', async () => {
         const onOpenPath = await getOnOpenPath();
-        vi.mocked(sendMessage).mockRejectedValue(new Error('companion unreachable'));
+        vi.mocked(sendMessage).mockResolvedValue({
+          success: false,
+          error: 'Companion token is not configured',
+        });
 
         onOpenPath('AI/claude/related-conversation.md');
 
         await vi.waitFor(() => expect(showErrorToast).toHaveBeenCalled());
-        expect(showErrorToast).toHaveBeenCalledWith('companion unreachable');
+        expect(showErrorToast).toHaveBeenCalledWith('Companion token is not configured');
+      });
+
+      it('shows an error toast when the companion rejects the path (400)', async () => {
+        const onOpenPath = await getOnOpenPath();
+        vi.mocked(sendMessage).mockResolvedValue({
+          success: false,
+          error: 'Companion open failed (400): invalid path',
+        });
+
+        onOpenPath('AI/claude/related-conversation.md');
+
+        await vi.waitFor(() => expect(showErrorToast).toHaveBeenCalled());
+        expect(showErrorToast).toHaveBeenCalledWith('Companion open failed (400): invalid path');
+      });
+
+      it('shows an error toast when sendMessage itself rejects (e.g. extension context invalidated)', async () => {
+        const onOpenPath = await getOnOpenPath();
+        vi.mocked(sendMessage).mockRejectedValue(new Error('Extension context invalidated'));
+
+        onOpenPath('AI/claude/related-conversation.md');
+
+        await vi.waitFor(() => expect(showErrorToast).toHaveBeenCalled());
+        expect(showErrorToast).toHaveBeenCalledWith('Extension context invalidated');
       });
     });
   });
@@ -771,7 +806,7 @@ describe('content/bootstrap', () => {
       try {
         await runAutoSync();
 
-        expect(setSuggestions).toHaveBeenCalledWith(suggestions);
+        expect(setSuggestions).toHaveBeenCalledWith(location.href, suggestions);
         expect(deriveState).toHaveBeenLastCalledWith({
           configured: true,
           syncing: false,
