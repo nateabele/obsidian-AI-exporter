@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { buildManifest, diffBlocks } from '../../src/lib/manifest';
+import { buildManifest, diffBlocks } from '../../src/content/manifest';
+import { htmlToMarkdown, escapeUserText } from '../../src/content/markdown-rules';
+import { generateHash } from '../../src/lib/hash';
 import type { ConversationMessage } from '../../src/lib/types';
 
 const messages: ConversationMessage[] = [
@@ -23,6 +25,35 @@ describe('buildManifest', () => {
   it('changes the hash when message content changes', () => {
     const edited = [{ ...messages[0], content: 'changed' }, messages[1]];
     expect(buildManifest(edited).manifest[0]).not.toBe(buildManifest(messages).manifest[0]);
+  });
+
+  it('converts an assistant HTML block (paragraphs, lists, bold, code fence) to markdown', () => {
+    const html =
+      '<p>Here is a <strong>list</strong>:</p><ol><li>one</li><li>two</li></ol>' +
+      '<pre><code>const x = 1;</code></pre>';
+    const { blocks } = buildManifest([{ id: '1', role: 'assistant', content: html, index: 0 }]);
+    expect(blocks[0].markdown).not.toContain('<p>');
+    expect(blocks[0].markdown).not.toContain('<strong>');
+    expect(blocks[0].markdown).not.toContain('<pre>');
+    expect(blocks[0].markdown).toContain('**list**');
+    expect(blocks[0].markdown).toContain('1.  one');
+    expect(blocks[0].markdown).toContain('```');
+    expect(blocks[0].markdown).toContain('const x = 1;');
+  });
+
+  it('escapes user content instead of converting it as HTML', () => {
+    const raw = 'plain <em>text</em> pasted by the user';
+    const { blocks } = buildManifest([{ id: '1', role: 'user', content: raw, index: 0 }]);
+    expect(blocks[0].markdown).toBe(escapeUserText(raw));
+  });
+
+  it('hashes the converted/escaped text, not the raw content', () => {
+    const html = '<p>Here is a <strong>list</strong></p>';
+    const { blocks } = buildManifest([{ id: '1', role: 'assistant', content: html, index: 0 }]);
+    const converted = htmlToMarkdown(html);
+    expect(blocks[0].markdown).toBe(converted);
+    expect(blocks[0].hash).toBe(generateHash(`assistant ${converted}`));
+    expect(blocks[0].hash).not.toBe(generateHash(`assistant ${html}`));
   });
 });
 

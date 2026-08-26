@@ -45,7 +45,7 @@ import type {
 } from '../lib/types';
 import { platformForHost } from '../lib/platform-registry';
 import { throttle, debounce } from '../lib/throttle';
-import { buildManifest, diffBlocks } from '../lib/manifest';
+import { buildManifest, diffBlocks } from './manifest';
 
 /**
  * Platform-specific main content container selectors for optimized observation.
