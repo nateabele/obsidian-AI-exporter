@@ -3,11 +3,24 @@ import {
   deriveState,
   injectSyncIcon,
   setSyncState,
+  paintFor,
   getLastError,
   getSuggestionCount,
-  resetIconContext,
+  setIconContext,
 } from '../../src/content/sync-icon';
 import type { SyncIconHandlers } from '../../src/content/sync-icon';
+
+// `contextHref` is module-level state, shared across every test in this
+// file (and every other file that imports the real module in the same
+// worker), and `toggleMenu` reads the live `location.href` global directly
+// — not a value the test controls. Establish (or reconfirm) the context to
+// match the current `location.href` before every test, mirroring what
+// `initialize()` does in production before any sync can run, so a test's
+// pass/fail doesn't depend on what a previous test happened to leave
+// `contextHref` set to.
+beforeEach(() => {
+  setIconContext(location.href);
+});
 
 describe('deriveState', () => {
   it('is unconfigured when no companion token is set', () => {
@@ -235,7 +248,10 @@ describe('setSyncState', () => {
   });
 });
 
-describe('resetIconContext', () => {
+describe('setIconContext', () => {
+  const hrefA = 'https://claude.ai/chat/conversation-a';
+  const hrefB = 'https://claude.ai/chat/conversation-b';
+
   beforeEach(() => {
     document.body.innerHTML = '';
     injectSyncIcon(makeHandlers());
@@ -245,14 +261,15 @@ describe('resetIconContext', () => {
     document.body.innerHTML = '';
   });
 
-  it('clears the retained error, note path, and suggestion count', () => {
-    setSyncState('offline', {
+  it('clears the retained error, note path, and suggestion count when the href changes', () => {
+    setIconContext(hrefA);
+    paintFor(hrefA, 'offline', {
       error: 'network blip',
       notePath: 'AI/claude/conversation-a.md',
       suggestionCount: 3,
     });
 
-    resetIconContext();
+    setIconContext(hrefB);
 
     expect(getLastError()).toBeNull();
     expect(getSuggestionCount()).toBe(0);
@@ -261,11 +278,11 @@ describe('resetIconContext', () => {
     // `onOpenPath` handler) — assert via the menu entry's behaviour
     // instead, same as the pre-existing "Open transcript" coverage below.
     // injectSyncIcon() resets visual state to 'unconfigured', so the new
-    // icon needs setSyncState('synced') again before its menu will even
-    // offer "Open transcript".
+    // icon needs a state that offers "Open transcript" again.
     const handlers = makeHandlers();
     injectSyncIcon(handlers);
-    setSyncState('synced');
+    setIconContext(hrefB);
+    paintFor(hrefB, 'synced');
     document.getElementById('g2o-sync-icon')?.click();
     const openTranscript = Array.from(document.querySelectorAll('#g2o-sync-menu .entry')).find(
       e => e.textContent === 'syncIcon_openTranscript'
@@ -276,15 +293,65 @@ describe('resetIconContext', () => {
     expect(handlers.onOpenPath).not.toHaveBeenCalledWith('AI/claude/conversation-a.md');
   });
 
-  it("does not itself change the icon's current visual state", () => {
-    setSyncState('offline', { error: 'network blip' });
+  it('is a no-op when the href has not changed, so retained detail is preserved', () => {
+    setIconContext(hrefA);
+    paintFor(hrefA, 'offline', { error: 'network blip' });
 
-    resetIconContext();
+    setIconContext(hrefA);
+
+    expect(getLastError()).toBe('network blip');
+  });
+
+  it("does not itself change the icon's current visual state", () => {
+    setIconContext(hrefA);
+    paintFor(hrefA, 'offline', { error: 'network blip' });
+
+    setIconContext(hrefB);
 
     const button = document.getElementById('g2o-sync-icon');
     // Retained detail is cleared, but nothing re-derives the visual state
-    // here — that's the caller's job via the next setSyncState/settleIcon.
+    // here — that's the caller's job via the next paintFor/settleIcon.
     expect(button?.dataset.state).toBe('offline');
+  });
+});
+
+describe('paintFor', () => {
+  const hrefA = 'https://claude.ai/chat/conversation-a';
+  const hrefB = 'https://claude.ai/chat/conversation-b';
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    injectSyncIcon(makeHandlers());
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('paints when the href matches the current context', () => {
+    setIconContext(hrefA);
+
+    paintFor(hrefA, 'offline', { error: 'network blip' });
+
+    const button = document.getElementById('g2o-sync-icon');
+    expect(button?.dataset.state).toBe('offline');
+    expect(getLastError()).toBe('network blip');
+  });
+
+  it('drops a paint captured under a conversation the context has since moved past', () => {
+    // A sync starts under conversation A...
+    setIconContext(hrefA);
+    setSyncState('synced');
+
+    // ...but the SPA navigates to conversation B before it resolves.
+    setIconContext(hrefB);
+
+    // A's late-arriving result must not land on B.
+    paintFor(hrefA, 'offline', { error: 'A failed' });
+
+    const button = document.getElementById('g2o-sync-icon');
+    expect(button?.dataset.state).toBe('synced');
+    expect(getLastError()).toBeNull();
   });
 });
 
@@ -376,6 +443,32 @@ describe('the icon menu', () => {
       e => e.textContent
     );
     expect(entries).toEqual(['syncIcon_openTranscript']);
+  });
+
+  it('shows no stale error or transcript path when opened immediately after navigating, before any sync tick has run', () => {
+    // Regression pin for the round-5 audit: the only other reset path
+    // (inside runAutoSync) sits behind a multi-second debounce. Establish
+    // detail under a stale conversation the context has since moved past,
+    // then open the menu without any tick running in between — toggleMenu's
+    // own `setIconContext(location.href)` call must self-correct before the
+    // menu renders, not leave the previous conversation's error/path
+    // showing for that whole debounce window.
+    const handlers = makeHandlers();
+    injectSyncIcon(handlers);
+    setIconContext('https://claude.ai/chat/stale-conversation');
+    setSyncState('offline', { error: 'ECONNREFUSED', notePath: 'AI/claude/stale.md' });
+
+    // The click's own handler calls toggleMenu, which reads the real
+    // (different) jsdom location.href and self-corrects the context before
+    // building the menu — no explicit navigation helper needed here.
+    document.getElementById('g2o-sync-icon')?.click();
+
+    expect(document.querySelector('#g2o-sync-menu .error-detail')?.textContent).toBe(
+      'syncIcon_syncFailed'
+    );
+    const entries = Array.from(document.querySelectorAll('#g2o-sync-menu .entry'));
+    entries[entries.length - 1].dispatchEvent(new Event('click'));
+    expect(handlers.onOpenPath).toHaveBeenCalledWith('');
   });
 });
 

@@ -35,11 +35,11 @@ vi.mock('../../src/content/sync-icon', async () => {
   );
   return {
     injectSyncIcon: vi.fn(),
-    setSyncState: vi.fn(),
+    paintFor: vi.fn(),
     deriveState: vi.fn(actual.deriveState),
     getSuggestionCount: vi.fn(() => 0),
     getLastError: vi.fn(() => null),
-    resetIconContext: vi.fn(),
+    setIconContext: vi.fn(),
   };
 });
 
@@ -55,10 +55,10 @@ import {
 } from '../../src/content/ui';
 import {
   injectSyncIcon,
-  setSyncState,
+  paintFor,
   deriveState,
   getLastError,
-  resetIconContext,
+  setIconContext,
 } from '../../src/content/sync-icon';
 import { sendMessage } from '../../src/lib/messaging';
 import { AUTO_SYNC_DEBOUNCE } from '../../src/lib/constants';
@@ -429,6 +429,64 @@ describe('content/bootstrap', () => {
       expect(chatSyncCallCount).toBe(1);
     });
 
+    it('updates the icon context immediately when a navigation arrives while a previous run is still in flight, so it is not lost behind the in-flight guard', async () => {
+      // Regression pin for the round-5 audit: the href check used to sit
+      // BELOW the in-flight guard, so a navigation arriving mid-run would
+      // return null (swallowed) without ever updating the context. Moving
+      // the check above the guard means the context updates synchronously
+      // on every call, in-flight or not — only the actual sync work is
+      // gated by the guard.
+      setGeminiLocation('inflight-nav-a');
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+      const hrefA = location.href;
+
+      let resolveGetSettings!: (value: ContentScriptSettings) => void;
+      const pendingSettings = new Promise<ContentScriptSettings>(resolve => {
+        resolveGetSettings = resolve;
+      });
+      vi.mocked(sendMessage).mockImplementation(message => {
+        const action = (message as { action: string }).action;
+        if (action === 'getSettings') return pendingSettings;
+        if (action === 'chatSync') return Promise.resolve(okChatSync);
+        return Promise.reject(new Error('unexpected action'));
+      });
+
+      const first = runAutoSync(); // starts, suspends awaiting getSettings, under hrefA
+
+      // A navigation arrives (e.g. the debounced mutation observer fires
+      // again) while the first run is still in flight.
+      setGeminiLocation('inflight-nav-b');
+      const hrefB = location.href;
+      vi.mocked(setIconContext).mockClear();
+
+      const second = runAutoSync();
+      await expect(second).resolves.toBeNull(); // still swallowed by the in-flight guard...
+
+      // ...but the context update itself must not be swallowed with it.
+      expect(setIconContext).toHaveBeenCalledWith(hrefB);
+
+      resolveGetSettings({
+        ...baseSettings,
+        isCompanionConfigured: true,
+        autoSyncPlatforms: ['gemini'],
+      });
+      await first;
+
+      // Every paint the first (now-stale) run caused must still carry
+      // hrefA, never hrefB — dropping it is paintFor's job (backed by the
+      // real module's context, now at hrefB), not runAutoSync's job to
+      // pre-empt.
+      for (const call of vi.mocked(paintFor).mock.calls) {
+        expect(call[0]).toBe(hrefA);
+        expect(call[0]).not.toBe(hrefB);
+      }
+    });
+
     it('settles the icon to a resting state on the unchanged-manifest early return, not stuck on syncing', async () => {
       // Regression pin: handleSync's reportSyncOutcome() defers entirely to
       // an in-flight runAutoSync on the assumption that it will always leave
@@ -451,16 +509,11 @@ describe('content/bootstrap', () => {
       // Establishes previousManifest for the current (unchanging) DOM, so
       // the next run below takes the unchanged-manifest early return.
       await runAutoSync();
-
-      // Simulate the icon reading 'syncing', exactly as a concurrent
-      // handleSync would leave it while reportSyncOutcome() defers to this
-      // in-flight run.
-      vi.mocked(setSyncState).mockClear();
-      vi.mocked(setSyncState)('syncing');
+      vi.mocked(paintFor).mockClear();
 
       await runAutoSync(); // same DOM: takes the unchanged-manifest early return
 
-      expect(setSyncState).toHaveBeenLastCalledWith('synced');
+      expect(paintFor).toHaveBeenLastCalledWith(location.href, 'synced');
     });
 
     it('keeps the icon offline with the original error intact through a later unchanged-manifest auto-sync tick', async () => {
@@ -487,11 +540,11 @@ describe('content/bootstrap', () => {
       // A manual "Sync now" fails because no output destination is enabled,
       // leaving the icon offline with an error.
       await handleSync();
-      expect(setSyncState).toHaveBeenLastCalledWith('offline', {
+      expect(paintFor).toHaveBeenLastCalledWith(location.href, 'offline', {
         error: 'Please select at least one output destination in settings',
       });
 
-      // setSyncState is mocked here, so it never actually updates the real
+      // paintFor is mocked here, so it never actually updates the real
       // module's retained lastError — stand in for what the real module
       // would have retained after the call above.
       vi.mocked(getLastError).mockReturnValue(
@@ -502,7 +555,7 @@ describe('content/bootstrap', () => {
         // Establishes previousManifest for the current (unchanging) DOM, so
         // the next run below takes the unchanged-manifest early return.
         await runAutoSync();
-        vi.mocked(setSyncState).mockClear();
+        vi.mocked(paintFor).mockClear();
         vi.mocked(deriveState).mockClear();
 
         await runAutoSync(); // same DOM: takes the unchanged-manifest early return
@@ -513,7 +566,7 @@ describe('content/bootstrap', () => {
           error: 'Please select at least one output destination in settings',
           suggestionCount: 0,
         });
-        expect(setSyncState).toHaveBeenLastCalledWith('offline');
+        expect(paintFor).toHaveBeenLastCalledWith(location.href, 'offline');
       } finally {
         vi.mocked(getLastError).mockReturnValue(null);
       }
@@ -524,7 +577,7 @@ describe('content/bootstrap', () => {
       // state transition (here, the href-change branch) that resets the
       // baseline it owns (previousManifest) but not the retained icon
       // detail (error/note path/suggestion count) that travels with it.
-      // Without resetIconContext(), a failed manual sync in conversation A
+      // Without setIconContext(), a failed manual sync in conversation A
       // leaves lastError set; navigating in-app to conversation B and
       // hitting any bail-out there (e.g. B has no messages yet) would
       // settle the icon offline with A's error against a conversation that
@@ -547,11 +600,12 @@ describe('content/bootstrap', () => {
       // A manual "Sync now" fails in conversation A, leaving the icon
       // offline with A's error.
       await handleSync();
-      expect(setSyncState).toHaveBeenLastCalledWith('offline', {
+      const hrefA = location.href;
+      expect(paintFor).toHaveBeenLastCalledWith(hrefA, 'offline', {
         error: 'Please select at least one output destination in settings',
       });
 
-      // setSyncState is mocked here, so it never actually updates the real
+      // paintFor is mocked here, so it never actually updates the real
       // module's retained lastError — stand in for what the real module
       // would have retained after the call above (same pattern as the
       // sibling test above).
@@ -563,18 +617,20 @@ describe('content/bootstrap', () => {
         // In-app navigation to a brand-new, empty conversation B — no
         // reload, so only location.href changes.
         setGeminiLocation('auto-sync-nav-b');
+        const hrefB = location.href;
         clearFixture();
         loadFixture(createGeminiConversationDOM([]));
 
-        expect(resetIconContext).not.toHaveBeenCalled();
+        expect(setIconContext).not.toHaveBeenCalled();
         await runAutoSync(); // B has no messages: extract() fails, settleIcon(true) bail-out
-        expect(resetIconContext).toHaveBeenCalledTimes(1);
+        expect(setIconContext).toHaveBeenCalledWith(hrefB);
+        expect(setIconContext).toHaveBeenCalledTimes(1);
 
-        // resetIconContext is mocked, so mirror its real effect (clearing
+        // setIconContext is mocked, so mirror its real effect (clearing
         // the retained error) here, same stand-in as above.
         vi.mocked(getLastError).mockReturnValue(null);
 
-        vi.mocked(setSyncState).mockClear();
+        vi.mocked(paintFor).mockClear();
         vi.mocked(deriveState).mockClear();
         await runAutoSync(); // same empty DOM, same href: routine bail-out only
 
@@ -584,9 +640,9 @@ describe('content/bootstrap', () => {
           error: null,
           suggestionCount: 0,
         });
-        expect(setSyncState).toHaveBeenLastCalledWith('synced');
+        expect(paintFor).toHaveBeenLastCalledWith(hrefB, 'synced');
         // Already inside conversation B — no further reset on this tick.
-        expect(resetIconContext).toHaveBeenCalledTimes(1);
+        expect(setIconContext).toHaveBeenCalledTimes(1);
       } finally {
         vi.mocked(getLastError).mockReturnValue(null);
       }
@@ -706,7 +762,7 @@ describe('content/bootstrap', () => {
       expect(showErrorToast).toHaveBeenCalledWith(
         'Please select at least one output destination in settings'
       );
-      expect(setSyncState).toHaveBeenLastCalledWith('offline', {
+      expect(paintFor).toHaveBeenLastCalledWith(location.href, 'offline', {
         error: 'Please select at least one output destination in settings',
       });
     });
@@ -782,14 +838,17 @@ describe('content/bootstrap', () => {
         })
       );
       expect(showSuccessToast).toHaveBeenCalledWith(expect.stringMatching(/\.md$/), true);
-      expect(setSyncState).toHaveBeenNthCalledWith(1, 'syncing');
+      expect(paintFor).toHaveBeenNthCalledWith(1, location.href, 'syncing');
       expect(deriveState).toHaveBeenLastCalledWith({
         configured: true,
         syncing: false,
         error: null,
         suggestionCount: 0,
       });
-      expect(setSyncState).toHaveBeenLastCalledWith('synced', { suggestionCount: 0, error: null });
+      expect(paintFor).toHaveBeenLastCalledWith(location.href, 'synced', {
+        suggestionCount: 0,
+        error: null,
+      });
     });
 
     it('shows the ACTUAL file name when a collision forced a rename (issue #327)', async () => {
@@ -887,7 +946,7 @@ describe('content/bootstrap', () => {
       await handleSync();
 
       expect(showErrorToast).toHaveBeenCalledWith('Extension context invalidated.');
-      expect(setSyncState).toHaveBeenLastCalledWith('offline', {
+      expect(paintFor).toHaveBeenLastCalledWith(location.href, 'offline', {
         error: 'Extension context invalidated.',
       });
       errorSpy.mockRestore();
@@ -911,11 +970,11 @@ describe('content/bootstrap', () => {
       // the module-level autoSyncInFlight guard before handleSync ever runs.
       const autoSync = runAutoSync();
 
-      vi.mocked(setSyncState).mockClear();
+      vi.mocked(paintFor).mockClear();
       mockMessaging({});
       await handleSync();
 
-      expect(setSyncState).not.toHaveBeenCalled();
+      expect(paintFor).not.toHaveBeenCalled();
 
       resolveGetSettings({
         ...baseSettings,
@@ -923,6 +982,52 @@ describe('content/bootstrap', () => {
         autoSyncPlatforms: ['gemini'],
       });
       await autoSync;
+    });
+
+    it('threads the href captured at entry through every paint it causes, even after an in-app navigation before it resolves', async () => {
+      // Regression pin for the round-5 audit: a manual sync started on
+      // conversation A that resolves after an in-app navigation to B must
+      // never let its outcome land on B's icon. handleSync/trySync/
+      // performSync/reportSyncOutcome have no navigation awareness of their
+      // own — the guarantee comes entirely from capturing startHref once,
+      // up front, and threading that same literal value through every paint
+      // regardless of what location.href has since become. Dropping a paint
+      // whose href no longer matches the current context is paintFor's job
+      // (real module, covered in sync-icon.test.ts); this test proves
+      // bootstrap.ts holds up its end by never substituting the now-current
+      // href for the one the sync actually started under.
+      loadGeminiConversation();
+      const hrefA = location.href;
+
+      let resolveGetSettings!: (value: ContentScriptSettings) => void;
+      const pendingSettings = new Promise<ContentScriptSettings>(resolve => {
+        resolveGetSettings = resolve;
+      });
+      vi.mocked(sendMessage).mockImplementation(message => {
+        const action = (message as { action: string }).action;
+        if (action === 'getSettings') return pendingSettings;
+        if (action === 'testConnection') return Promise.resolve({ success: true });
+        if (action === 'saveToOutputs') return Promise.resolve(okSave);
+        return Promise.reject(new Error('unexpected action'));
+      });
+
+      const sync = handleSync(); // suspends awaiting getSettings, under hrefA
+      expect(paintFor).toHaveBeenCalledWith(hrefA, 'syncing');
+
+      // In-app navigation to B arrives before the settings promise resolves.
+      setGeminiLocation('handle-sync-nav-b');
+      const hrefB = location.href;
+
+      resolveGetSettings({
+        ...baseSettings,
+        outputOptions: { obsidian: true, download: false, clipboard: false },
+      });
+      await sync;
+
+      for (const call of vi.mocked(paintFor).mock.calls) {
+        expect(call[0]).toBe(hrefA);
+        expect(call[0]).not.toBe(hrefB);
+      }
     });
   });
 });

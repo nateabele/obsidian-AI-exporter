@@ -17,11 +17,11 @@ import { conversationToNote } from './markdown';
 import { showSuccessToast, showErrorToast, showWarningToast, showToast } from './ui';
 import {
   injectSyncIcon,
-  setSyncState,
+  paintFor,
   deriveState,
   getSuggestionCount,
   getLastError,
-  resetIconContext,
+  setIconContext,
 } from './sync-icon';
 import { sendMessage } from '../lib/messaging';
 import {
@@ -205,16 +205,22 @@ export function stopAutoSync(): void {
  * outcome. Returns the response on success (and advances the manifest
  * baseline), or null on failure — the icon is already left in the
  * `offline` state with the error detail.
+ *
+ * `href` is the href the caller captured before starting — this spans two
+ * `await`s (the request itself), during which the SPA may have navigated to
+ * a different conversation, so every paint below goes through `paintFor()`
+ * rather than `setSyncState()` and is dropped if it has.
  */
 async function sendChatSync(
   data: ChatSyncRequest,
-  manifest: string[]
+  manifest: string[],
+  href: string
 ): Promise<ChatSyncResponse | null> {
-  setSyncState('syncing');
+  paintFor(href, 'syncing');
   const response = await sendMessage({ action: 'chatSync', data });
   if ('error' in response) {
     console.warn('[G2O] Auto-sync failed:', response.error);
-    setSyncState('offline', { error: response.error });
+    paintFor(href, 'offline', { error: response.error });
     return null;
   }
   // Only advance the baseline on confirmed success: advancing on a failed
@@ -223,7 +229,7 @@ async function sendChatSync(
   previousManifest = manifest;
   const suggestionCount =
     response.suggestions.transcripts.length + response.suggestions.pages.length;
-  setSyncState(deriveState({ configured: true, syncing: false, error: null, suggestionCount }), {
+  paintFor(href, deriveState({ configured: true, syncing: false, error: null, suggestionCount }), {
     suggestionCount,
     notePath: response.notePath,
     // This is a real, confirmed success — resolve any error a previous
@@ -243,14 +249,15 @@ async function sendChatSync(
  * is guaranteed to leave the icon in *some* terminal state, rather than
  * (as before this fix) sometimes leaving it stuck on `syncing` forever.
  */
-function settleIcon(configured: boolean): void {
+function settleIcon(configured: boolean, href: string): void {
   // A bail-out never checked whether the last attempt actually failed, so
   // it must not assert `error: null` — that would silently clear a real,
   // still-unresolved error off the icon (e.g. a failed manual sync,
   // immediately overwritten by the next quiet background tick). Passing no
-  // `detail` to setSyncState below leaves the retained error untouched
-  // either way.
-  setSyncState(
+  // `detail` to paintFor below leaves the retained error untouched either
+  // way.
+  paintFor(
+    href,
     deriveState({
       configured,
       syncing: false,
@@ -298,7 +305,25 @@ function shouldSendManifest(manifest: string[]): boolean {
  * when the manifest actually changed, so idle pages and unrelated DOM churn
  * cost nothing beyond a settings read and an extraction.
  */
+// SPAs navigate between conversations without a reload, so a manifest built
+// for the previous conversation must never be sent under the new one's id.
+// Called from `runAutoSync` BEFORE its re-entrancy guard — not after — so a
+// navigation arriving while a previous run is still in flight is never
+// swallowed: the icon context updates right here regardless, and that
+// in-flight run's own paints (captured under the stale href it started
+// under) become no-ops via `paintFor()` the moment the context moves on.
+function establishAutoSyncContext(startHref: string): void {
+  if (startHref !== lastHref) {
+    previousManifest = [];
+    lastHref = startHref;
+    setIconContext(startHref);
+  }
+}
+
 export async function runAutoSync(): Promise<ChatSyncResponse | null> {
+  const startHref = location.href;
+  establishAutoSyncContext(startHref);
+
   // debounce() never awaits the previous call, so guard against two
   // invocations overlapping and racing on previousManifest — the next
   // mutation re-triggers a fresh run once this one finishes.
@@ -306,33 +331,19 @@ export async function runAutoSync(): Promise<ChatSyncResponse | null> {
   autoSyncInFlight = true;
 
   try {
-    // SPAs navigate between conversations without a reload, so a manifest
-    // built for the previous conversation must never be sent under the new
-    // one's id.
-    if (location.href !== lastHref) {
-      previousManifest = [];
-      lastHref = location.href;
-      // Retained icon detail (error/note path/suggestion count) is scoped
-      // to a single conversation — without this, a bail-out in the new
-      // conversation (e.g. its manifest is empty, same as the freshly-reset
-      // baseline) would settle the icon using the old conversation's error
-      // or "Open transcript" would point at the old conversation's note.
-      resetIconContext();
-    }
-
     const settings = await getSettings();
     if (!settings.isCompanionConfigured) {
-      settleIcon(false);
+      settleIcon(false, startHref);
       return null;
     }
 
     const extractor = getExtractor();
     if (!extractor || !extractor.canExtract()) {
-      settleIcon(true);
+      settleIcon(true, startHref);
       return null;
     }
     if (!settings.autoSyncPlatforms.includes(extractor.platform)) {
-      settleIcon(true);
+      settleIcon(true, startHref);
       return null;
     }
 
@@ -343,13 +354,13 @@ export async function runAutoSync(): Promise<ChatSyncResponse | null> {
     extractor.applySettings({ ...settings, enableAutoScroll: false });
     const result = await extractor.extract();
     if (!result.data) {
-      settleIcon(true);
+      settleIcon(true, startHref);
       return null;
     }
 
     const { manifest, blocks } = buildManifest(result.data.messages);
     if (!shouldSendManifest(manifest)) {
-      settleIcon(true);
+      settleIcon(true, startHref);
       return null;
     }
 
@@ -362,7 +373,8 @@ export async function runAutoSync(): Promise<ChatSyncResponse | null> {
         manifest,
         newBlocks: diffBlocks(previousManifest, manifest, blocks),
       },
-      manifest
+      manifest,
+      startHref
     );
   } finally {
     autoSyncInFlight = false;
@@ -417,6 +429,9 @@ export async function initialize(): Promise<void> {
     // surface where it was saved.
     onOpenPath: path => showToast(`Note saved to ${path}`, 'info'),
   });
+  // Establish the icon's context before any sync can run, so the very
+  // first paint isn't dropped for having no context to match against.
+  setIconContext(location.href);
   console.info('[G2O] Sync icon injected');
 
   // Continuous background sync: drive runAutoSync off DOM mutations on the
@@ -529,14 +544,14 @@ function displaySaveResults(
  * entirely while a background `runAutoSync` is in flight — it owns the icon
  * state for that request and a concurrent manual sync must not race it.
  */
-function reportSyncOutcome(errorMessage: string | null): void {
+function reportSyncOutcome(errorMessage: string | null, href: string): void {
   if (autoSyncInFlight) return;
   if (errorMessage) {
-    setSyncState('offline', { error: errorMessage });
+    paintFor(href, 'offline', { error: errorMessage });
     return;
   }
   const suggestionCount = getSuggestionCount();
-  setSyncState(deriveState({ configured: true, syncing: false, error: null, suggestionCount }), {
+  paintFor(href, deriveState({ configured: true, syncing: false, error: null, suggestionCount }), {
     suggestionCount,
     // A real, confirmed success — resolve any error a previous attempt
     // left behind rather than leaving it retained.
@@ -636,10 +651,14 @@ async function trySync(): Promise<string | null> {
  */
 export async function handleSync(): Promise<void> {
   console.info('[G2O] Sync initiated');
-  if (!autoSyncInFlight) setSyncState('syncing');
+  // Captured before trySync()'s awaits (settings, extraction, save) — an
+  // in-app navigation during any of those must not let this sync's outcome
+  // paint onto whatever conversation is on screen when it resolves.
+  const startHref = location.href;
+  if (!autoSyncInFlight) paintFor(startHref, 'syncing');
 
   const errorMessage = await trySync();
-  reportSyncOutcome(errorMessage);
+  reportSyncOutcome(errorMessage, startHref);
 }
 
 /**

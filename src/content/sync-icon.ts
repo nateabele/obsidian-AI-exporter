@@ -82,17 +82,31 @@ export function getLastError(): string | null {
   return lastError;
 }
 
+// The href of the conversation the retained detail above belongs to, or
+// `null` before any conversation has been established. This is the single
+// mechanism a stale async result is checked against before it's allowed to
+// paint (see `paintFor()`) — rather than patching each place a stale result
+// could surface, every paint is conditional on this one thing.
+let contextHref: string | null = null;
+
 /**
- * Clear the retained error/note path/suggestion count back to their initial
- * values. Retained detail is scoped to a single conversation — an SPA
- * navigation to a different conversation must call this alongside resetting
- * whatever baseline (e.g. `previousManifest`) it accompanies, or a bail-out
- * in the new conversation will settle the icon using detail left over from
- * the old one (a stale error, or "Open transcript" pointing at the wrong
- * note). Does not touch the icon's current visual state — the next
- * `setSyncState`/`settleIcon` call derives that from the now-clean detail.
+ * Establish (or confirm) the conversation the icon's retained detail
+ * belongs to. When `href` differs from the current context, the retained
+ * error/note path/suggestion count are cleared — they described the
+ * previous conversation and must not leak into the new one — and every
+ * paint captured under the old href becomes a no-op via `paintFor()` from
+ * this point on. A no-op when `href` already matches. Does not touch the
+ * icon's current visual state — the next `paintFor`/`setSyncState` call
+ * derives that from the now-clean detail.
+ *
+ * Call this on every conversation switch, and speculatively wherever a
+ * paint could otherwise land without one having run since navigation (e.g.
+ * opening the menu), so the icon is self-correcting even when no sync tick
+ * has fired yet.
  */
-export function resetIconContext(): void {
+export function setIconContext(href: string): void {
+  if (href === contextHref) return;
+  contextHref = href;
   lastError = null;
   lastNotePath = null;
   lastSuggestionCount = 0;
@@ -149,13 +163,19 @@ export function injectSyncIcon(handlers: SyncIconHandlers): HTMLButtonElement {
   return button;
 }
 
+export type SyncStateDetail = {
+  suggestionCount?: number;
+  error?: string | null;
+  notePath?: string;
+};
+
 /**
- * Update the icon's visual state.
+ * Update the icon's visual state unconditionally. Low-level primitive: it
+ * has no notion of which conversation it's for, so any caller whose result
+ * could be stale by the time it resolves (i.e. anything that started before
+ * an `await`) must go through `paintFor()` instead, not this directly.
  */
-export function setSyncState(
-  state: SyncIconState,
-  detail: { suggestionCount?: number; error?: string | null; notePath?: string } = {}
-): void {
+export function setSyncState(state: SyncIconState, detail: SyncStateDetail = {}): void {
   const button = document.getElementById('g2o-sync-icon');
   if (!button) return;
 
@@ -177,6 +197,21 @@ export function setSyncState(
     badge.hidden = lastSuggestionCount === 0;
     badge.textContent = String(lastSuggestionCount);
   }
+}
+
+/**
+ * Paint the icon, but only if `href` — the conversation the calling
+ * operation began under — still matches the current context. An async
+ * operation (a sync request, an extraction) can outlive an in-app
+ * navigation to a different conversation; without this check, its result
+ * would land on whatever conversation happens to be on screen when it
+ * resolves, not the one it was actually about. Every call site that spans
+ * an `await` should paint through here, never through `setSyncState`
+ * directly.
+ */
+export function paintFor(href: string, state: SyncIconState, detail?: SyncStateDetail): void {
+  if (href !== contextHref) return;
+  setSyncState(state, detail);
 }
 
 /**
@@ -259,6 +294,12 @@ function attachMenuCloseListeners(menu: HTMLElement, icon: HTMLElement | null): 
  * Build (or, on a second click, tear down) the menu anchored above the icon.
  */
 function toggleMenu(handlers: SyncIconHandlers): void {
+  // Self-correcting even when no sync tick has run since navigation: the
+  // only other reset path (inside runAutoSync) sits behind a multi-second
+  // debounce, so without this the menu could show a previous conversation's
+  // error or "Open transcript" target for that entire window.
+  setIconContext(location.href);
+
   if (activeMenu) {
     closeMenu();
     return;
