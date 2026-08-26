@@ -143,4 +143,38 @@ describe('background/service-worker chatSync wiring', () => {
       expect.objectContaining({ success: false, error: expect.stringContaining('network down') })
     );
   });
+
+  describe('newBlocks validation', () => {
+    it.each([
+      ['missing role', { markdown: 'hi', hash: 'h1' }],
+      ['invalid role', { role: 'system', markdown: 'hi', hash: 'h1' }],
+      ['missing hash', { role: 'user', markdown: 'hi' }],
+      ['empty hash', { role: 'user', markdown: 'hi', hash: '' }],
+      ['non-string hash', { role: 'user', markdown: 'hi', hash: 42 }],
+      ['non-string markdown', { role: 'user', markdown: 42, hash: 'h1' }],
+    ])('rejects a newBlocks entry with %s instead of reaching postSync', async (_label, block) => {
+      const sendResponse = vi.fn();
+      capturedListener(
+        { action: 'chatSync', data: { ...request, newBlocks: [block] } },
+        sender,
+        sendResponse
+      );
+
+      expect(sendResponse).toHaveBeenCalledWith({
+        success: false,
+        error: 'Invalid message content',
+      });
+      expect(mockCompanion.postSync).not.toHaveBeenCalled();
+    });
+
+    it('accepts a well-formed newBlocks entry', async () => {
+      mockCompanion.postSync.mockResolvedValue(chatSyncResult);
+
+      const sendResponse = vi.fn();
+      capturedListener({ action: 'chatSync', data: request }, sender, sendResponse);
+
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+      expect(sendResponse).toHaveBeenCalledWith(chatSyncResult);
+    });
+  });
 });

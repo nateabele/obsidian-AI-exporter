@@ -105,7 +105,12 @@ function validateChatSyncData(data: ChatSyncRequest | undefined): boolean {
   }
   if (!Array.isArray(data.newBlocks)) return false;
   return !data.newBlocks.some(
-    b => typeof b?.markdown !== 'string' || b.markdown.length > MAX_CONTENT_SIZE
+    b =>
+      (b?.role !== 'user' && b?.role !== 'assistant') ||
+      typeof b.markdown !== 'string' ||
+      b.markdown.length > MAX_CONTENT_SIZE ||
+      typeof b.hash !== 'string' ||
+      b.hash.length === 0
   );
 }
 
