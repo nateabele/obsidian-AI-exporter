@@ -7,8 +7,10 @@ import {
   getLastError,
   getSuggestionCount,
   setIconContext,
+  setSuggestions,
 } from '../../src/content/sync-icon';
 import type { SyncIconHandlers } from '../../src/content/sync-icon';
+import { setClaudeLocation, resetLocation } from '../fixtures/dom-helpers';
 
 // `contextHref` is module-level state, shared across every test in this
 // file (and every other file that imports the real module in the same
@@ -620,5 +622,160 @@ describe('accessibility attributes', () => {
 
     button?.click();
     expect(button?.getAttribute('aria-expanded')).toBe('false');
+  });
+});
+
+describe('setSuggestions', () => {
+  const handlers = {
+    onOpenOptions: () => {},
+    onRetry: () => {},
+    onSyncNow: () => {},
+    onOpenPath: () => {},
+  };
+
+  it('shows the combined count on the badge', () => {
+    document.body.innerHTML = '';
+    injectSyncIcon(handlers);
+    setSuggestions({
+      transcripts: [{ kind: 'transcript', title: 'A', path: 'a.md' }],
+      pages: [{ kind: 'topic', title: 'B', path: 'b.md' }],
+    });
+    setSyncState('suggestions', { suggestionCount: 2 });
+    const badge = document.querySelector('#g2o-sync-icon .badge') as HTMLElement;
+    expect(badge.hidden).toBe(false);
+    expect(badge.textContent).toBe('2');
+  });
+
+  it('hides the badge when there are no suggestions', () => {
+    document.body.innerHTML = '';
+    injectSyncIcon(handlers);
+    setSuggestions({ transcripts: [], pages: [] });
+    setSyncState('synced', { suggestionCount: 0 });
+    const badge = document.querySelector('#g2o-sync-icon .badge') as HTMLElement;
+    expect(badge.hidden).toBe(true);
+  });
+});
+
+describe('suggestion groups in the menu', () => {
+  // toggleMenu self-corrects the context to the real `location.href` on
+  // every open (see the "shows no stale error..." regression pin above), so
+  // these tests drive the actual jsdom location via setClaudeLocation()
+  // rather than an arbitrary string — a mismatch would otherwise reset the
+  // very state each test just established, right before the click that
+  // reads it.
+  beforeEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+    resetLocation();
+  });
+
+  it('renders a heading and one entry per item, transcripts and topics as separate groups', () => {
+    setClaudeLocation('conversation-a');
+    const handlers = {
+      onOpenOptions: () => {},
+      onRetry: () => {},
+      onSyncNow: () => {},
+      onOpenPath: vi.fn(),
+    };
+    injectSyncIcon(handlers);
+    setIconContext(location.href);
+    setSuggestions({
+      transcripts: [{ kind: 'transcript', title: 'A related chat', path: 'a.md' }],
+      pages: [{ kind: 'topic', title: 'A related topic', path: 'b.md' }],
+    });
+    paintFor(location.href, 'suggestions', { suggestionCount: 2 });
+
+    document.getElementById('g2o-sync-icon')?.click();
+
+    const groups = Array.from(document.querySelectorAll('#g2o-sync-menu .group')).map(
+      g => g.textContent
+    );
+    expect(groups).toEqual(['syncIcon_relatedConversations', 'syncIcon_relatedTopics']);
+
+    const entries = Array.from(document.querySelectorAll('#g2o-sync-menu .entry')).map(
+      e => e.textContent
+    );
+    // The fixed entries ("Sync now", "Open transcript") precede the two
+    // suggestion entries.
+    expect(entries.slice(-2)).toEqual(['A related chat', 'A related topic']);
+
+    const transcriptEntry = Array.from(document.querySelectorAll('#g2o-sync-menu .entry')).find(
+      e => e.textContent === 'A related chat'
+    );
+    transcriptEntry?.dispatchEvent(new Event('click'));
+    expect(handlers.onOpenPath).toHaveBeenCalledWith('a.md');
+    // Selecting an entry closes the menu, same as the fixed entries.
+    expect(document.getElementById('g2o-sync-menu')).toBeNull();
+  });
+
+  it('omits a group entirely when its list is empty', () => {
+    setClaudeLocation('conversation-a');
+    const handlers = {
+      onOpenOptions: () => {},
+      onRetry: () => {},
+      onSyncNow: () => {},
+      onOpenPath: () => {},
+    };
+    injectSyncIcon(handlers);
+    setIconContext(location.href);
+    setSuggestions({
+      transcripts: [{ kind: 'transcript', title: 'A related chat', path: 'a.md' }],
+      pages: [],
+    });
+    paintFor(location.href, 'suggestions', { suggestionCount: 1 });
+
+    document.getElementById('g2o-sync-icon')?.click();
+
+    const groups = Array.from(document.querySelectorAll('#g2o-sync-menu .group')).map(
+      g => g.textContent
+    );
+    expect(groups).toEqual(['syncIcon_relatedConversations']);
+  });
+
+  it('shows no groups when there are no suggestions', () => {
+    setClaudeLocation('conversation-a');
+    injectSyncIcon({
+      onOpenOptions: () => {},
+      onRetry: () => {},
+      onSyncNow: () => {},
+      onOpenPath: () => {},
+    });
+    setIconContext(location.href);
+    setSuggestions({ transcripts: [], pages: [] });
+    paintFor(location.href, 'synced');
+
+    document.getElementById('g2o-sync-icon')?.click();
+
+    expect(document.querySelectorAll('#g2o-sync-menu .group')).toHaveLength(0);
+  });
+
+  it('clears retained suggestions when the conversation context changes', () => {
+    setClaudeLocation('conversation-a');
+    injectSyncIcon({
+      onOpenOptions: () => {},
+      onRetry: () => {},
+      onSyncNow: () => {},
+      onOpenPath: () => {},
+    });
+    setIconContext(location.href);
+    setSuggestions({
+      transcripts: [{ kind: 'transcript', title: 'A related chat', path: 'a.md' }],
+      pages: [],
+    });
+    paintFor(location.href, 'suggestions', { suggestionCount: 1 });
+
+    // The SPA navigates to a new conversation before the menu is opened.
+    setClaudeLocation('conversation-b');
+    setIconContext(location.href);
+    paintFor(location.href, 'synced');
+
+    document.getElementById('g2o-sync-icon')?.click();
+
+    // Conversation A's suggestion must not leak into B's menu.
+    expect(document.querySelectorAll('#g2o-sync-menu .group')).toHaveLength(0);
+    expect(document.querySelector('#g2o-sync-menu .entry')?.textContent).not.toBe('A related chat');
   });
 });

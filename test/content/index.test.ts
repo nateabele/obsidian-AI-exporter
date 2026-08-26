@@ -40,6 +40,8 @@ vi.mock('../../src/content/sync-icon', async () => {
     getSuggestionCount: vi.fn(() => 0),
     getLastError: vi.fn(() => null),
     setIconContext: vi.fn(),
+    setSuggestions: vi.fn(),
+    suggestionCount: vi.fn(() => 0),
   };
 });
 
@@ -59,6 +61,8 @@ import {
   deriveState,
   getLastError,
   setIconContext,
+  setSuggestions,
+  suggestionCount,
 } from '../../src/content/sync-icon';
 import { sendMessage } from '../../src/lib/messaging';
 import { AUTO_SYNC_DEBOUNCE } from '../../src/lib/constants';
@@ -192,6 +196,48 @@ describe('content/bootstrap', () => {
           onOpenPath: expect.any(Function),
         })
       );
+    });
+
+    describe('onOpenPath handler', () => {
+      /** The real onOpenPath closure injectSyncIcon() was called with. */
+      async function getOnOpenPath(): Promise<(path: string) => void> {
+        loadGeminiConversation();
+        await initialize();
+        const handlers = vi.mocked(injectSyncIcon).mock.calls[0][0];
+        return handlers.onOpenPath;
+      }
+
+      it('sends openInObsidian with the given path', async () => {
+        const onOpenPath = await getOnOpenPath();
+        vi.mocked(sendMessage).mockResolvedValue({ success: true });
+
+        onOpenPath('AI/claude/related-conversation.md');
+
+        expect(sendMessage).toHaveBeenCalledWith({
+          action: 'openInObsidian',
+          data: { path: 'AI/claude/related-conversation.md' },
+        });
+      });
+
+      it('does nothing for an empty path (no note synced yet)', async () => {
+        const onOpenPath = await getOnOpenPath();
+
+        onOpenPath('');
+
+        expect(sendMessage).not.toHaveBeenCalledWith(
+          expect.objectContaining({ action: 'openInObsidian' })
+        );
+      });
+
+      it('shows an error toast when the open request fails', async () => {
+        const onOpenPath = await getOnOpenPath();
+        vi.mocked(sendMessage).mockRejectedValue(new Error('companion unreachable'));
+
+        onOpenPath('AI/claude/related-conversation.md');
+
+        await vi.waitFor(() => expect(showErrorToast).toHaveBeenCalled());
+        expect(showErrorToast).toHaveBeenCalledWith('companion unreachable');
+      });
     });
   });
 
@@ -702,6 +748,44 @@ describe('content/bootstrap', () => {
 
       await runAutoSync();
       expect(chatSyncCallsOf()).toHaveLength(1); // unchanged: the second attempt was refused
+    });
+
+    it('records the suggestions from a successful response and paints the icon with their combined count', async () => {
+      setGeminiLocation('auto-sync-suggestions');
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+      const suggestions = {
+        transcripts: [{ kind: 'transcript' as const, title: 'A related chat', path: 'a.md' }],
+        pages: [{ kind: 'topic' as const, title: 'A related topic', path: 'b.md' }],
+      };
+      mockMessaging({
+        settings: { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] },
+        chatSync: { ...okChatSync, suggestions },
+      });
+      vi.mocked(suggestionCount).mockReturnValue(2);
+
+      try {
+        await runAutoSync();
+
+        expect(setSuggestions).toHaveBeenCalledWith(suggestions);
+        expect(deriveState).toHaveBeenLastCalledWith({
+          configured: true,
+          syncing: false,
+          error: null,
+          suggestionCount: 2,
+        });
+        expect(paintFor).toHaveBeenLastCalledWith(location.href, 'suggestions', {
+          suggestionCount: 2,
+          notePath: okChatSync.notePath,
+          error: null,
+        });
+      } finally {
+        vi.mocked(suggestionCount).mockReturnValue(0);
+      }
     });
   });
 

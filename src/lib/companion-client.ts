@@ -37,6 +37,27 @@ export async function postSync(
   return (await response.json()) as ChatSyncResponse;
 }
 
+/**
+ * Ask the companion listener to open a note in Obsidian.
+ *
+ * The companion validates and canonicalises `path` server-side, so this is
+ * a thin pass-through: no client-side path handling belongs here.
+ */
+export async function openNote(settings: CompanionSettings, path: string): Promise<boolean> {
+  if (!settings.companionToken) {
+    throw new Error('Companion token is not configured');
+  }
+  const response = await fetch(`${settings.companionUrl}/api/chat/open`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${settings.companionToken}`,
+    },
+    body: JSON.stringify({ path }),
+  });
+  return response.ok;
+}
+
 export async function enqueue(request: ChatSyncRequest): Promise<void> {
   const stored = await chrome.storage.local.get(QUEUE_KEY);
   const queue: ChatSyncRequest[] = stored[QUEUE_KEY] ?? [];

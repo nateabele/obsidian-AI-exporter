@@ -18,7 +18,7 @@ import {
   VALID_OUTPUT_DESTINATIONS,
   VALID_SOURCES,
 } from '../lib/constants';
-import type { ExtensionMessage, ExtractedImage, ObsidianNote } from '../lib/types';
+import type { ChatSyncRequest, ExtensionMessage, ExtractedImage, ObsidianNote } from '../lib/types';
 import { containsPathTraversal } from '../lib/path-utils';
 import { isHttpUrl } from '../lib/validation';
 
@@ -79,25 +79,45 @@ export function validateMessageContent(message: ExtensionMessage): boolean {
   }
 
   // Detailed validation for chatSync action
-  if (message.action === 'chatSync') {
-    const data = message.data;
-    if (!data || typeof data !== 'object') return false;
-    if (typeof data.conversationId !== 'string' || data.conversationId.length === 0) return false;
-    if (!VALID_SOURCES.includes(data.platform as (typeof VALID_SOURCES)[number])) return false;
-    if (!Array.isArray(data.manifest) || !data.manifest.every(h => typeof h === 'string')) {
-      return false;
-    }
-    if (!Array.isArray(data.newBlocks)) return false;
-    if (
-      data.newBlocks.some(
-        b => typeof b?.markdown !== 'string' || b.markdown.length > MAX_CONTENT_SIZE
-      )
-    ) {
-      return false;
-    }
+  if (message.action === 'chatSync' && !validateChatSyncData(message.data)) {
+    return false;
+  }
+
+  // Detailed validation for openInObsidian action
+  if (message.action === 'openInObsidian' && !validateOpenInObsidianData(message.data)) {
+    return false;
   }
 
   return true;
+}
+
+/**
+ * Validate a chatSync request body.
+ */
+function validateChatSyncData(data: ChatSyncRequest | undefined): boolean {
+  // Messages arrive as unvalidated JSON: data may be absent/malformed
+  // despite the type.
+  if (!data || typeof data !== 'object') return false;
+  if (typeof data.conversationId !== 'string' || data.conversationId.length === 0) return false;
+  if (!VALID_SOURCES.includes(data.platform as (typeof VALID_SOURCES)[number])) return false;
+  if (!Array.isArray(data.manifest) || !data.manifest.every(h => typeof h === 'string')) {
+    return false;
+  }
+  if (!Array.isArray(data.newBlocks)) return false;
+  return !data.newBlocks.some(
+    b => typeof b?.markdown !== 'string' || b.markdown.length > MAX_CONTENT_SIZE
+  );
+}
+
+/**
+ * Validate an openInObsidian request body: `path` must be a non-empty,
+ * non-traversing string. The companion server validates and canonicalises
+ * it further, but path traversal is rejected here (DES-014 H-1), same as
+ * `validateNoteData`'s `fileName` check.
+ */
+function validateOpenInObsidianData(data: { path: string } | undefined): boolean {
+  const path = data?.path;
+  return typeof path === 'string' && path.length > 0 && !containsPathTraversal(path);
 }
 
 /**

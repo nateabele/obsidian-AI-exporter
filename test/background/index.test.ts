@@ -625,6 +625,68 @@ describe('background/index', () => {
         });
       });
     });
+
+    describe('openInObsidian validation', () => {
+      it('rejects a missing path', () => {
+        const sendResponse = vi.fn();
+        capturedListener(
+          { action: 'openInObsidian', data: {} },
+          validSender as chrome.runtime.MessageSender,
+          sendResponse
+        );
+
+        expect(sendResponse).toHaveBeenCalledWith({
+          success: false,
+          error: 'Invalid message content',
+        });
+      });
+
+      it('rejects an empty path', () => {
+        const sendResponse = vi.fn();
+        capturedListener(
+          { action: 'openInObsidian', data: { path: '' } },
+          validSender as chrome.runtime.MessageSender,
+          sendResponse
+        );
+
+        expect(sendResponse).toHaveBeenCalledWith({
+          success: false,
+          error: 'Invalid message content',
+        });
+      });
+
+      it('rejects a path-traversing path', () => {
+        const sendResponse = vi.fn();
+        capturedListener(
+          { action: 'openInObsidian', data: { path: '../../etc/passwd' } },
+          validSender as chrome.runtime.MessageSender,
+          sendResponse
+        );
+
+        expect(sendResponse).toHaveBeenCalledWith({
+          success: false,
+          error: 'Invalid message content',
+        });
+      });
+
+      it('accepts a well-formed path', async () => {
+        const sendResponse = vi.fn();
+        const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+        vi.stubGlobal('fetch', fetchMock);
+
+        capturedListener(
+          { action: 'openInObsidian', data: { path: 'AI/claude/hello.md' } },
+          validSender as chrome.runtime.MessageSender,
+          sendResponse
+        );
+
+        await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+        expect(sendResponse).not.toHaveBeenCalledWith({
+          success: false,
+          error: 'Invalid message content',
+        });
+      });
+    });
   });
 
   describe('getSettings handler', () => {

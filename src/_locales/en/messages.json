@@ -32,6 +32,14 @@
     "message": "Sync failed",
     "description": "Fallback detail shown in the sync icon menu when no specific error is known"
   },
+  "syncIcon_relatedConversations": {
+    "message": "Related conversations",
+    "description": "Sync icon menu group heading: suggested related transcripts"
+  },
+  "syncIcon_relatedTopics": {
+    "message": "Related topics",
+    "description": "Sync icon menu group heading: suggested related topic pages"
+  },
 
   "settings_title": {
     "message": "Settings",

@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { postSync, flushQueue, enqueue, dropQueued } from '../../src/lib/companion-client';
+import {
+  postSync,
+  flushQueue,
+  enqueue,
+  dropQueued,
+  openNote,
+} from '../../src/lib/companion-client';
 import type { ChatSyncRequest } from '../../src/lib/types';
 
 const settings = { companionUrl: 'http://127.0.0.1:3447', companionToken: 'tok' };
@@ -149,5 +155,38 @@ describe('dropQueued', () => {
     expect(await flushQueue(settings)).toBe(0);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(stored.companionQueue).toEqual([]);
+  });
+});
+
+describe('openNote', () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it('posts to /api/chat/open with a bearer token and the given path', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await openNote(settings, 'AI/claude/hello.md');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:3447/api/chat/open',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Authorization: 'Bearer tok' }),
+        body: JSON.stringify({ path: 'AI/claude/hello.md' }),
+      })
+    );
+    expect(result).toBe(true);
+  });
+
+  it('resolves false on a non-OK response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 400 }));
+
+    expect(await openNote(settings, 'AI/claude/hello.md')).toBe(false);
+  });
+
+  it('throws when the companion token is empty', async () => {
+    await expect(openNote({ ...settings, companionToken: '' }, 'a.md')).rejects.toThrow(
+      /not configured/i
+    );
   });
 });

@@ -139,6 +139,7 @@ export const VALID_MESSAGE_ACTIONS = [
   'testConnection',
   'saveToOutputs',
   'chatSync',
+  'openInObsidian',
 ] as const;
 
 /**

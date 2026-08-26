@@ -22,6 +22,7 @@ interface MessageResponseMap {
   testConnection: { success: boolean; error?: string };
   saveToOutputs: MultiOutputResponse;
   chatSync: ChatSyncResponse | MessageErrorResponse;
+  openInObsidian: { success: boolean };
 }
 
 /**

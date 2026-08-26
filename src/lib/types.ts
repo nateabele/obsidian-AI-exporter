@@ -309,7 +309,8 @@ export type ExtensionMessage =
   | { action: 'saveToOutputs'; data: ObsidianNote; outputs: OutputDestination[] }
   | { action: 'getSettings' }
   | { action: 'testConnection' }
-  | { action: 'chatSync'; data: ChatSyncRequest };
+  | { action: 'chatSync'; data: ChatSyncRequest }
+  | { action: 'openInObsidian'; data: { path: string } };
 
 /**
  * Message sent from the background worker to the offscreen document.

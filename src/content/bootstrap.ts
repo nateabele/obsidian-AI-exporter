@@ -22,6 +22,8 @@ import {
   getSuggestionCount,
   getLastError,
   setIconContext,
+  setSuggestions,
+  suggestionCount,
 } from './sync-icon';
 import { sendMessage } from '../lib/messaging';
 import {
@@ -227,16 +229,22 @@ async function sendChatSync(
   // send would mean the next successful sync diffs against blocks the
   // server never actually received, permanently losing them.
   previousManifest = manifest;
-  const suggestionCount =
-    response.suggestions.transcripts.length + response.suggestions.pages.length;
-  paintFor(href, deriveState({ configured: true, syncing: false, error: null, suggestionCount }), {
-    suggestionCount,
-    notePath: response.notePath,
-    // This is a real, confirmed success — resolve any error a previous
-    // attempt left behind, rather than leaving it retained for a later
-    // bail-out to reassert.
-    error: null,
-  });
+  // setSuggestions() first so suggestionCount() below reflects this
+  // response, not whatever the previous sync (or conversation) left behind.
+  setSuggestions(response.suggestions);
+  const count = suggestionCount();
+  paintFor(
+    href,
+    deriveState({ configured: true, syncing: false, error: null, suggestionCount: count }),
+    {
+      suggestionCount: count,
+      notePath: response.notePath,
+      // This is a real, confirmed success — resolve any error a previous
+      // attempt left behind, rather than leaving it retained for a later
+      // bail-out to reassert.
+      error: null,
+    }
+  );
   return response;
 }
 
@@ -424,10 +432,13 @@ export async function initialize(): Promise<void> {
       showToast('Open the extension icon in the toolbar to add your companion token', 'info'),
     onRetry: () => void runAutoSync(),
     onSyncNow: () => void throttledHandleSync(),
-    // Actually opening the note in Obsidian is wired up in Task 11 (the
-    // `openInObsidian` message action doesn't exist yet); for now just
-    // surface where it was saved.
-    onOpenPath: path => showToast(`Note saved to ${path}`, 'info'),
+    onOpenPath: path => {
+      if (!path) return;
+      void sendMessage({ action: 'openInObsidian', data: { path } }).catch(error => {
+        console.error('[G2O] Failed to open note in Obsidian:', error);
+        showErrorToast(extractErrorMessage(error));
+      });
+    },
   });
   // Establish the icon's context before any sync can run, so the very
   // first paint isn't dropped for having no context to match against.

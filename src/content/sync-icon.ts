@@ -2,12 +2,13 @@
  * The single state-bearing sync icon, replacing the old export button.
  *
  * The icon reflects the current sync state (`data-state`) and opens a small
- * menu on click. Suggestion entries (related transcripts/topics) are added
- * to the menu in Task 11 — this file only renders the fixed entries.
+ * menu on click. Suggestion entries (related transcripts/topics) are
+ * rendered after the fixed entries — see `renderSuggestionGroup()`.
  */
 
 import { injectStyles } from './ui';
 import { getMessage } from '../lib/i18n';
+import type { ChatSyncResponse, ChatSuggestion } from '../lib/types';
 
 export type SyncIconState = 'unconfigured' | 'offline' | 'syncing' | 'synced' | 'suggestions';
 
@@ -60,6 +61,29 @@ let lastError: string | null = null;
 let lastNotePath: string | null = null;
 let lastSuggestionCount = 0;
 
+// The suggested related transcripts/topics for the current conversation, as
+// last reported via `setSuggestions()`. Retained detail like the rest of
+// the module state above — cleared in `setIconContext()` so a stale list
+// belonging to a previous conversation never renders into the menu.
+let currentSuggestions: ChatSyncResponse['suggestions'] = { transcripts: [], pages: [] };
+
+/**
+ * Record the suggestions returned by the latest sync, for the menu to
+ * render on next open. Does not itself repaint anything — call alongside
+ * `setSyncState`/`paintFor` with the matching `suggestionCount`.
+ */
+export function setSuggestions(suggestions: ChatSyncResponse['suggestions']): void {
+  currentSuggestions = suggestions;
+}
+
+/**
+ * The combined count of currently-known transcript and topic suggestions,
+ * i.e. what the badge should show once painted via `setSyncState`/`paintFor`.
+ */
+export function suggestionCount(): number {
+  return currentSuggestions.transcripts.length + currentSuggestions.pages.length;
+}
+
 /**
  * The last known suggestion count, as last reported via `setSyncState`.
  * Callers that need to derive a follow-up state (e.g. after a sync
@@ -92,12 +116,12 @@ let contextHref: string | null = null;
 /**
  * Establish (or confirm) the conversation the icon's retained detail
  * belongs to. When `href` differs from the current context, the retained
- * error/note path/suggestion count are cleared — they described the
- * previous conversation and must not leak into the new one — and every
- * paint captured under the old href becomes a no-op via `paintFor()` from
- * this point on. A no-op when `href` already matches. Does not touch the
- * icon's current visual state — the next `paintFor`/`setSyncState` call
- * derives that from the now-clean detail.
+ * error/note path/suggestion count/suggestion list are cleared — they
+ * described the previous conversation and must not leak into the new one —
+ * and every paint captured under the old href becomes a no-op via
+ * `paintFor()` from this point on. A no-op when `href` already matches.
+ * Does not touch the icon's current visual state — the next
+ * `paintFor`/`setSyncState` call derives that from the now-clean detail.
  *
  * Call this on every conversation switch, and speculatively wherever a
  * paint could otherwise land without one having run since navigation (e.g.
@@ -110,6 +134,7 @@ export function setIconContext(href: string): void {
   lastError = null;
   lastNotePath = null;
   lastSuggestionCount = 0;
+  currentSuggestions = { transcripts: [], pages: [] };
 }
 
 // The currently-open menu and its outside-click listener, tracked in module
@@ -215,6 +240,34 @@ export function paintFor(href: string, state: SyncIconState, detail?: SyncStateD
 }
 
 /**
+ * Append a heading and one entry per suggestion to `menu`, or nothing at
+ * all when `items` is empty — a group with a heading and no entries would
+ * be worse than omitting it outright.
+ */
+function renderSuggestionGroup(
+  menu: HTMLElement,
+  heading: string,
+  items: ChatSuggestion[],
+  onOpenPath: (path: string) => void
+): void {
+  if (items.length === 0) return;
+  const label = document.createElement('div');
+  label.className = 'group';
+  label.textContent = heading;
+  menu.appendChild(label);
+  for (const item of items) {
+    const entry = document.createElement('button');
+    entry.className = 'entry';
+    entry.textContent = item.title || item.path;
+    entry.addEventListener('click', () => {
+      onOpenPath(item.path);
+      closeMenu();
+    });
+    menu.appendChild(entry);
+  }
+}
+
+/**
  * Populate the menu's entries for the given state:
  * - `unconfigured`: only "Open settings".
  * - `offline`: the last error plus "Retry".
@@ -222,8 +275,9 @@ export function paintFor(href: string, state: SyncIconState, detail?: SyncStateD
  *   sync is already in flight (`syncing`), in which case it's omitted so it
  *   can't be re-triggered mid-request.
  *
- * Suggestion groups (related transcripts/topics) are appended here in
- * Task 11, once `ChatSyncResponse.suggestions` is threaded through.
+ * Suggestion groups (related transcripts, then related topics) follow the
+ * fixed entries, one heading plus one entry per item, each group omitted
+ * entirely when its list is empty.
  */
 function buildMenuEntries(
   menu: HTMLElement,
@@ -257,7 +311,18 @@ function buildMenuEntries(
     addEntry(getMessage('syncIcon_syncNow'), handlers.onSyncNow);
   }
   addEntry(getMessage('syncIcon_openTranscript'), () => handlers.onOpenPath(lastNotePath ?? ''));
-  // Suggestion groups (related transcripts/topics) slot in here — Task 11.
+  renderSuggestionGroup(
+    menu,
+    getMessage('syncIcon_relatedConversations'),
+    currentSuggestions.transcripts,
+    handlers.onOpenPath
+  );
+  renderSuggestionGroup(
+    menu,
+    getMessage('syncIcon_relatedTopics'),
+    currentSuggestions.pages,
+    handlers.onOpenPath
+  );
 }
 
 /**

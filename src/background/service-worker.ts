@@ -8,7 +8,7 @@ import { getSettings, migrateSettings } from '../lib/storage';
 import { validateSender, validateMessageContent } from './validation';
 import { handleTestConnection } from './obsidian-handlers';
 import { handleMultiOutput } from './output-handlers';
-import { postSync, enqueue, flushQueue, dropQueued } from '../lib/companion-client';
+import { postSync, enqueue, flushQueue, dropQueued, openNote } from '../lib/companion-client';
 import type { ExtensionMessage, ContentScriptSettings, ExtensionSettings } from '../lib/types';
 
 // Run settings migration on service worker startup (C-01)
@@ -146,6 +146,14 @@ async function handleMessage(
         }
         throw error;
       }
+    }
+
+    case 'openInObsidian': {
+      const success = await openNote(
+        { companionUrl: settings.companionUrl, companionToken: settings.companionToken },
+        message.data.path
+      );
+      return { success };
     }
 
     default:

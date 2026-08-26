@@ -123,6 +123,15 @@ const STYLES = `
     font-size: 12px;
   }
 
+  #g2o-sync-menu .group {
+    padding: 8px 12px 4px;
+    color: #6b7280;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+
   .g2o-toast {
     position: fixed;
     bottom: 80px;
