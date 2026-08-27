@@ -98,6 +98,39 @@ function getObservationRoot(): Element {
 }
 
 /**
+ * Our own injected UI, which lives on document.body rather than inside any
+ * platform container.
+ */
+const OWN_UI_SELECTOR = '#g2o-sync-icon, #g2o-sync-menu';
+
+function isOwnUi(node: Node): boolean {
+  // characterData mutations target text nodes, which have no closest().
+  const element = node instanceof Element ? node : node.parentElement;
+  return element?.closest(OWN_UI_SELECTOR) != null;
+}
+
+/**
+ * True when a mutation was caused by our own UI rather than the page.
+ *
+ * getObservationRoot() falls back to document.body, and both the sync icon
+ * and its menu are appended to document.body -- so on that fallback the
+ * auto-sync observer watches its own output. Every icon repaint mutates the
+ * observed subtree, retriggers the debounce, and runAutoSync repaints the
+ * icon again: a self-sustaining loop that burns CPU on an idle page for as
+ * long as the tab is open. Selector drift is the likeliest failure mode this
+ * project has, so the fallback must be safe, not merely present.
+ *
+ * A batch is only ignored when EVERY record in it is self-inflicted. A real
+ * message arriving in the same batch as a repaint must still sync, or the
+ * message is lost.
+ */
+export function isSelfInflictedMutation(record: MutationRecord): boolean {
+  if (isOwnUi(record.target)) return true;
+  const touched = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
+  return touched.length > 0 && touched.every(isOwnUi);
+}
+
+/**
  * Wait for conversation container to appear (L-03)
  * Uses MutationObserver with debouncing instead of fixed timeout
  *
@@ -481,8 +514,17 @@ export async function initialize(): Promise<void> {
   // DOM continuously, and a leading-edge throttle would sync the first
   // partial token as if it were the finished message.
   stopAutoSync();
-  debouncedAutoSync = debounce(runAutoSync, AUTO_SYNC_DEBOUNCE);
-  autoSyncObserver = new MutationObserver(debouncedAutoSync);
+  const debounced = debounce(runAutoSync, AUTO_SYNC_DEBOUNCE);
+  debouncedAutoSync = debounced;
+  autoSyncObserver = new MutationObserver(records => {
+    // Never let our own icon repaint retrigger a sync -- see
+    // isSelfInflictedMutation(). Only a NON-EMPTY batch that is entirely
+    // self-inflicted is ignored: an empty batch carries no evidence of
+    // where it came from, and suppressing a real mutation loses a message
+    // whereas a spurious sync costs one round trip. Fail toward syncing.
+    if (records.length > 0 && records.every(isSelfInflictedMutation)) return;
+    debounced();
+  });
   autoSyncObserver.observe(getObservationRoot(), { childList: true, subtree: true });
   console.info('[G2O] Auto-sync observer attached');
 }
