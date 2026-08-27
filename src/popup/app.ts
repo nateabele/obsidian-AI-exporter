@@ -428,6 +428,7 @@ interface ObsidianValidationResult {
   normalizedApiKey: string;
   normalizedUrl: string;
   normalizedVaultPath: string;
+  normalizedCompanionUrl: string;
 }
 
 /**
@@ -445,14 +446,21 @@ function tryValidate(
 }
 
 /**
- * Validate Obsidian-specific settings (API key, URL, vault path)
+ * Validate Obsidian-specific settings (API key, URL, vault path, companion URL)
  * Returns normalized values without mutating the input (DES-014 H-4)
+ *
+ * companionUrl reuses validateObsidianUrl rather than a parallel validator: both
+ * fields are "an http(s) origin on loopback/LAN, no path" and the companion listener
+ * is deliberately plain http (127.0.0.1:3447) since a Chrome extension can't present
+ * a client cert for mTLS — validateObsidianUrl already permits http, so no scheme
+ * override is needed here.
  */
 function validateObsidianSettings(settings: ExtensionSettings): ObsidianValidationResult {
   const defaults = {
     normalizedApiKey: settings.obsidianApiKey,
     normalizedUrl: settings.obsidianUrl,
     normalizedVaultPath: settings.vaultPath,
+    normalizedCompanionUrl: settings.companionUrl,
   };
 
   const apiKey = tryValidate(() => validateApiKey(settings.obsidianApiKey), 'Invalid API key');
@@ -471,16 +479,31 @@ function validateObsidianSettings(settings: ExtensionSettings): ObsidianValidati
     };
   }
 
+  const companionUrl = tryValidate(
+    () => validateObsidianUrl(settings.companionUrl),
+    'Invalid companion URL'
+  );
+  if (!companionUrl.ok) {
+    return {
+      error: companionUrl.error,
+      ...defaults,
+      normalizedApiKey: apiKey.value,
+      normalizedUrl: url.value,
+      normalizedVaultPath: vaultPath.value,
+    };
+  }
+
   return {
     error: null,
     normalizedApiKey: apiKey.value,
     normalizedUrl: url.value,
     normalizedVaultPath: vaultPath.value,
+    normalizedCompanionUrl: companionUrl.value,
   };
 }
 
 /**
- * Validate and normalize Obsidian settings (API key, URL, vault path).
+ * Validate and normalize Obsidian settings (API key, URL, vault path, companion URL).
  * Returns normalized settings or an error message.
  */
 function normalizeObsidianSettings(
@@ -497,6 +520,7 @@ function normalizeObsidianSettings(
       obsidianApiKey: validation.normalizedApiKey,
       obsidianUrl: validation.normalizedUrl,
       vaultPath: validation.normalizedVaultPath,
+      companionUrl: validation.normalizedCompanionUrl,
     },
   };
 }

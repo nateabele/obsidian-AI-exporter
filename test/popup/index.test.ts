@@ -409,6 +409,30 @@ describe('popup/app', () => {
       expect(saveSettings).not.toHaveBeenCalled();
     });
 
+    it('rejects an invalid companion URL scheme', async () => {
+      await initWithDefaults();
+
+      el<HTMLInputElement>('companion-url').value = 'ftp://127.0.0.1:3447';
+      el<HTMLButtonElement>('saveBtn').click();
+
+      await vi.waitFor(() => expect(statusEl().className).toBe('status error'));
+      expect(statusEl().textContent).toContain('http or https');
+      expect(saveSettings).not.toHaveBeenCalled();
+    });
+
+    it('accepts a plain-http companion URL (the companion cannot do TLS on loopback)', async () => {
+      await initWithDefaults();
+      vi.mocked(saveSettings).mockResolvedValue(undefined);
+
+      el<HTMLInputElement>('companion-url').value = 'http://127.0.0.1:3447/';
+      el<HTMLButtonElement>('saveBtn').click();
+
+      await vi.waitFor(() => expect(saveSettings).toHaveBeenCalled());
+      expect(saveSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ companionUrl: 'http://127.0.0.1:3447' })
+      );
+    });
+
     it('skips Obsidian validation when Obsidian output is disabled', async () => {
       buildPopupDom();
       vi.mocked(getSettings).mockResolvedValue({
@@ -479,6 +503,16 @@ describe('popup/app', () => {
       await initWithDefaults();
 
       el<HTMLInputElement>('obsidianUrl').value = 'ftp://example.com';
+      el<HTMLButtonElement>('testBtn').click();
+
+      await vi.waitFor(() => expect(statusEl().className).toBe('status error'));
+      expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('rejects an invalid companion URL before testing', async () => {
+      await initWithDefaults();
+
+      el<HTMLInputElement>('companion-url').value = 'ftp://127.0.0.1:3447';
       el<HTMLButtonElement>('testBtn').click();
 
       await vi.waitFor(() => expect(statusEl().className).toBe('status error'));
