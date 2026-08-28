@@ -18,7 +18,13 @@ import {
   VALID_OUTPUT_DESTINATIONS,
   VALID_SOURCES,
 } from '../lib/constants';
-import type { ChatSyncRequest, ExtensionMessage, ExtractedImage, ObsidianNote } from '../lib/types';
+import type {
+  ChatBackfillRequest,
+  ChatSyncRequest,
+  ExtensionMessage,
+  ExtractedImage,
+  ObsidianNote,
+} from '../lib/types';
 import { containsPathTraversal } from '../lib/path-utils';
 import { isHttpUrl } from '../lib/validation';
 
@@ -83,6 +89,11 @@ export function validateMessageContent(message: ExtensionMessage): boolean {
     return false;
   }
 
+  // Detailed validation for chatBackfill action
+  if (message.action === 'chatBackfill' && !validateChatBackfillData(message.data)) {
+    return false;
+  }
+
   // Detailed validation for openInObsidian action
   if (message.action === 'openInObsidian' && !validateOpenInObsidianData(message.data)) {
     return false;
@@ -111,6 +122,37 @@ function validateChatSyncData(data: ChatSyncRequest | undefined): boolean {
       b.markdown.length > MAX_CONTENT_SIZE ||
       typeof b.hash !== 'string' ||
       b.hash.length === 0
+  );
+}
+
+/**
+ * Validate a chatBackfill request body: same per-message shape checks as
+ * `validateChatSyncData`'s `newBlocks`, plus the fields specific to a
+ * whole-conversation import (`sourceId`, optional `truncated`, and the
+ * nullable account provenance carried through from the archive adapter).
+ */
+function validateChatBackfillData(data: ChatBackfillRequest | undefined): boolean {
+  // Messages arrive as unvalidated JSON: data may be absent/malformed
+  // despite the type.
+  if (!data || typeof data !== 'object') return false;
+  if (typeof data.conversationId !== 'string' || data.conversationId.length === 0) return false;
+  if (!VALID_SOURCES.includes(data.platform as (typeof VALID_SOURCES)[number])) return false;
+  if (typeof data.title !== 'string') return false;
+  if (typeof data.url !== 'string') return false;
+  if (typeof data.createdAt !== 'string') return false;
+  if (data.accountId !== null && typeof data.accountId !== 'string') return false;
+  if (data.accountName !== null && typeof data.accountName !== 'string') return false;
+  if (!Array.isArray(data.messages)) return false;
+  return !data.messages.some(
+    m =>
+      (m?.role !== 'user' && m?.role !== 'assistant') ||
+      typeof m.markdown !== 'string' ||
+      m.markdown.length > MAX_CONTENT_SIZE ||
+      typeof m.hash !== 'string' ||
+      m.hash.length === 0 ||
+      typeof m.sourceId !== 'string' ||
+      m.sourceId.length === 0 ||
+      (m.truncated !== undefined && typeof m.truncated !== 'boolean')
   );
 }
 

@@ -8,8 +8,22 @@ import { getSettings, migrateSettings } from '../lib/storage';
 import { validateSender, validateMessageContent } from './validation';
 import { handleTestConnection } from './obsidian-handlers';
 import { handleMultiOutput } from './output-handlers';
-import { postSync, enqueue, flushQueue, dropQueued, openNote } from '../lib/companion-client';
-import type { ExtensionMessage, ContentScriptSettings, ExtensionSettings } from '../lib/types';
+import {
+  postSync,
+  postBackfill,
+  enqueue,
+  flushQueue,
+  dropQueued,
+  openNote,
+  type CompanionSettings,
+} from '../lib/companion-client';
+import type {
+  ExtensionMessage,
+  ContentScriptSettings,
+  ExtensionSettings,
+  ChatSyncRequest,
+  ChatSyncResponse,
+} from '../lib/types';
 
 // Run settings migration on service worker startup (C-01)
 // Note: top-level await not available in service workers, use .catch() for error handling
@@ -87,6 +101,23 @@ function isContentScriptSender(sender: chrome.runtime.MessageSender): boolean {
 }
 
 /**
+ * Whether a failed chatSync should be queued and replayed. False only for
+ * a 409 with no `code` — chatSyncService's newBlocks-length mismatch, a
+ * permanent client bug that would otherwise retry forever and hide it (see
+ * CompanionApiError in `lib/companion-client.ts`). Every other failure
+ * (a 409 that DOES carry a code, e.g. 'conversation_locked'; a network
+ * error; any other status) is retryable, matching the queue's original
+ * indiscriminate behavior. Duck-typed rather than importing
+ * `isCompanionApiError` so this reads structurally off whatever error
+ * shape actually arrives, without coupling to a specific class identity.
+ */
+function isRetryableCompanionFailure(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return true;
+  const { status, code } = error as { status?: unknown; code?: unknown };
+  return !(status === 409 && code === undefined);
+}
+
+/**
  * Redact sensitive settings for content scripts.
  * Content scripts only need to know IF an API key is configured, not the key itself.
  */
@@ -97,6 +128,50 @@ function redactSettingsForContentScript(settings: ExtensionSettings): ContentScr
     isApiKeyConfigured: obsidianApiKey.length > 0,
     isCompanionConfigured: companionToken.length > 0,
   };
+}
+
+/**
+ * Handle a `chatSync` request: post it to the companion, then reconcile the
+ * retry queue on success. Failures are queued for replay unless
+ * `isRetryableCompanionFailure` identifies them as a permanent client bug
+ * (see that function's doc comment).
+ */
+async function handleChatSync(
+  data: ChatSyncRequest,
+  companion: CompanionSettings
+): Promise<ChatSyncResponse> {
+  try {
+    const result = await postSync(companion, data);
+    // Purge any queued (stale) entry for this conversation BEFORE flushing
+    // the rest of the queue: replaying an older manifest after this newer
+    // one has already landed would read as a divergence server-side and
+    // demote the blocks we just synced to superseded.
+    await dropQueued(data.conversationId);
+    await flushQueue(companion);
+    return result;
+  } catch (error) {
+    // A 409 with no code is chatSyncService's newBlocks-length mismatch: a
+    // permanent client-side bug, not contention. Queueing it here would
+    // retry forever and hide the bug rather than surface it — only a 409
+    // that DOES carry a code (e.g. 'conversation_locked', when a backfill
+    // or another sync holds this conversation) is transient enough to be
+    // worth replaying. Anything else (a network failure, a non-409 status)
+    // has no code either but is retryable by default, matching the queue's
+    // original indiscriminate behavior.
+    if (isRetryableCompanionFailure(error)) {
+      // Queueing the failed request must not mask the original failure — a
+      // storage-quota error from enqueue() should never hide why the sync
+      // itself failed. The original error still propagates below; the
+      // top-level onMessage handler converts it into a MessageErrorResponse
+      // for the caller.
+      try {
+        await enqueue(data);
+      } catch (enqueueError) {
+        console.error('[G2O Background] Failed to enqueue chatSync retry:', enqueueError);
+      }
+    }
+    throw error;
+  }
 }
 
 /**
@@ -119,34 +194,22 @@ async function handleMessage(
       // Security: Redact API key for content scripts (they run on third-party pages)
       return isContentScriptSender(sender) ? redactSettingsForContentScript(settings) : settings;
 
-    case 'chatSync': {
-      const companion = {
+    case 'chatSync':
+      return handleChatSync(message.data, {
         companionUrl: settings.companionUrl,
         companionToken: settings.companionToken,
-      };
-      try {
-        const result = await postSync(companion, message.data);
-        // Purge any queued (stale) entry for this conversation BEFORE flushing
-        // the rest of the queue: replaying an older manifest after this newer
-        // one has already landed would read as a divergence server-side and
-        // demote the blocks we just synced to superseded.
-        await dropQueued(message.data.conversationId);
-        await flushQueue(companion);
-        return result;
-      } catch (error) {
-        // Queueing the failed request must not mask the original failure —
-        // a storage-quota error from enqueue() should never hide why the
-        // sync itself failed. The original error still propagates below;
-        // the top-level onMessage handler converts it into a
-        // MessageErrorResponse for the caller.
-        try {
-          await enqueue(message.data);
-        } catch (enqueueError) {
-          console.error('[G2O Background] Failed to enqueue chatSync retry:', enqueueError);
-        }
-        throw error;
-      }
-    }
+      });
+
+    case 'chatBackfill':
+      // Unlike chatSync, a backfill is a one-off, user-initiated import
+      // (see the popup's "Import history" action) rather than a
+      // continuous background loop, so a failure here is surfaced
+      // directly to the caller rather than silently queued for later
+      // replay.
+      return postBackfill(
+        { companionUrl: settings.companionUrl, companionToken: settings.companionToken },
+        message.data
+      );
 
     case 'openInObsidian': {
       // openNote throws on failure (missing token, non-OK response) rather

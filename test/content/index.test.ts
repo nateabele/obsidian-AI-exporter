@@ -493,6 +493,95 @@ describe('content/bootstrap', () => {
       expect(sentManifests[1]).toEqual(sentManifests[0]);
     });
 
+    it('resends once with every block when the server asks for full content', async () => {
+      setGeminiLocation('needs-full-content');
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+      mockMessaging({ settings: { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] } });
+      await runAutoSync(); // establishes a 2-message baseline
+
+      // Grow the conversation by one message so the next diff would
+      // normally only cover the new tail — the full resend below must
+      // cover every message instead, not just that diff.
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+          { role: 'user', content: 'Second question' },
+        ])
+      );
+
+      let chatSyncCallCount = 0;
+      const sentNewBlockCounts: number[] = [];
+      vi.mocked(sendMessage).mockImplementation(message => {
+        const action = (message as { action: string }).action;
+        if (action === 'getSettings') {
+          return Promise.resolve({
+            ...baseSettings,
+            isCompanionConfigured: true,
+            autoSyncPlatforms: ['gemini'],
+          });
+        }
+        if (action === 'chatSync') {
+          chatSyncCallCount += 1;
+          const data = (message as { data: { newBlocks: unknown[] } }).data;
+          sentNewBlockCounts.push(data.newBlocks.length);
+          return Promise.resolve(
+            chatSyncCallCount === 1 ? { ...okChatSync, mode: 'needsFullContent' as const } : okChatSync
+          );
+        }
+        return Promise.reject(new Error('unexpected action'));
+      });
+
+      const result = await runAutoSync();
+
+      expect(chatSyncCallCount).toBe(2);
+      expect(sentNewBlockCounts[0]).toBe(1); // the diffed tail message only
+      expect(sentNewBlockCounts[1]).toBe(3); // the full resend covers every message
+      expect(result).toEqual(okChatSync);
+    });
+
+    it('treats a second needsFullContent in the same attempt as a failure, without looping', async () => {
+      setGeminiLocation('needs-full-content-loop');
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+
+      let chatSyncCallCount = 0;
+      vi.mocked(sendMessage).mockImplementation(message => {
+        const action = (message as { action: string }).action;
+        if (action === 'getSettings') {
+          return Promise.resolve({
+            ...baseSettings,
+            isCompanionConfigured: true,
+            autoSyncPlatforms: ['gemini'],
+          });
+        }
+        if (action === 'chatSync') {
+          chatSyncCallCount += 1;
+          return Promise.resolve({ ...okChatSync, mode: 'needsFullContent' as const });
+        }
+        return Promise.reject(new Error('unexpected action'));
+      });
+
+      const result = await runAutoSync();
+
+      expect(chatSyncCallCount).toBe(2); // exactly one retry, never a loop
+      expect(result).toBeNull();
+      expect(paintFor).toHaveBeenLastCalledWith(
+        location.href,
+        'offline',
+        expect.objectContaining({ error: expect.any(String) })
+      );
+    });
+
     it('returns without sending when a sync is already in flight', async () => {
       setGeminiLocation('auto-sync-inflight');
       loadFixture(

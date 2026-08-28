@@ -1,12 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   postSync,
+  postBackfill,
   flushQueue,
   enqueue,
   dropQueued,
   openNote,
+  isCompanionApiError,
 } from '../../src/lib/companion-client';
-import type { ChatSyncRequest } from '../../src/lib/types';
+import type { ChatBackfillRequest, ChatSyncRequest } from '../../src/lib/types';
 
 const settings = { companionUrl: 'http://127.0.0.1:3447', companionToken: 'tok' };
 
@@ -17,6 +19,17 @@ const request: ChatSyncRequest = {
   url: 'https://claude.ai/chat/abc',
   manifest: ['h1'],
   newBlocks: [{ role: 'user', markdown: 'hi', hash: 'h1' }],
+};
+
+const backfillRequest: ChatBackfillRequest = {
+  conversationId: 'abc',
+  platform: 'claude',
+  title: 'T',
+  url: 'https://claude.ai/chat/abc',
+  createdAt: '2025-01-01T00:00:00Z',
+  accountId: 'org-1',
+  accountName: 'Personal',
+  messages: [{ role: 'user', markdown: 'hi', hash: 'h1', sourceId: 'm1' }],
 };
 
 describe('postSync', () => {
@@ -192,5 +205,81 @@ describe('openNote', () => {
     await expect(openNote({ ...settings, companionToken: '' }, 'a.md')).rejects.toThrow(
       /not configured/i
     );
+  });
+});
+
+describe('postBackfill', () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it('posts to /api/chat/backfill with a bearer token', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        notePath: 'AI/claude/t-abc.md',
+        anchorsPreserved: 0,
+        anchorsIssued: 1,
+        superseded: 0,
+        skipped: null,
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await postBackfill(settings, backfillRequest);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:3447/api/chat/backfill',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Authorization: 'Bearer tok' }),
+        body: JSON.stringify(backfillRequest),
+      })
+    );
+    expect(result.notePath).toBe('AI/claude/t-abc.md');
+  });
+
+  it('throws when the companion token is empty', async () => {
+    await expect(
+      postBackfill({ ...settings, companionToken: '' }, backfillRequest)
+    ).rejects.toThrow(/not configured/i);
+  });
+
+  it('throws a CompanionApiError carrying the status and a machine-readable code', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        text: async () => JSON.stringify({ code: 'conversation_locked' }),
+      })
+    );
+
+    try {
+      await postBackfill(settings, backfillRequest);
+      expect.unreachable('postBackfill should have thrown');
+    } catch (error) {
+      expect(isCompanionApiError(error)).toBe(true);
+      if (isCompanionApiError(error)) {
+        expect(error.status).toBe(409);
+        expect(error.code).toBe('conversation_locked');
+      }
+    }
+  });
+
+  it('leaves code undefined when the error body is not JSON', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: false, status: 409, text: async () => 'newBlocks length mismatch' })
+    );
+
+    try {
+      await postBackfill(settings, backfillRequest);
+      expect.unreachable('postBackfill should have thrown');
+    } catch (error) {
+      expect(isCompanionApiError(error)).toBe(true);
+      if (isCompanionApiError(error)) {
+        expect(error.status).toBe(409);
+        expect(error.code).toBeUndefined();
+      }
+    }
   });
 });

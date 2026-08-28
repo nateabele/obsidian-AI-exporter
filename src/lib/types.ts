@@ -310,6 +310,7 @@ export type ExtensionMessage =
   | { action: 'getSettings' }
   | { action: 'testConnection' }
   | { action: 'chatSync'; data: ChatSyncRequest }
+  | { action: 'chatBackfill'; data: ChatBackfillRequest }
   | { action: 'openInObsidian'; data: { path: string } };
 
 /**
@@ -374,11 +375,91 @@ export interface ChatSuggestion {
  */
 export interface ChatSyncResponse {
   notePath: string;
-  mode: 'noop' | 'append' | 'diverge';
+  // 'needsFullContent': the stored blocks were produced by a different
+  // producer (e.g. a prior backfill) whose hashes cannot be compared
+  // against this manifest — the caller must resend once with `newBlocks`
+  // covering every message (see `runAutoSync` in src/content/bootstrap.ts).
+  mode: 'noop' | 'append' | 'diverge' | 'needsFullContent';
   appended: number;
   superseded: number;
   suggestions: { transcripts: ChatSuggestion[]; pages: ChatSuggestion[] };
 }
+
+/**
+ * A single message within a {@link ChatBackfillRequest}. Unlike
+ * `ChatSyncBlock`, carries `sourceId` (the platform's own message id, used
+ * server-side for anchor preservation across producers) and an optional
+ * `truncated` flag — a conversation containing any truncated message is
+ * refused wholesale by the server rather than partially imported.
+ */
+export interface ChatBackfillMessage {
+  role: 'user' | 'assistant';
+  markdown: string;
+  hash: string;
+  sourceId: string;
+  truncated?: boolean;
+}
+
+/**
+ * Request body for `POST /api/chat/backfill` against the Mail API companion
+ * listener: an authoritative, whole-conversation import fetched directly
+ * from a platform's own API (see `src/content/archive/`), as opposed to
+ * `ChatSyncRequest`'s incremental diff of the live DOM. `accountId`/
+ * `accountName` are carried straight through from `ArchivedConversation`
+ * (`src/content/archive/types.ts`) and may be `null` for a platform
+ * (ChatGPT) that exposes no organization in that flow.
+ */
+export interface ChatBackfillRequest {
+  conversationId: string;
+  platform: AIPlatform;
+  title: string;
+  url: string;
+  createdAt: string;
+  messages: ChatBackfillMessage[];
+  accountId: string | null;
+  accountName: string | null;
+}
+
+/**
+ * Response from `POST /api/chat/backfill`. `notePath` and `skipped` are
+ * mutually exclusive: `skipped` carries the reason (e.g. `'truncated'`)
+ * when the server refuses the whole conversation, with `notePath: null`
+ * and nothing written to the vault.
+ */
+export interface ChatBackfillResponse {
+  notePath: string | null;
+  anchorsPreserved: number;
+  anchorsIssued: number;
+  superseded: number;
+  skipped: string | null;
+}
+
+/**
+ * Message sent from the popup directly to the active tab's content script
+ * (via `chrome.tabs.sendMessage`), never through the background worker —
+ * an archive adapter's fetches (`src/content/archive/`) use
+ * `credentials: 'include'` against the platform's own origin, which only
+ * carries the user's session cookies from a page ON that origin, so
+ * discovery must run in the content script itself. Kept separate from
+ * `ExtensionMessage`/`VALID_MESSAGE_ACTIONS`: this channel never reaches
+ * the background listener, so it carries none of that whitelist's
+ * security-review weight (see test/arch/message-senders.test.ts).
+ */
+export interface ArchiveDiscoverMessage {
+  action: 'archiveDiscover';
+}
+
+/**
+ * Response to {@link ArchiveDiscoverMessage}: every conversation the
+ * adapter found, already converted to backfill payloads (see
+ * `toBackfillRequest` in `src/content/archive/to-request.ts`) so the popup
+ * can hand each one straight to a `'chatBackfill'` message without
+ * depending on any content-layer type (ADR-012: popup must not import
+ * content/).
+ */
+export type ArchiveDiscoverResponse =
+  | { success: true; conversations: ChatBackfillRequest[] }
+  | { success: false; error: string };
 
 /**
  * Generic failure shape the background worker sends back when a message

@@ -139,6 +139,7 @@ export const VALID_MESSAGE_ACTIONS = [
   'testConnection',
   'saveToOutputs',
   'chatSync',
+  'chatBackfill',
   'openInObsidian',
 ] as const;
 
@@ -151,6 +152,15 @@ export const VALID_OUTPUT_DESTINATIONS = ['obsidian', 'file', 'clipboard'] as co
  * Valid AI platform sources. Derived from PLATFORM_REGISTRY (ADR-014).
  */
 export const VALID_SOURCES: readonly AIPlatform[] = ALL_PLATFORMS;
+
+/**
+ * Platforms with a working `ArchiveAdapter` (see `src/content/archive/`),
+ * i.e. ones the "Import history" backfill flow can actually enumerate.
+ * Single source of truth so the popup's button-enablement check
+ * (`src/popup/app.ts`) and the content script's adapter registry
+ * (`src/content/archive/discover.ts`) can't drift apart.
+ */
+export const ARCHIVE_SUPPORTED_PLATFORMS: readonly AIPlatform[] = ['claude', 'chatgpt'];
 
 /**
  * Valid message format options for template rendering

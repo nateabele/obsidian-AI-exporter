@@ -5,7 +5,7 @@
  * an https: page and cannot fetch http://127.0.0.1 (mixed content).
  */
 
-import type { ChatSyncRequest, ChatSyncResponse } from './types';
+import type { ChatBackfillRequest, ChatBackfillResponse, ChatSyncRequest, ChatSyncResponse } from './types';
 
 const QUEUE_KEY = 'companionQueue';
 const MAX_QUEUED = 50;
@@ -13,6 +13,56 @@ const MAX_QUEUED = 50;
 export interface CompanionSettings {
   companionUrl: string;
   companionToken: string;
+}
+
+/**
+ * A non-OK response from the companion listener. Carries the server's
+ * machine-readable `code` (e.g. `'conversation_locked'`) when the response
+ * body included one, so a caller can tell apart two failures that share
+ * the same HTTP status but need opposite retry handling — a locked
+ * conversation is transient and worth replaying, while a 409 with no code
+ * (a permanent client-side bug) must never be retried — without
+ * re-deriving that distinction from the status alone.
+ */
+export class CompanionApiError extends Error {
+  readonly status: number;
+  readonly code?: string;
+  constructor(status: number, message: string, code?: string) {
+    super(message);
+    this.name = 'CompanionApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/**
+ * Type guard for {@link CompanionApiError}.
+ */
+export function isCompanionApiError(error: unknown): error is CompanionApiError {
+  return error instanceof CompanionApiError;
+}
+
+/**
+ * Build the error to throw for a non-OK companion response, extracting the
+ * server's `code` field when the body is JSON and has one. A non-JSON body
+ * (or one with no `code`) simply leaves `code` unset — this must never
+ * throw itself, since detail is only ever used for a human-readable
+ * message.
+ */
+async function companionError(action: string, response: Response): Promise<CompanionApiError> {
+  const detail = await response.text().catch(() => '');
+  let code: string | undefined;
+  try {
+    const parsed = JSON.parse(detail) as { code?: unknown };
+    if (typeof parsed.code === 'string') code = parsed.code;
+  } catch {
+    /* body wasn't JSON — no machine-readable code available */
+  }
+  return new CompanionApiError(
+    response.status,
+    `Companion ${action} failed (${response.status}): ${detail}`,
+    code
+  );
 }
 
 export async function postSync(
@@ -31,10 +81,37 @@ export async function postSync(
     body: JSON.stringify(request),
   });
   if (!response.ok) {
-    const detail = await response.text().catch(() => '');
-    throw new Error(`Companion sync failed (${response.status}): ${detail}`);
+    throw await companionError('sync', response);
   }
   return (await response.json()) as ChatSyncResponse;
+}
+
+/**
+ * Post a whole conversation, fetched directly from a platform's own API
+ * (see `src/content/archive/`), to the companion listener's authoritative
+ * import endpoint. Mirrors `postSync` exactly; the only difference is the
+ * endpoint and payload shape, since the server treats this as a distinct,
+ * non-incremental write path.
+ */
+export async function postBackfill(
+  settings: CompanionSettings,
+  request: ChatBackfillRequest
+): Promise<ChatBackfillResponse> {
+  if (!settings.companionToken) {
+    throw new Error('Companion token is not configured');
+  }
+  const response = await fetch(`${settings.companionUrl}/api/chat/backfill`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${settings.companionToken}`,
+    },
+    body: JSON.stringify(request),
+  });
+  if (!response.ok) {
+    throw await companionError('backfill', response);
+  }
+  return (await response.json()) as ChatBackfillResponse;
 }
 
 /**
@@ -60,8 +137,7 @@ export async function openNote(settings: CompanionSettings, path: string): Promi
     body: JSON.stringify({ path }),
   });
   if (!response.ok) {
-    const detail = await response.text().catch(() => '');
-    throw new Error(`Companion open failed (${response.status}): ${detail}`);
+    throw await companionError('open', response);
   }
 }
 

@@ -8,6 +8,7 @@ import type {
   ContentScriptSettings,
   MultiOutputResponse,
   ChatSyncResponse,
+  ChatBackfillResponse,
   MessageErrorResponse,
 } from './types';
 
@@ -22,6 +23,7 @@ interface MessageResponseMap {
   testConnection: { success: boolean; error?: string };
   saveToOutputs: MultiOutputResponse;
   chatSync: ChatSyncResponse | MessageErrorResponse;
+  chatBackfill: ChatBackfillResponse | MessageErrorResponse;
   openInObsidian: { success: true } | MessageErrorResponse;
 }
 

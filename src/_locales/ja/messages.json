@@ -27,6 +27,9 @@
   "syncIcon_syncStalled": {
     "message": "同期が停止しました。上にスクロールして会話全体を読み込むか、手動でエクスポートしてください"
   },
+  "syncIcon_fullContentLoop": {
+    "message": "同期に失敗しました：サーバーが会話全体の再送を繰り返し要求しました"
+  },
   "syncIcon_relatedConversations": {
     "message": "関連する会話"
   },

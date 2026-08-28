@@ -35,6 +35,7 @@ import {
 } from '../lib/constants';
 import type {
   AIPlatform,
+  ChatSyncBlock,
   ChatSyncRequest,
   ChatSyncResponse,
   ContentScriptSettings,
@@ -47,6 +48,7 @@ import { platformForHost } from '../lib/platform-registry';
 import { throttle, debounce } from '../lib/throttle';
 import { buildManifest, diffBlocks } from './manifest';
 import { getMessage } from '../lib/i18n';
+import { registerArchiveDiscoveryListener } from './archive/discover';
 
 /**
  * Platform-specific main content container selectors for optimized observation.
@@ -246,11 +248,22 @@ export function stopAutoSync(): void {
  * `await`s (the request itself), during which the SPA may have navigated to
  * a different conversation, so every paint below goes through `paintFor()`
  * rather than `setSyncState()` and is dropped if it has.
+ *
+ * `blocks` is the FULL set of blocks for the whole current manifest (not
+ * just `data.newBlocks`, which may be a diff) — kept alongside `data` so a
+ * `needsFullContent` response (the stored blocks were produced by a
+ * different producer, e.g. a prior backfill, whose hashes cannot be
+ * compared against this manifest) can be answered by resending every
+ * block, once. `isRetry` guards against looping: a second
+ * `needsFullContent` in the same attempt is treated as a failure rather
+ * than resent again.
  */
 async function sendChatSync(
   data: ChatSyncRequest,
   manifest: string[],
-  href: string
+  blocks: ChatSyncBlock[],
+  href: string,
+  isRetry = false
 ): Promise<ChatSyncResponse | null> {
   paintFor(href, 'syncing');
   const response = await sendMessage({ action: 'chatSync', data });
@@ -258,6 +271,16 @@ async function sendChatSync(
     console.warn('[G2O] Auto-sync failed:', response.error);
     paintFor(href, 'offline', { error: response.error });
     return null;
+  }
+  if (response.mode === 'needsFullContent') {
+    if (isRetry) {
+      console.warn(
+        '[G2O] Auto-sync failed: server asked for full content twice in the same attempt'
+      );
+      paintFor(href, 'offline', { error: getMessage('syncIcon_fullContentLoop') });
+      return null;
+    }
+    return sendChatSync({ ...data, newBlocks: blocks }, manifest, blocks, href, true);
   }
   // A non-empty `newBlocks` means the client expected the server to append
   // or diverge. A `noop` response to that is not a genuine "nothing
@@ -432,6 +455,7 @@ export async function runAutoSync(): Promise<ChatSyncResponse | null> {
         newBlocks: diffBlocks(previousManifest, manifest, blocks),
       },
       manifest,
+      blocks,
       startHref
     );
   } finally {
@@ -462,6 +486,12 @@ export function startContentScript(): void {
  */
 export async function initialize(): Promise<void> {
   console.info('[G2O] Content script initializing on:', window.location.hostname);
+
+  // Registered before the conversation-container wait below (which can
+  // block indefinitely on a page with no open conversation, e.g. a
+  // history/listing view): the popup's "Import history" action needs to
+  // reach this listener even when no conversation is open on the tab.
+  registerArchiveDiscoveryListener();
 
   // Check if we have a valid extractor for this page
   const extractor = getExtractor();

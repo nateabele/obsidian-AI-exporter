@@ -7,10 +7,11 @@
  * from corrupting a user's transcript after a newer sync already succeeded.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { ChatSyncRequest, ChatSyncResponse } from '../../src/lib/types';
+import type { ChatBackfillRequest, ChatSyncRequest, ChatSyncResponse } from '../../src/lib/types';
 
 const mockCompanion = {
   postSync: vi.fn(),
+  postBackfill: vi.fn(),
   enqueue: vi.fn(),
   dropQueued: vi.fn(),
   flushQueue: vi.fn(),
@@ -65,12 +66,24 @@ const chatSyncResult: ChatSyncResponse = {
   suggestions: { transcripts: [], pages: [] },
 };
 
+const backfillRequest: ChatBackfillRequest = {
+  conversationId: 'abc',
+  platform: 'claude',
+  title: 'T',
+  url: 'https://claude.ai/chat/abc',
+  createdAt: '2025-01-01T00:00:00Z',
+  accountId: 'org-1',
+  accountName: 'Personal',
+  messages: [{ role: 'user', markdown: 'hi', hash: 'h1', sourceId: 'm1' }],
+};
+
 const sender = { tab: { url: 'https://claude.ai/chat/abc' } } as chrome.runtime.MessageSender;
 
 describe('background/service-worker chatSync wiring', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     mockCompanion.postSync.mockReset();
+    mockCompanion.postBackfill.mockReset();
     mockCompanion.enqueue.mockReset();
     mockCompanion.dropQueued.mockReset();
     mockCompanion.flushQueue.mockReset();
@@ -175,6 +188,134 @@ describe('background/service-worker chatSync wiring', () => {
 
       await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
       expect(sendResponse).toHaveBeenCalledWith(chatSyncResult);
+    });
+  });
+
+  describe('409 retry distinction', () => {
+    it('enqueues a 409 that carries a code (e.g. conversation_locked)', async () => {
+      const lockedError = Object.assign(new Error('locked'), {
+        status: 409,
+        code: 'conversation_locked',
+      });
+      mockCompanion.postSync.mockRejectedValue(lockedError);
+      mockCompanion.enqueue.mockResolvedValue(undefined);
+
+      const sendResponse = vi.fn();
+      capturedListener({ action: 'chatSync', data: request }, sender, sendResponse);
+
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+      expect(mockCompanion.enqueue).toHaveBeenCalledWith(request);
+    });
+
+    it('never enqueues a codeless 409 (permanent client bug, not contention)', async () => {
+      const mismatchError = Object.assign(new Error('newBlocks length mismatch'), {
+        status: 409,
+      });
+      mockCompanion.postSync.mockRejectedValue(mismatchError);
+
+      const sendResponse = vi.fn();
+      capturedListener({ action: 'chatSync', data: request }, sender, sendResponse);
+
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+      expect(mockCompanion.enqueue).not.toHaveBeenCalled();
+      expect(sendResponse).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: false,
+          error: expect.stringContaining('newBlocks length mismatch'),
+        })
+      );
+    });
+  });
+});
+
+describe('background/service-worker chatBackfill wiring', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockCompanion.postSync.mockReset();
+    mockCompanion.postBackfill.mockReset();
+    mockCompanion.enqueue.mockReset();
+    mockCompanion.dropQueued.mockReset();
+    mockCompanion.flushQueue.mockReset();
+    mockGetSettings = vi.fn(() => Promise.resolve(defaultSettings));
+
+    vi.mocked(chrome.runtime.onMessage.addListener).mockImplementation(listener => {
+      capturedListener = listener;
+    });
+
+    vi.resetModules();
+
+    vi.doMock('../../src/lib/companion-client', () => mockCompanion);
+    vi.doMock('../../src/lib/storage', () => ({
+      getSettings: () => mockGetSettings(),
+      migrateSettings: vi.fn(() => Promise.resolve()),
+    }));
+
+    await import('../../src/background/service-worker');
+  });
+
+  it('posts the backfill request and returns the result directly', async () => {
+    const backfillResult = {
+      notePath: 'AI/claude/t-abc.md',
+      anchorsPreserved: 0,
+      anchorsIssued: 1,
+      superseded: 0,
+      skipped: null,
+    };
+    mockCompanion.postBackfill.mockResolvedValue(backfillResult);
+
+    const sendResponse = vi.fn();
+    capturedListener({ action: 'chatBackfill', data: backfillRequest }, sender, sendResponse);
+
+    await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+
+    expect(mockCompanion.postBackfill).toHaveBeenCalledWith(
+      {
+        companionUrl: defaultSettings.companionUrl,
+        companionToken: defaultSettings.companionToken,
+      },
+      backfillRequest
+    );
+    expect(sendResponse).toHaveBeenCalledWith(backfillResult);
+  });
+
+  it('never enqueues a failed backfill — it is a one-off import, not a background retry loop', async () => {
+    mockCompanion.postBackfill.mockRejectedValue(new Error('companion offline'));
+
+    const sendResponse = vi.fn();
+    capturedListener({ action: 'chatBackfill', data: backfillRequest }, sender, sendResponse);
+
+    await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+
+    expect(mockCompanion.enqueue).not.toHaveBeenCalled();
+    expect(sendResponse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success: false,
+        error: expect.stringContaining('companion offline'),
+      })
+    );
+  });
+
+  describe('validation', () => {
+    it.each([
+      ['missing conversationId', { ...backfillRequest, conversationId: '' }],
+      ['unknown platform', { ...backfillRequest, platform: 'not-a-platform' }],
+      [
+        'accountId neither a string nor null',
+        { ...backfillRequest, accountId: 42 as unknown as string },
+      ],
+      [
+        'a message missing hash',
+        { ...backfillRequest, messages: [{ role: 'user', markdown: 'hi', sourceId: 'm1', hash: '' }] },
+      ],
+    ])('rejects a chatBackfill payload with %s instead of reaching postBackfill', async (_label, data) => {
+      const sendResponse = vi.fn();
+      capturedListener({ action: 'chatBackfill', data }, sender, sendResponse);
+
+      expect(sendResponse).toHaveBeenCalledWith({
+        success: false,
+        error: 'Invalid message content',
+      });
+      expect(mockCompanion.postBackfill).not.toHaveBeenCalled();
     });
   });
 });
