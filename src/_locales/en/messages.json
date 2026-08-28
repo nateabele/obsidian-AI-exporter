@@ -44,10 +44,6 @@
     "message": "Sync failed: the server repeatedly asked for the full conversation",
     "description": "Error detail shown when the server responds needsFullContent a second time in the same sync attempt, after a full-content resend"
   },
-  "syncIcon_repairUnsupported": {
-    "message": "Repair from source isn't supported on this platform",
-    "description": "Error detail when the repair action is invoked on a platform with no ArchiveAdapter"
-  },
   "syncIcon_repairNoConversationId": {
     "message": "Couldn't determine which conversation to repair",
     "description": "Error detail when the current page has no resolvable conversation id at the time repair is clicked"

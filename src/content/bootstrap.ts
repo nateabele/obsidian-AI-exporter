@@ -350,6 +350,19 @@ function settleIcon(configured: boolean, href: string): void {
 }
 
 /**
+ * Whether `href` is still the page the user is looking at. Used to guard
+ * every user-visible side effect of `repairConversation` that isn't already
+ * routed through `paintFor()` (which does its own, separate href check) —
+ * a toast has no equivalent guard built in, so without this an in-app
+ * navigation mid-repair would pop a toast about a conversation the user has
+ * since left, the same stale-result bug the icon's `paintFor()` convention
+ * exists to prevent, just in a channel that convention doesn't cover.
+ */
+function isStillCurrent(href: string): boolean {
+  return href === location.href;
+}
+
+/**
  * Run the icon menu's "Repair this conversation from source" action: an
  * authoritative single-conversation re-import via the platform's own API
  * (`fetchConversationForRepair`, `src/content/archive/`), for when the
@@ -360,7 +373,8 @@ function settleIcon(configured: boolean, href: string): void {
  * in-app navigation mid-fetch must not let this repair's outcome paint
  * onto whatever conversation is now on screen, so every result here goes
  * through `paintFor()`, never `setSyncState()` directly (see
- * `test/arch/sync-icon-invariants.test.ts`).
+ * `test/arch/sync-icon-invariants.test.ts`), and every toast is guarded by
+ * `isStillCurrent()` for the same reason.
  *
  * A `skipped` response (the server refuses a conversation containing a
  * truncated message, or with no messages at all, and writes nothing) is a
@@ -369,6 +383,12 @@ function settleIcon(configured: boolean, href: string): void {
  * `settleIcon()` derive `offline` on every later quiet auto-sync tick until
  * some future success or failure happened to clear it — turning a benign
  * skip into a phantom, indefinitely-stuck connection failure.
+ *
+ * A genuine failure (thrown or reported) is surfaced both on the icon and
+ * as an error toast — matching `handleSync`'s manual-sync path — because
+ * this action was explicitly clicked to fix a bad transcript; if it fails,
+ * quietly doing nothing is the exact failure mode it exists to correct, and
+ * an icon tooltip alone is too easy to miss.
  */
 async function repairConversation(href: string, conversationId: string): Promise<void> {
   paintFor(href, 'syncing');
@@ -377,6 +397,7 @@ async function repairConversation(href: string, conversationId: string): Promise
     const response = await sendMessage({ action: 'chatBackfill', data: request });
     if ('error' in response) {
       console.warn('[G2O] Repair failed:', response.error);
+      if (isStillCurrent(href)) showErrorToast(response.error);
       paintFor(href, 'offline', { error: response.error });
       return;
     }
@@ -389,7 +410,9 @@ async function repairConversation(href: string, conversationId: string): Promise
       suggestionCount: suggestionCountAfter,
     });
     if (response.skipped) {
-      showToast(getMessage('syncIcon_repairSkipped', [response.skipped]), 'info');
+      if (isStillCurrent(href)) {
+        showToast(getMessage('syncIcon_repairSkipped', [response.skipped]), 'info');
+      }
       paintFor(href, settledState, { error: null, suggestionCount: suggestionCountAfter });
       return;
     }
@@ -401,6 +424,7 @@ async function repairConversation(href: string, conversationId: string): Promise
   } catch (error) {
     const message = extractErrorMessage(error);
     console.error('[G2O] Repair failed:', error);
+    if (isStillCurrent(href)) showErrorToast(message);
     paintFor(href, 'offline', { error: message });
   }
 }
@@ -410,20 +434,24 @@ async function repairConversation(href: string, conversationId: string): Promise
  * entry (`SyncIconHandlers.onRepair`).
  *
  * Only wired into `injectSyncIcon()` for a platform with a working
- * `ArchiveAdapter` (see `initialize()`), but the conversation id is
- * re-resolved here — fresh, at click time, from the live DOM — rather than
- * captured once when the icon was injected: the SPA can navigate between
- * conversations without a reload, so a stale id captured at page-load time
- * could silently repair the wrong (or no longer open) conversation.
+ * `ArchiveAdapter` (see `initialize()`), so — unlike the conversation id
+ * below — there is no unsupported-platform case left to check here: the
+ * platform can't change without a full page reload, which starts a fresh
+ * content-script instance.
+ *
+ * The conversation id, in contrast, is re-resolved here — fresh, at click
+ * time, from the live DOM — rather than captured once when the icon was
+ * injected: the SPA can navigate between conversations without a reload, so
+ * a stale id captured at page-load time could silently repair the wrong (or
+ * no longer open) conversation. `canRepair` (see `initialize()`) keeps the
+ * menu entry itself from being offered when this would fail, so reaching
+ * this branch means the id disappeared in the narrow window between the
+ * menu being built and this click — a live safety net, not the primary
+ * defense.
  */
 function handleRepairClick(): void {
   const startHref = location.href;
-  const extractor = getExtractor();
-  if (!extractor || !ARCHIVE_SUPPORTED_PLATFORMS.includes(extractor.platform)) {
-    paintFor(startHref, 'offline', { error: getMessage('syncIcon_repairUnsupported') });
-    return;
-  }
-  const conversationId = extractor.getConversationId();
+  const conversationId = getExtractor()?.getConversationId();
   if (!conversationId) {
     paintFor(startHref, 'offline', { error: getMessage('syncIcon_repairNoConversationId') });
     return;
@@ -614,16 +642,20 @@ export async function initialize(): Promise<void> {
           showErrorToast(extractErrorMessage(error));
         });
     },
-    // Only offered on a platform with a working ArchiveAdapter — one of
+    // Only offered on a platform with a working ArchiveAdapter —
     // ARCHIVE_SUPPORTED_PLATFORMS doesn't change for the life of this
-    // content-script instance, unlike the conversation id itself (which
-    // handleRepairClick re-resolves fresh at click time to survive SPA
-    // navigation). Omitted (not a no-op) everywhere else, so the menu
-    // entry simply doesn't appear rather than offering an action that can
-    // only fail.
+    // content-script instance, unlike the conversation id itself. Omitted
+    // (not a no-op) on any other platform, so the menu entry simply
+    // doesn't appear rather than offering an action that can only fail.
     onRepair: ARCHIVE_SUPPORTED_PLATFORMS.includes(extractor.platform)
       ? handleRepairClick
       : undefined,
+    // Re-checked fresh every time the menu is built (see
+    // buildMenuEntries), unlike onRepair's presence above: the SPA can
+    // navigate to a page with no resolvable conversation id (e.g. a
+    // brand-new ChatGPT chat before its URL gains an id) without a reload,
+    // so this can't be decided once here at injection time.
+    canRepair: () => Boolean(getExtractor()?.getConversationId()),
   });
   // Establish the icon's context before any sync can run, so the very
   // first paint isn't dropped for having no context to match against.

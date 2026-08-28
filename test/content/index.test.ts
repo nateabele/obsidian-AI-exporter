@@ -243,7 +243,9 @@ describe('content/bootstrap', () => {
         await vi.waitFor(() => {
           const calls = vi
             .mocked(sendMessage)
-            .mock.calls.filter(([message]) => (message as { action: string }).action === 'chatSync');
+            .mock.calls.filter(
+              ([message]) => (message as { action: string }).action === 'chatSync'
+            );
           expect(calls).toHaveLength(1);
         });
 
@@ -361,6 +363,24 @@ describe('content/bootstrap', () => {
         expect(handlers.onRepair).toEqual(expect.any(Function));
       });
 
+      it('canRepair reports true when the current page has a resolvable conversation id', async () => {
+        loadClaudeConversation();
+        await initialize();
+        const handlers = vi.mocked(injectSyncIcon).mock.calls[0][0];
+
+        expect(handlers.canRepair!()).toBe(true);
+      });
+
+      it('canRepair reports false so the menu entry is not offered when no conversation id is resolvable, even on a supported platform', async () => {
+        setClaudeLocation('');
+        loadFixture(createClaudeConversationDOM([{ role: 'user', content: 'Hello Claude' }]));
+        await initialize();
+        const handlers = vi.mocked(injectSyncIcon).mock.calls[0][0];
+
+        expect(handlers.onRepair).toEqual(expect.any(Function));
+        expect(handlers.canRepair!()).toBe(false);
+      });
+
       it('fetches, converts, and backfills the current conversation, then paints the icon from the response', async () => {
         loadClaudeConversation();
         vi.mocked(fetchConversationForRepair).mockResolvedValue(backfillRequest);
@@ -398,6 +418,11 @@ describe('content/bootstrap', () => {
         // Never painted via setSyncState directly across the fetch/send
         // awaits — see test/arch/sync-icon-invariants.test.ts.
         expect(paintFor).toHaveBeenCalledWith(location.href, 'syncing');
+        // Exactly one backfill request per repair click — nothing here
+        // should retry or double-send on a normal success path.
+        expect(
+          vi.mocked(sendMessage).mock.calls.filter(([msg]) => msg.action === 'chatBackfill')
+        ).toHaveLength(1);
       });
 
       it('treats a skipped response as a normal outcome, not a failure', async () => {
@@ -428,11 +453,7 @@ describe('content/bootstrap', () => {
         expect(showToast).toHaveBeenCalledWith('syncIcon_repairSkipped', 'info');
         // A skip must not land on 'offline' -- see repairConversation()'s
         // comment on why the retained `error` field is never used for it.
-        expect(paintFor).not.toHaveBeenCalledWith(
-          location.href,
-          'offline',
-          expect.anything()
-        );
+        expect(paintFor).not.toHaveBeenCalledWith(location.href, 'offline', expect.anything());
       });
 
       it('paints the icon offline, visibly, when the server rejects the backfill', async () => {
@@ -449,6 +470,11 @@ describe('content/bootstrap', () => {
             error: 'Companion is offline',
           })
         );
+        // A repair was explicitly clicked to fix a bad transcript — quietly
+        // doing nothing on failure is exactly the failure mode it exists to
+        // correct, so an icon tooltip alone isn't enough (brief requirement
+        // 5): it must also surface as a toast, the same as handleSync's.
+        expect(showErrorToast).toHaveBeenCalledWith('Companion is offline');
       });
 
       it('paints the icon offline, visibly, when fetching the conversation from source throws', async () => {
@@ -469,6 +495,70 @@ describe('content/bootstrap', () => {
         expect(sendMessage).not.toHaveBeenCalledWith(
           expect.objectContaining({ action: 'chatBackfill' })
         );
+        expect(showErrorToast).toHaveBeenCalledWith('Claude API request failed (401)');
+      });
+
+      it('does not show the skip toast after an in-app navigation away mid-fetch, matching the icon paint guard', async () => {
+        loadClaudeConversation();
+        const startHref = location.href;
+        vi.mocked(fetchConversationForRepair).mockResolvedValue(backfillRequest);
+        let resolveBackfill!: (response: ChatBackfillResponse) => void;
+        vi.mocked(sendMessage).mockImplementation(
+          () =>
+            new Promise(resolve => {
+              resolveBackfill = resolve;
+            })
+        );
+        await initialize();
+        const handlers = vi.mocked(injectSyncIcon).mock.calls[0][0];
+
+        handlers.onRepair!();
+        await vi.waitFor(() => expect(sendMessage).toHaveBeenCalled());
+
+        // Navigate to a different conversation before the server responds.
+        setClaudeLocation('11111111-1111-1111-1111-111111111111');
+        resolveBackfill({
+          notePath: null,
+          anchorsPreserved: 0,
+          anchorsIssued: 0,
+          superseded: 0,
+          skipped: 'truncated',
+        });
+
+        await vi.waitFor(() =>
+          expect(paintFor).toHaveBeenCalledWith(startHref, 'synced', expect.anything())
+        );
+        // The stale-result-lands-on-the-wrong-conversation bug the icon's
+        // paintFor() convention exists to prevent, but in a channel that
+        // convention doesn't cover: a toast about conversation A's outcome
+        // must not render on conversation B's page.
+        expect(showToast).not.toHaveBeenCalled();
+      });
+
+      it('does not show an error toast after an in-app navigation away mid-fetch', async () => {
+        loadClaudeConversation();
+        const startHref = location.href;
+        vi.mocked(fetchConversationForRepair).mockResolvedValue(backfillRequest);
+        let rejectBackfill!: (error: Error) => void;
+        vi.mocked(sendMessage).mockImplementation(
+          () =>
+            new Promise((_resolve, reject) => {
+              rejectBackfill = reject;
+            })
+        );
+        await initialize();
+        const handlers = vi.mocked(injectSyncIcon).mock.calls[0][0];
+
+        handlers.onRepair!();
+        await vi.waitFor(() => expect(sendMessage).toHaveBeenCalled());
+
+        setClaudeLocation('11111111-1111-1111-1111-111111111111');
+        rejectBackfill(new Error('Claude API request failed (401)'));
+
+        await vi.waitFor(() =>
+          expect(paintFor).toHaveBeenCalledWith(startHref, 'offline', expect.anything())
+        );
+        expect(showErrorToast).not.toHaveBeenCalled();
       });
 
       it('paints the icon offline, visibly, when no conversation id is resolvable on the current page', async () => {
@@ -721,7 +811,9 @@ describe('content/bootstrap', () => {
           const data = (message as { data: { newBlocks: unknown[] } }).data;
           sentNewBlockCounts.push(data.newBlocks.length);
           return Promise.resolve(
-            chatSyncCallCount === 1 ? { ...okChatSync, mode: 'needsFullContent' as const } : okChatSync
+            chatSyncCallCount === 1
+              ? { ...okChatSync, mode: 'needsFullContent' as const }
+              : okChatSync
           );
         }
         return Promise.reject(new Error('unexpected action'));

@@ -27,12 +27,23 @@ export interface SyncIconHandlers {
   /**
    * Repair the current conversation from source (re-import authoritatively
    * via the platform's own API). Optional and omitted entirely — rather
-   * than provided as a no-op — on a platform/page with no working
-   * `ArchiveAdapter` or no resolvable conversation id, so the menu entry
-   * (see `buildMenuEntries`) simply doesn't appear rather than offering an
-   * action that can only fail.
+   * than provided as a no-op — on a platform with no working
+   * `ArchiveAdapter`, so the menu entry (see `buildMenuEntries`) simply
+   * doesn't appear rather than offering an action that can only fail. This
+   * alone doesn't account for a page with no resolvable conversation id
+   * right now (see `canRepair`) — that can change without this object being
+   * rebuilt, since the SPA can navigate without a reload.
    */
   onRepair?: () => void;
+  /**
+   * Whether `onRepair` can currently act, re-checked fresh every time the
+   * menu is (re)built (see `buildMenuEntries`) rather than once when the
+   * icon was injected — unlike `onRepair`'s mere presence, a resolvable
+   * conversation id can come and go on the same page as the SPA navigates.
+   * Defaults to `true` when omitted, so callers with nothing to check don't
+   * have to supply it. Ignored when `onRepair` itself is absent.
+   */
+  canRepair?: () => boolean;
 }
 
 const GLYPHS: Record<SyncIconState, string> = {
@@ -290,9 +301,10 @@ function renderSuggestionGroup(
  * - `offline`: the last error plus "Retry".
  * - any other configured state: "Open transcript", plus "Sync now" and
  *   "Repair this conversation from source" (the latter only when
- *   `handlers.onRepair` is provided) unless a sync is already in flight
- *   (`syncing`), in which case both are omitted so neither can be
- *   re-triggered mid-request.
+ *   `handlers.onRepair` is provided and `handlers.canRepair` — re-checked
+ *   here, fresh, every time the menu is built — doesn't say otherwise)
+ *   unless a sync is already in flight (`syncing`), in which case both are
+ *   omitted so neither can be re-triggered mid-request.
  *
  * Suggestion groups (related transcripts, then related topics) follow the
  * fixed entries, one heading plus one entry per item, each group omitted
@@ -332,7 +344,10 @@ export function buildMenuEntries(
   addEntry(getMessage('syncIcon_openTranscript'), () => handlers.onOpenPath(lastNotePath ?? ''));
   // Omitted while a sync is already in flight, same as "Sync now" above —
   // a repair started mid-sync would race it on the icon's paint state.
-  if (state !== 'syncing' && handlers.onRepair) {
+  // canRepair() is consulted fresh here (not cached from injectSyncIcon
+  // time) because whether the current page has a resolvable conversation
+  // id can change between menu opens as the SPA navigates.
+  if (state !== 'syncing' && handlers.onRepair && (handlers.canRepair?.() ?? true)) {
     addEntry(getMessage('syncIcon_repair'), handlers.onRepair);
   }
   renderSuggestionGroup(

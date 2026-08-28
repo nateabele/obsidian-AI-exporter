@@ -520,9 +520,31 @@ describe('the repair menu entry', () => {
     expect(entries()).not.toContain('syncIcon_repair');
   });
 
-  it('does not offer repair when no handler is provided, e.g. an unsupported platform or no resolvable conversation id', () => {
+  it('does not offer repair when no handler is provided, e.g. an unsupported platform', () => {
     buildMenuEntries(menu, 'synced', makeHandlers({ onRepair: undefined }));
     expect(entries()).not.toContain('syncIcon_repair');
+  });
+
+  it('does not offer repair when canRepair reports false, e.g. no resolvable conversation id right now', () => {
+    buildMenuEntries(menu, 'synced', makeHandlers({ canRepair: () => false }));
+    expect(entries()).not.toContain('syncIcon_repair');
+  });
+
+  it('offers repair when canRepair reports true', () => {
+    buildMenuEntries(menu, 'synced', makeHandlers({ canRepair: () => true }));
+    expect(entries()).toContain('syncIcon_repair');
+  });
+
+  it('re-checks canRepair fresh on every build rather than caching its first result', () => {
+    let resolvable = false;
+    const handlers = makeHandlers({ canRepair: () => resolvable });
+
+    buildMenuEntries(menu, 'synced', handlers);
+    expect(entries()).not.toContain('syncIcon_repair');
+
+    resolvable = true;
+    buildMenuEntries(menu, 'synced', handlers);
+    expect(entries()).toContain('syncIcon_repair');
   });
 
   it('calls onRepair when clicked', () => {
