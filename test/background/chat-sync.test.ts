@@ -8,7 +8,6 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { ChatBackfillRequest, ChatSyncRequest, ChatSyncResponse } from '../../src/lib/types';
-import { BACKFILL_LOCK_RETRY_DELAY } from '../../src/lib/constants';
 
 const mockCompanion = {
   postSync: vi.fn(),
@@ -193,12 +192,12 @@ describe('background/service-worker chatSync wiring', () => {
   });
 
   describe('409 retry distinction', () => {
-    it('enqueues a 409 that carries a code (e.g. conversation_locked)', async () => {
-      const lockedError = Object.assign(new Error('locked'), {
+    it('enqueues a 409 that carries a machine-readable code', async () => {
+      const codedError = Object.assign(new Error('coded conflict'), {
         status: 409,
-        code: 'conversation_locked',
+        code: 'some_server_signal',
       });
-      mockCompanion.postSync.mockRejectedValue(lockedError);
+      mockCompanion.postSync.mockRejectedValue(codedError);
       mockCompanion.enqueue.mockResolvedValue(undefined);
 
       const sendResponse = vi.fn();
@@ -296,42 +295,13 @@ describe('background/service-worker chatBackfill wiring', () => {
     );
   });
 
-  // The likeliest lock collision in the design: clicking "Repair this
-  // conversation from source" on the conversation being viewed while its
-  // own debounced auto-sync is still in flight. The server answers 409
-  // conversation_locked; before this retry the extension just showed an
-  // error toast and painted `offline`.
-  describe('409 lock-contention retry', () => {
-    it('retries once after a delay when a 409 carries code conversation_locked', async () => {
-      vi.useFakeTimers();
-      const backfillResult = {
-        notePath: 'AI/claude/t-abc.md',
-        anchorsPreserved: 1,
-        anchorsIssued: 0,
-        superseded: 0,
-        skipped: null,
-      };
-      mockCompanion.postBackfill
-        .mockRejectedValueOnce(
-          Object.assign(new Error('locked'), { status: 409, code: 'conversation_locked' })
-        )
-        .mockResolvedValueOnce(backfillResult);
-
-      const sendResponse = vi.fn();
-      capturedListener({ action: 'chatBackfill', data: backfillRequest }, sender, sendResponse);
-
-      await vi.waitFor(() => expect(mockCompanion.postBackfill).toHaveBeenCalledTimes(1));
-      expect(sendResponse).not.toHaveBeenCalled();
-
-      await vi.advanceTimersByTimeAsync(BACKFILL_LOCK_RETRY_DELAY);
-
-      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
-      expect(mockCompanion.postBackfill).toHaveBeenCalledTimes(2);
-      expect(sendResponse).toHaveBeenCalledWith(backfillResult);
-      vi.useRealTimers();
-    });
-
-    it('never retries a codeless 409 — that is a permanent client bug, not contention', async () => {
+  // A backfill has no replay queue behind it, and the companion no longer
+  // rejects a contending caller at all — /sync and /backfill share one
+  // in-process queue there, so a second caller awaits the first rather than
+  // getting a 409. There is therefore nothing left that a client-side retry
+  // could usefully re-send, and a failure must reach the user unchanged.
+  describe('failure handling (no retry)', () => {
+    it('surfaces a 409 to the caller after exactly one attempt', async () => {
       mockCompanion.postBackfill.mockRejectedValue(
         Object.assign(new Error('newBlocks length mismatch'), { status: 409 })
       );
@@ -349,24 +319,19 @@ describe('background/service-worker chatBackfill wiring', () => {
       );
     });
 
-    it('surfaces the retry\'s own failure when the lock is still held', async () => {
-      vi.useFakeTimers();
+    it('surfaces a coded 409 after exactly one attempt too, never re-sending it', async () => {
       mockCompanion.postBackfill.mockRejectedValue(
-        Object.assign(new Error('locked'), { status: 409, code: 'conversation_locked' })
+        Object.assign(new Error('coded conflict'), { status: 409, code: 'some_server_signal' })
       );
 
       const sendResponse = vi.fn();
       capturedListener({ action: 'chatBackfill', data: backfillRequest }, sender, sendResponse);
 
-      await vi.waitFor(() => expect(mockCompanion.postBackfill).toHaveBeenCalledTimes(1));
-      await vi.advanceTimersByTimeAsync(BACKFILL_LOCK_RETRY_DELAY);
-
       await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
-      expect(mockCompanion.postBackfill).toHaveBeenCalledTimes(2);
+      expect(mockCompanion.postBackfill).toHaveBeenCalledTimes(1);
       expect(sendResponse).toHaveBeenCalledWith(
-        expect.objectContaining({ success: false, error: expect.stringContaining('locked') })
+        expect.objectContaining({ success: false, error: expect.stringContaining('coded conflict') })
       );
-      vi.useRealTimers();
     });
   });
 

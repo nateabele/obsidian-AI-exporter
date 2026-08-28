@@ -17,12 +17,13 @@ export interface CompanionSettings {
 
 /**
  * A non-OK response from the companion listener. Carries the server's
- * machine-readable `code` (e.g. `'conversation_locked'`) when the response
- * body included one, so a caller can tell apart two failures that share
- * the same HTTP status but need opposite retry handling — a locked
- * conversation is transient and worth replaying, while a 409 with no code
- * (a permanent client-side bug) must never be retried — without
- * re-deriving that distinction from the status alone.
+ * machine-readable `code` when the response body included one, so a caller
+ * can tell apart two failures that share the same HTTP status but need
+ * opposite retry handling. That distinction is load-bearing for exactly one
+ * rule today: a 409 with NO code is chatSyncService's newBlocks-length
+ * mismatch, a permanent client-side bug that must never be replayed, while
+ * a coded 409 is a deliberate server signal that may be. Reading `code` off
+ * the body is the only way to tell those apart — the status alone cannot.
  */
 export class CompanionApiError extends Error {
   readonly status: number;

@@ -26,7 +26,6 @@ import type {
   ChatSyncRequest,
   ChatSyncResponse,
 } from '../lib/types';
-import { BACKFILL_LOCK_RETRY_DELAY } from '../lib/constants';
 
 // Run settings migration on service worker startup (C-01)
 // Note: top-level await not available in service workers, use .catch() for error handling
@@ -108,8 +107,8 @@ function isContentScriptSender(sender: chrome.runtime.MessageSender): boolean {
  * a 409 with no `code` — chatSyncService's newBlocks-length mismatch, a
  * permanent client bug that would otherwise retry forever and hide it (see
  * CompanionApiError in `lib/companion-client.ts`). Every other failure
- * (a 409 that DOES carry a code, e.g. 'conversation_locked'; a network
- * error; any other status) is retryable, matching the queue's original
+ * (a network error, any other status, or a 409 that DOES carry a
+ * machine-readable code) is retryable, matching the queue's original
  * indiscriminate behavior. Duck-typed rather than importing
  * `isCompanionApiError` so this reads structurally off whatever error
  * shape actually arrives, without coupling to a specific class identity.
@@ -121,50 +120,27 @@ function isRetryableCompanionFailure(error: unknown): boolean {
 }
 
 /**
- * Whether a failed backfill lost a lock race and is worth one more try.
- *
- * Narrower than `isRetryableCompanionFailure` on purpose: a backfill has no
- * replay queue behind it, so this is the only retry it gets and it must be
- * spent on the one failure that is genuinely transient. That failure is
- * lock contention — the likeliest collision in the design is clicking
- * "Repair this conversation from source" on the conversation being viewed
- * while its own debounced auto-sync is still in flight, which the server
- * correctly answers with 409 `conversation_locked`. A codeless 409 is
- * chatSyncService's newBlocks-length mismatch, a permanent client bug that
- * must still never be retried; anything else (network, 5xx) is surfaced as
- * before rather than silently delaying the user's feedback.
- */
-function isLockContentionFailure(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false;
-  const { status, code } = error as { status?: unknown; code?: unknown };
-  return status === 409 && code === 'conversation_locked';
-}
-
-const delay = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
-
-/**
  * Handle a `chatBackfill` request. Unlike chatSync, a backfill is a one-off,
  * user-initiated import (see the popup's "Import history" action and the
  * icon menu's "Repair this conversation from source") rather than a
  * continuous background loop, so there is no replay queue: a failure is
- * surfaced directly to the caller. The single exception is lock contention,
- * which is retried once after a short delay (see
- * `isLockContentionFailure`); if the retry also fails, that failure is what
- * the caller sees.
+ * surfaced directly to the caller.
+ *
+ * There is deliberately no retry here. This once retried a 409
+ * `conversation_locked` once after a delay, back when the companion took a
+ * DB-backed per-conversation lock and rejected the loser. The companion now
+ * serializes /sync and /backfill through one in-process queue instead: a
+ * second caller simply awaits the first's settlement, so contention is
+ * absorbed server-side and never reaches the extension as an error at all.
+ * With that 409 gone, a client-side retry could only re-send failures that
+ * are permanent (a codeless 409 is chatSyncService's newBlocks-length
+ * mismatch) or better surfaced immediately (network, 5xx).
  */
-async function handleChatBackfill(
+function handleChatBackfill(
   data: ChatBackfillRequest,
   companion: CompanionSettings
 ): Promise<ChatBackfillResponse> {
-  try {
-    return await postBackfill(companion, data);
-  } catch (error) {
-    if (!isLockContentionFailure(error)) {
-      throw error;
-    }
-    await delay(BACKFILL_LOCK_RETRY_DELAY);
-    return postBackfill(companion, data);
-  }
+  return postBackfill(companion, data);
 }
 
 /**
@@ -201,13 +177,12 @@ async function handleChatSync(
     return result;
   } catch (error) {
     // A 409 with no code is chatSyncService's newBlocks-length mismatch: a
-    // permanent client-side bug, not contention. Queueing it here would
-    // retry forever and hide the bug rather than surface it — only a 409
-    // that DOES carry a code (e.g. 'conversation_locked', when a backfill
-    // or another sync holds this conversation) is transient enough to be
-    // worth replaying. Anything else (a network failure, a non-409 status)
-    // has no code either but is retryable by default, matching the queue's
-    // original indiscriminate behavior.
+    // permanent client-side bug. Queueing it here would retry forever and
+    // hide the bug rather than surface it. A 409 that DOES carry a
+    // machine-readable code is a deliberate, distinguishable server signal
+    // and stays replayable. Anything else (a network failure, a non-409
+    // status) has no code either but is retryable by default, matching the
+    // queue's original indiscriminate behavior.
     if (isRetryableCompanionFailure(error)) {
       // Queueing the failed request must not mask the original failure — a
       // storage-quota error from enqueue() should never hide why the sync

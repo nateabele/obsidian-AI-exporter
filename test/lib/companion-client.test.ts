@@ -249,7 +249,7 @@ describe('postBackfill', () => {
       vi.fn().mockResolvedValue({
         ok: false,
         status: 409,
-        text: async () => JSON.stringify({ code: 'conversation_locked' }),
+        text: async () => JSON.stringify({ code: 'some_server_signal' }),
       })
     );
 
@@ -260,7 +260,7 @@ describe('postBackfill', () => {
       expect(isCompanionApiError(error)).toBe(true);
       if (isCompanionApiError(error)) {
         expect(error.status).toBe(409);
-        expect(error.code).toBe('conversation_locked');
+        expect(error.code).toBe('some_server_signal');
       }
     }
   });

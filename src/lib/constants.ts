@@ -119,15 +119,6 @@ export const EVENT_THROTTLE_DELAY = 1000;
 /** Debounce delay for MutationObserver callback (milliseconds) */
 export const MUTATION_DEBOUNCE_DELAY = 100;
 
-/**
- * Delay before the single retry of a backfill that lost a lock race
- * (milliseconds). Long enough for an in-flight auto-sync of the same
- * conversation to finish and release the lock, short enough that a user who
- * just clicked "Repair this conversation from source" does not think the
- * action was dropped.
- */
-export const BACKFILL_LOCK_RETRY_DELAY = 1500;
-
 // ============================================================
 // Security Constants
 // ============================================================
