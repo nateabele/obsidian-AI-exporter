@@ -705,6 +705,14 @@ async function handleImportHistory(tabId: number): Promise<void> {
       appendImportLine(`${getMessage('popup_importError')}: ${discovery.error}`);
       return;
     }
+    // Conversations discovery could not read at all (see
+    // `discoverConversations`). Reported before the import runs, using the
+    // same `title — reason` shape a failed `chatBackfill` uses below, so a
+    // partial run always names what it lost instead of quietly importing
+    // fewer conversations than the history holds.
+    for (const failure of discovery.failures) {
+      appendImportLine(`${getMessage('popup_importError')}: ${failure.title} — ${failure.error}`);
+    }
     await importConversations(discovery.conversations);
   } catch (error) {
     appendImportLine(`${getMessage('popup_importError')}: ${extractErrorMessage(error)}`);

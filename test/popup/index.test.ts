@@ -6,7 +6,11 @@
  * index.ts entry shim stays a DOMContentLoaded one-liner.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { ExtensionSettings, ChatBackfillRequest } from '../../src/lib/types';
+import type {
+  ArchiveDiscoverFailure,
+  ChatBackfillRequest,
+  ExtensionSettings,
+} from '../../src/lib/types';
 
 vi.mock('../../src/lib/storage', () => ({
   getSettings: vi.fn(),
@@ -540,8 +544,15 @@ describe('popup/app', () => {
       vi.mocked(chrome.tabs.query).mockResolvedValue([{ id: 7, url } as chrome.tabs.Tab]);
     }
 
-    function stubDiscovery(conversations: Partial<ChatBackfillRequest>[]): void {
-      vi.mocked(chrome.tabs.sendMessage).mockResolvedValue({ success: true, conversations });
+    function stubDiscovery(
+      conversations: Partial<ChatBackfillRequest>[],
+      failures: ArchiveDiscoverFailure[] = []
+    ): void {
+      vi.mocked(chrome.tabs.sendMessage).mockResolvedValue({
+        success: true,
+        conversations,
+        failures,
+      });
     }
 
     function importResultsText(): string {
@@ -560,6 +571,34 @@ describe('popup/app', () => {
       await initWithDefaults();
 
       expect(el<HTMLButtonElement>('importBtn').disabled).toBe(false);
+    });
+
+    // A conversation discovery could not read at all must be named, not
+    // silently dropped: without this the run would import fewer
+    // conversations than the history holds and still read as a clean
+    // finish (see discoverConversations' per-entry guard).
+    it('names a conversation discovery skipped, then imports the rest', async () => {
+      stubActiveTab('https://claude.ai/chat/abc');
+      stubDiscovery(
+        [{ conversationId: 'c1', title: 'Good conv' }],
+        [{ conversationId: 'bad', title: 'Broken conv', error: 'HTTP 500' }]
+      );
+      await initWithDefaults();
+      vi.mocked(sendMessage).mockResolvedValue({
+        notePath: '/vault/note.md',
+        anchorsPreserved: 0,
+        anchorsIssued: 0,
+        superseded: 0,
+        skipped: null,
+      });
+
+      el<HTMLButtonElement>('importBtn').click();
+
+      await vi.waitFor(() => {
+        expect(importResultsText()).toContain('Broken conv');
+      });
+      expect(importResultsText()).toContain('HTTP 500');
+      expect(vi.mocked(sendMessage)).toHaveBeenCalledTimes(1);
     });
 
     it('dispatches one chatBackfill message per discovered conversation', async () => {

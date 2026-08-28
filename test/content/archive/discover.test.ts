@@ -42,7 +42,7 @@ describe('discoverConversations', () => {
       '/api/organizations': ORGS,
     });
 
-    const conversations = await discoverConversations();
+    const { conversations, failures } = await discoverConversations();
 
     expect(conversations).toHaveLength(1);
     expect(conversations[0]).toMatchObject({
@@ -53,6 +53,51 @@ describe('discoverConversations', () => {
     });
     expect(conversations[0].messages.map(m => m.role)).toEqual(['user', 'assistant']);
     expect(conversations[0].messages[0].hash).toBeTruthy();
+    expect(failures).toEqual([]);
+  });
+
+  // Regression: with no per-entry guard, one unreadable conversation threw
+  // out of the loop and the discovery listener turned it into
+  // `{success: false}` — so a sweep over 40 conversations that hit a single
+  // bad one imported nothing at all.
+  it('skips and reports a conversation that cannot be fetched, still importing the rest', async () => {
+    setClaudeLocation('c1');
+    const mock = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes('/chat_conversations/bad')) {
+        // e.g. a conversation the detail endpoint 500s on
+        return { ok: false, status: 500, json: async () => ({}) };
+      }
+      if (u.includes('/chat_conversations/c1')) {
+        return { ok: true, status: 200, json: async () => DETAIL };
+      }
+      if (u.includes('/chat_conversations/c2')) {
+        return { ok: true, status: 200, json: async () => ({ ...DETAIL, uuid: 'c2', name: 'Conv 2' }) };
+      }
+      if (u.includes('/chat_conversations')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [
+            CONVERSATIONS[0],
+            { uuid: 'bad', name: 'Broken conv', created_at: '2025-01-02T00:00:00Z', is_temporary: false },
+            { uuid: 'c2', name: 'Conv 2', created_at: '2025-01-03T00:00:00Z', is_temporary: false },
+          ],
+        };
+      }
+      if (u.includes('/api/organizations')) {
+        return { ok: true, status: 200, json: async () => ORGS };
+      }
+      throw new Error(`Unstubbed fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', mock);
+
+    const { conversations, failures } = await discoverConversations();
+
+    expect(conversations.map(c => c.conversationId)).toEqual(['c1', 'c2']);
+    expect(failures).toEqual([
+      { conversationId: 'bad', title: 'Broken conv', error: expect.stringContaining('500') },
+    ]);
   });
 });
 
@@ -161,6 +206,7 @@ describe('registerArchiveDiscoveryListener', () => {
     expect(response.success).toBe(true);
     if (response.success) {
       expect(response.conversations).toHaveLength(1);
+      expect(response.failures).toEqual([]);
     }
   });
 

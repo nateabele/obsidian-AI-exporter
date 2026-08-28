@@ -279,4 +279,100 @@ describe('ChatGptArchiveAdapter', () => {
     });
     expect(r.messages[0].markdown).toBe('caption');
   });
+  // Regression: reading `content.parts` unconditionally threw
+  // `TypeError: Cannot read properties of undefined (reading 'filter')` on
+  // these nodes, aborting the whole import. `author.role` is genuinely
+  // 'assistant' for both, so the role filter cannot catch them.
+  it('skips a code-interpreter node (content_type: code, no parts) instead of crashing', async () => {
+    stubFetch({
+      '/api/auth/session': { accessToken: 'tok' },
+      '/backend-api/conversation/c-code': {
+        title: 'T',
+        create_time: 1,
+        current_node: 'n3',
+        mapping: {
+          n1: {
+            id: 'n1',
+            parent: null,
+            children: ['n2'],
+            message: { id: 'n1', author: { role: 'user' }, content: { content_type: 'text', parts: ['plot it'] } },
+          },
+          n2: {
+            id: 'n2',
+            parent: 'n1',
+            children: ['n3'],
+            message: {
+              id: 'n2',
+              author: { role: 'assistant' },
+              content: { content_type: 'code', language: 'python', text: 'import numpy as np' },
+            },
+          },
+          n3: {
+            id: 'n3',
+            parent: 'n2',
+            children: [],
+            message: { id: 'n3', author: { role: 'assistant' }, content: { content_type: 'text', parts: ['here it is'] } },
+          },
+        },
+      },
+    });
+    const r = await new ChatGptArchiveAdapter().fetchConversation({
+      conversationId: 'c-code',
+      title: 'T',
+      createdAt: '',
+      url: '',
+      accountId: null,
+      accountName: null,
+    });
+    expect(r.messages.map((m) => m.sourceId)).toEqual(['n1', 'n3']);
+    expect(r.messages.map((m) => m.markdown)).toEqual(['plot it', 'here it is']);
+  });
+
+  it('skips a reasoning node (content_type: thoughts, no parts) instead of crashing', async () => {
+    stubFetch({
+      '/api/auth/session': { accessToken: 'tok' },
+      '/backend-api/conversation/c-think': {
+        title: 'T',
+        create_time: 1,
+        current_node: 'n3',
+        mapping: {
+          n1: {
+            id: 'n1',
+            parent: null,
+            children: ['n2'],
+            message: { id: 'n1', author: { role: 'user' }, content: { content_type: 'text', parts: ['why?'] } },
+          },
+          n2: {
+            id: 'n2',
+            parent: 'n1',
+            children: ['n3'],
+            message: {
+              id: 'n2',
+              author: { role: 'assistant' },
+              content: {
+                content_type: 'thoughts',
+                thoughts: [{ summary: 'Considering', content: 'internal reasoning' }],
+              },
+            },
+          },
+          n3: {
+            id: 'n3',
+            parent: 'n2',
+            children: [],
+            message: { id: 'n3', author: { role: 'assistant' }, content: { content_type: 'text', parts: ['because'] } },
+          },
+        },
+      },
+    });
+    const r = await new ChatGptArchiveAdapter().fetchConversation({
+      conversationId: 'c-think',
+      title: 'T',
+      createdAt: '',
+      url: '',
+      accountId: null,
+      accountName: null,
+    });
+    expect(r.messages.map((m) => m.sourceId)).toEqual(['n1', 'n3']);
+    expect(r.messages.map((m) => m.markdown)).toEqual(['why?', 'because']);
+  });
 });

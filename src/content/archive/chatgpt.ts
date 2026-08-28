@@ -39,10 +39,17 @@ interface ChatGptListEnvelope {
   offset: number;
 }
 
+/**
+ * `parts` is optional on purpose: only the text-bearing content types
+ * (`text`, `multimodal_text`) carry it. A `code` node (every
+ * code-interpreter / python tool call) carries `language`/`text` instead,
+ * and a `thoughts` node (every reasoning-model turn) carries `thoughts` —
+ * both authored by `assistant`, both with no `parts` at all.
+ */
 interface ChatGptMessage {
   id: string;
   author: { role: string };
-  content: { content_type: string; parts: unknown[] };
+  content: { content_type: string; parts?: unknown[] };
 }
 
 interface ChatGptNode {
@@ -126,6 +133,30 @@ async function fetchConversationList(token: string): Promise<ChatGptConversation
   return items;
 }
 
+/**
+ * The transcript text of one message node, or `null` when the node carries
+ * no transcript text at all and must be dropped from the chain.
+ *
+ * Reading `content.parts` unconditionally used to throw
+ * (`Cannot read properties of undefined (reading 'filter')`) on every
+ * `content_type: 'code'` (code-interpreter call) and `'thoughts'`
+ * (reasoning turn) node, which the `author.role` filter above cannot catch
+ * because their role genuinely is `'assistant'`.
+ *
+ * Those nodes are SKIPPED rather than rendered. The live DOM sync does not
+ * capture ChatGPT's collapsed reasoning/analysis panels either, so emitting
+ * them here would make the two producers disagree message-for-message —
+ * exactly the drift the shared hash formula (`to-request.ts`) exists to
+ * prevent — and each one would be an extra, unmatchable block in the note.
+ */
+function transcriptMarkdown(content: ChatGptMessage['content']): string | null {
+  const parts = content?.parts;
+  if (!Array.isArray(parts)) {
+    return null;
+  }
+  return parts.filter((part): part is string => typeof part === 'string').join('\n\n');
+}
+
 export class ChatGptArchiveAdapter implements ArchiveAdapter {
   readonly platform = 'chatgpt' as const;
 
@@ -172,9 +203,11 @@ export class ChatGptArchiveAdapter implements ArchiveAdapter {
       if (!role) {
         return [];
       }
-      const markdown = message.content.parts
-        .filter((part): part is string => typeof part === 'string')
-        .join('\n\n');
+      const markdown = transcriptMarkdown(message.content);
+      if (markdown === null) {
+        // A code-interpreter or reasoning node — see transcriptMarkdown().
+        return [];
+      }
       return [{ role, markdown, sourceId: node.id }];
     });
 

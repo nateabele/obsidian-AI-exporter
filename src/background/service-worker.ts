@@ -21,9 +21,12 @@ import type {
   ExtensionMessage,
   ContentScriptSettings,
   ExtensionSettings,
+  ChatBackfillRequest,
+  ChatBackfillResponse,
   ChatSyncRequest,
   ChatSyncResponse,
 } from '../lib/types';
+import { BACKFILL_LOCK_RETRY_DELAY } from '../lib/constants';
 
 // Run settings migration on service worker startup (C-01)
 // Note: top-level await not available in service workers, use .catch() for error handling
@@ -118,6 +121,53 @@ function isRetryableCompanionFailure(error: unknown): boolean {
 }
 
 /**
+ * Whether a failed backfill lost a lock race and is worth one more try.
+ *
+ * Narrower than `isRetryableCompanionFailure` on purpose: a backfill has no
+ * replay queue behind it, so this is the only retry it gets and it must be
+ * spent on the one failure that is genuinely transient. That failure is
+ * lock contention — the likeliest collision in the design is clicking
+ * "Repair this conversation from source" on the conversation being viewed
+ * while its own debounced auto-sync is still in flight, which the server
+ * correctly answers with 409 `conversation_locked`. A codeless 409 is
+ * chatSyncService's newBlocks-length mismatch, a permanent client bug that
+ * must still never be retried; anything else (network, 5xx) is surfaced as
+ * before rather than silently delaying the user's feedback.
+ */
+function isLockContentionFailure(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { status, code } = error as { status?: unknown; code?: unknown };
+  return status === 409 && code === 'conversation_locked';
+}
+
+const delay = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Handle a `chatBackfill` request. Unlike chatSync, a backfill is a one-off,
+ * user-initiated import (see the popup's "Import history" action and the
+ * icon menu's "Repair this conversation from source") rather than a
+ * continuous background loop, so there is no replay queue: a failure is
+ * surfaced directly to the caller. The single exception is lock contention,
+ * which is retried once after a short delay (see
+ * `isLockContentionFailure`); if the retry also fails, that failure is what
+ * the caller sees.
+ */
+async function handleChatBackfill(
+  data: ChatBackfillRequest,
+  companion: CompanionSettings
+): Promise<ChatBackfillResponse> {
+  try {
+    return await postBackfill(companion, data);
+  } catch (error) {
+    if (!isLockContentionFailure(error)) {
+      throw error;
+    }
+    await delay(BACKFILL_LOCK_RETRY_DELAY);
+    return postBackfill(companion, data);
+  }
+}
+
+/**
  * Redact sensitive settings for content scripts.
  * Content scripts only need to know IF an API key is configured, not the key itself.
  */
@@ -201,15 +251,10 @@ async function handleMessage(
       });
 
     case 'chatBackfill':
-      // Unlike chatSync, a backfill is a one-off, user-initiated import
-      // (see the popup's "Import history" action) rather than a
-      // continuous background loop, so a failure here is surfaced
-      // directly to the caller rather than silently queued for later
-      // replay.
-      return postBackfill(
-        { companionUrl: settings.companionUrl, companionToken: settings.companionToken },
-        message.data
-      );
+      return handleChatBackfill(message.data, {
+        companionUrl: settings.companionUrl,
+        companionToken: settings.companionToken,
+      });
 
     case 'openInObsidian': {
       // openNote throws on failure (missing token, non-OK response) rather

@@ -450,15 +450,29 @@ export interface ArchiveDiscoverMessage {
 }
 
 /**
+ * One conversation discovery could not convert to a backfill payload. A
+ * single malformed conversation must not cost the user the whole import,
+ * so it is reported here — named, with its reason — and skipped, rather
+ * than failing the run (see `discoverConversations`).
+ */
+export interface ArchiveDiscoverFailure {
+  conversationId: string;
+  title: string;
+  error: string;
+}
+
+/**
  * Response to {@link ArchiveDiscoverMessage}: every conversation the
  * adapter found, already converted to backfill payloads (see
  * `toBackfillRequest` in `src/content/archive/to-request.ts`) so the popup
  * can hand each one straight to a `'chatBackfill'` message without
  * depending on any content-layer type (ADR-012: popup must not import
- * content/).
+ * content/). `failures` is always present (empty when nothing was skipped)
+ * so the popup is compiler-forced to surface partial results rather than
+ * silently reporting a truncated import as a clean one.
  */
 export type ArchiveDiscoverResponse =
-  | { success: true; conversations: ChatBackfillRequest[] }
+  | { success: true; conversations: ChatBackfillRequest[]; failures: ArchiveDiscoverFailure[] }
   | { success: false; error: string };
 
 /**

@@ -14,7 +14,12 @@
  * (Claude, ChatGPT); every other supported platform reports "unsupported"
  * rather than silently returning an empty list.
  */
-import type { AIPlatform, ArchiveDiscoverResponse, ChatBackfillRequest } from '../../lib/types';
+import type {
+  AIPlatform,
+  ArchiveDiscoverFailure,
+  ArchiveDiscoverResponse,
+  ChatBackfillRequest,
+} from '../../lib/types';
 import { platformForHost } from '../../lib/platform-registry';
 import { extractErrorMessage } from '../../lib/error-utils';
 import type { ArchiveAdapter } from './types';
@@ -44,19 +49,40 @@ function resolveAdapter(action: string): ArchiveAdapter {
 
 /**
  * Fetches every conversation the current session can see and converts each
- * one to a ready-to-send backfill payload. Throws (never returns a partial
- * list) on any adapter failure, matching the adapters' own
- * fail-loudly-rather-than-report-a-truncated-backfill-as-success posture.
+ * one to a ready-to-send backfill payload.
+ *
+ * Listing still fails the whole run — a truncated listing is
+ * indistinguishable from a short history, so reporting it as success would
+ * silently lose conversations (see the adapters' own
+ * fail-loudly-rather-than-report-a-truncated-backfill-as-success posture).
+ * A single conversation that cannot be fetched or converted is the
+ * opposite case: it is a known, named loss, so it is collected into
+ * `failures` and skipped rather than aborting the sweep. Without this, one
+ * unparseable conversation out of forty aborted the entire import and
+ * wrote nothing.
  */
-export async function discoverConversations(): Promise<ChatBackfillRequest[]> {
+export async function discoverConversations(): Promise<{
+  conversations: ChatBackfillRequest[];
+  failures: ArchiveDiscoverFailure[];
+}> {
   const adapter = resolveAdapter('Import history');
   const entries = await adapter.listConversations();
   const conversations: ChatBackfillRequest[] = [];
+  const failures: ArchiveDiscoverFailure[] = [];
   for (const entry of entries) {
-    const conversation = await adapter.fetchConversation(entry);
-    conversations.push(toBackfillRequest(conversation));
+    try {
+      const conversation = await adapter.fetchConversation(entry);
+      conversations.push(toBackfillRequest(conversation));
+    } catch (error) {
+      console.warn('[G2O] Skipping unreadable conversation', entry.conversationId, error);
+      failures.push({
+        conversationId: entry.conversationId,
+        title: entry.title,
+        error: extractErrorMessage(error),
+      });
+    }
   }
-  return conversations;
+  return { conversations, failures };
 }
 
 /**
@@ -112,7 +138,9 @@ export function registerArchiveDiscoveryListener(): void {
       }
 
       discoverConversations()
-        .then(conversations => sendResponse({ success: true, conversations }))
+        .then(({ conversations, failures }) =>
+          sendResponse({ success: true, conversations, failures })
+        )
         .catch((error: unknown) =>
           sendResponse({ success: false, error: extractErrorMessage(error) })
         );
