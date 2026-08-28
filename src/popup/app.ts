@@ -129,7 +129,10 @@ function queryElements() {
     companionToken: getElement<HTMLInputElement>('companion-token'),
     companionUrl: getElement<HTMLInputElement>('companion-url'),
     autoSyncPlatforms: Object.fromEntries(
-      ALL_PLATFORMS.map(platform => [platform, getElement<HTMLInputElement>(AUTO_SYNC_CHECKBOX_IDS[platform])])
+      ALL_PLATFORMS.map(platform => [
+        platform,
+        getElement<HTMLInputElement>(AUTO_SYNC_CHECKBOX_IDS[platform]),
+      ])
     ) as Record<AIPlatform, HTMLInputElement>,
     timezone: getElement<HTMLSelectElement>('timezone'),
     timezoneGroup: getElement<HTMLElement>('timezoneGroup'),
@@ -425,7 +428,9 @@ function collectSettings(): ExtensionSettings {
     maxCalloutLines: parseCalloutLines(elements.maxCalloutLines.value),
     companionToken: elements.companionToken.value.trim(),
     companionUrl: elements.companionUrl.value.trim() || DEFAULT_COMPANION_URL,
-    autoSyncPlatforms: ALL_PLATFORMS.filter(platform => elements.autoSyncPlatforms[platform].checked),
+    autoSyncPlatforms: ALL_PLATFORMS.filter(
+      platform => elements.autoSyncPlatforms[platform].checked
+    ),
   };
 }
 
@@ -720,23 +725,28 @@ async function importConversations(conversations: ChatBackfillRequest[]): Promis
     return;
   }
 
-  // One run only ever covers one signed-in account. Showing the discovered
-  // account name up front — before anything is imported — is the only way
-  // to tell "I re-ran this against the same login" apart from "I signed
-  // into a different account", which otherwise look identical.
-  const accountName = conversations[0].accountName;
-  appendImportLine(
-    accountName
-      ? `${getMessage('popup_importAccount')}: ${accountName}`
-      : getMessage('popup_importAccountUnknown')
-  );
+  // One run only ever covers one signed-in account — but Claude's session
+  // can span multiple organizations, so "one run" doesn't mean "one
+  // account": listConversations() tags each entry with its own org, and a
+  // banner naming only the first org while silently importing another
+  // defeats the whole point of this display. Show every distinct account
+  // discovered, up front, before anything is imported.
+  for (const accountName of distinctAccountNames(conversations)) {
+    appendImportLine(
+      accountName
+        ? `${getMessage('popup_importAccount')}: ${accountName}`
+        : getMessage('popup_importAccountUnknown')
+    );
+  }
 
   let imported = 0;
   let skipped = 0;
   for (const conversation of conversations) {
     const response = await sendMessage({ action: 'chatBackfill', data: conversation });
     if ('error' in response) {
-      appendImportLine(`${getMessage('popup_importError')}: ${conversation.title} — ${response.error}`);
+      appendImportLine(
+        `${getMessage('popup_importError')}: ${conversation.title} — ${response.error}`
+      );
       continue;
     }
     if (response.skipped) {
@@ -752,8 +762,33 @@ async function importConversations(conversations: ChatBackfillRequest[]): Promis
 
   // Worded to cover only the signed-in account, never "all your
   // conversations" — a single run cannot know about accounts the user
-  // hasn't signed into yet on this tab.
-  appendImportLine(`${getMessage('popup_importComplete')} ${imported} imported, ${skipped} skipped.`);
+  // hasn't signed into yet on this tab. The counts are passed as i18n
+  // substitutions (see toast_appended's $COUNT$ for the same pattern),
+  // never concatenated onto the translated sentence as raw English — a
+  // concatenated fragment would stay English even after a future ja pass,
+  // since default_locale fallback only helps for whole missing keys.
+  appendImportLine(getMessage('popup_importComplete', [String(imported), String(skipped)]));
+}
+
+/**
+ * The distinct set of accounts discovered across every conversation, in
+ * first-seen order. Deduped by `accountId` (falling back to `accountName`,
+ * then to a single shared bucket when a platform exposes neither) so that
+ * a Claude session spanning multiple organizations in one login surfaces
+ * every org's name, not just the first conversation's.
+ */
+function distinctAccountNames(conversations: ChatBackfillRequest[]): (string | null)[] {
+  const seen = new Set<string>();
+  const names: (string | null)[] = [];
+  for (const { accountId, accountName } of conversations) {
+    const key = accountId ?? accountName ?? '';
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    names.push(accountName);
+  }
+  return names;
 }
 
 function appendImportLine(text: string): void {

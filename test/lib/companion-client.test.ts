@@ -268,7 +268,40 @@ describe('postBackfill', () => {
   it('leaves code undefined when the error body is not JSON', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue({ ok: false, status: 409, text: async () => 'newBlocks length mismatch' })
+      vi
+        .fn()
+        .mockResolvedValue({
+          ok: false,
+          status: 409,
+          text: async () => 'newBlocks length mismatch',
+        })
+    );
+
+    try {
+      await postBackfill(settings, backfillRequest);
+      expect.unreachable('postBackfill should have thrown');
+    } catch (error) {
+      expect(isCompanionApiError(error)).toBe(true);
+      if (isCompanionApiError(error)) {
+        expect(error.status).toBe(409);
+        expect(error.code).toBeUndefined();
+      }
+    }
+  });
+
+  it("leaves code undefined for a codeless JSON error body (the server's actual newBlocks-mismatch shape)", async () => {
+    // The server's real newBlocks-length-mismatch 409 is valid JSON with an
+    // `error` field, not `code` — a distinct case from the non-JSON body
+    // above. isRetryableCompanionFailure (service-worker.ts) treats "409
+    // with no code" as a permanent client bug that must never be retried,
+    // so this exact shape is the one the whole distinction was built for.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        text: async () => JSON.stringify({ error: 'newBlocks length mismatch' }),
+      })
     );
 
     try {

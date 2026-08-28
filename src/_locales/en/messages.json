@@ -526,8 +526,18 @@
     "description": "Import history line prefix for a conversation or discovery request that failed"
   },
   "popup_importComplete": {
-    "message": "Finished importing the signed-in account.",
-    "description": "Import history completion summary — deliberately scoped to one signed-in account, never worded as covering all accounts"
+    "message": "Finished importing the signed-in account: $IMPORTED$ imported, $SKIPPED$ skipped.",
+    "description": "Import history completion summary — deliberately scoped to one signed-in account, never worded as covering all accounts",
+    "placeholders": {
+      "imported": {
+        "content": "$1",
+        "example": "3"
+      },
+      "skipped": {
+        "content": "$2",
+        "example": "1"
+      }
+    }
   },
 
   "toast_appended": {

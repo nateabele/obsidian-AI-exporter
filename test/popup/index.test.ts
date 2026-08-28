@@ -640,5 +640,67 @@ describe('popup/app', () => {
       await vi.waitFor(() => expect(importResultsText()).toMatch(/signed-in account/));
       expect(importResultsText()).not.toMatch(/all your conversations/i);
     });
+
+    it("names every distinct account discovered, not just the first conversation's", async () => {
+      // A single Claude login can enumerate multiple organizations, so the
+      // banner must not silently speak for only conversations[0]'s org while
+      // importing another org's conversations unannounced.
+      stubActiveTab('https://claude.ai/chat/abc');
+      stubDiscovery([
+        { conversationId: 'c1', accountId: 'org-1', accountName: 'Personal' },
+        { conversationId: 'c2', accountId: 'org-2', accountName: 'Acme' },
+      ]);
+      await initWithDefaults();
+      vi.mocked(sendMessage).mockResolvedValue({
+        notePath: '/vault/note.md',
+        anchorsPreserved: 0,
+        anchorsIssued: 0,
+        superseded: 0,
+        skipped: null,
+      });
+
+      el<HTMLButtonElement>('importBtn').click();
+
+      await vi.waitFor(() => {
+        expect(importResultsText()).toContain('Personal');
+        expect(importResultsText()).toContain('Acme');
+      });
+    });
+
+    it('passes the import/skip counts to i18n as substitutions rather than concatenating raw English', async () => {
+      stubActiveTab('https://claude.ai/chat/abc');
+      stubDiscovery([{ conversationId: 'c1' }, { conversationId: 'c2' }]);
+      await initWithDefaults();
+      vi.mocked(sendMessage)
+        .mockResolvedValueOnce({
+          notePath: '/vault/note1.md',
+          anchorsPreserved: 0,
+          anchorsIssued: 0,
+          superseded: 0,
+          skipped: null,
+        })
+        .mockResolvedValueOnce({
+          notePath: null,
+          anchorsPreserved: 0,
+          anchorsIssued: 0,
+          superseded: 0,
+          skipped: 'truncated',
+        });
+
+      el<HTMLButtonElement>('importBtn').click();
+
+      // A hardcoded `${imported} imported, ${skipped} skipped.` fragment
+      // concatenated onto a translated sentence would still read correctly
+      // in English, so this asserts the mechanism (getMessage called with
+      // the counts as substitutions), not just the rendered text — the only
+      // way a future ja translation could ever localize these numbers'
+      // surrounding words.
+      await vi.waitFor(() => {
+        expect(vi.mocked(chrome.i18n.getMessage)).toHaveBeenCalledWith('popup_importComplete', [
+          '1',
+          '1',
+        ]);
+      });
+    });
   });
 });
