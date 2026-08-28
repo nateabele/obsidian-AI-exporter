@@ -70,15 +70,27 @@ function conversationDetailUrl(orgId: string, conversationId: string): string {
   return `https://claude.ai/api/organizations/${orgId}/chat_conversations/${conversationId}?tree=True&rendering_mode=raw`;
 }
 
+/** Same listing endpoint with no paging parameters at all. */
+function conversationListUrlUnparameterized(orgId: string): string {
+  return `https://claude.ai/api/organizations/${orgId}/chat_conversations`;
+}
+
 /**
  * Fetch every conversation summary for one org, paging only if the server
  * actually honours `limit`/`offset`. Detected at runtime rather than
  * hardcoded from a one-time observation:
- *  - if the first response already exceeds `PAGE_SIZE`, the params were
+ *  - if the first response already exceeds `PAGE_SIZE`, both params were
  *    ignored and that single response is the complete list;
- *  - otherwise, a further page is requested; if it contributes no ids we
- *    haven't already seen, either the endpoint is exhausted or it is
- *    ignoring `offset` and replaying the same page — either way, stop.
+ *  - otherwise, further pages are requested. A page shorter than
+ *    `PAGE_SIZE` means the listing is genuinely exhausted. But a page that
+ *    comes back at exactly `PAGE_SIZE` items, all of which we've already
+ *    seen, is NOT the same thing — it means `offset` is being ignored while
+ *    `limit` is honoured, and stopping there would silently drop every
+ *    conversation past the first page. That shape is disambiguated by
+ *    retrying once with no paging parameters at all: if that returns more
+ *    than `PAGE_SIZE`, it's everything; if it's still capped at `PAGE_SIZE`,
+ *    we cannot safely enumerate the rest and must fail loudly rather than
+ *    report a truncated backfill as a success.
  */
 async function fetchOrgConversationList(orgId: string): Promise<ClaudeConversationSummary[]> {
   const first = await fetchJson<ClaudeConversationSummary[]>(conversationListUrl(orgId, 0));
@@ -93,9 +105,20 @@ async function fetchOrgConversationList(orgId: string): Promise<ClaudeConversati
   while (page.length === PAGE_SIZE) {
     const next = await fetchJson<ClaudeConversationSummary[]>(conversationListUrl(orgId, offset));
     const newItems = next.filter((c) => !seen.has(c.uuid));
-    if (newItems.length === 0) {
-      break;
+
+    if (next.length === PAGE_SIZE && newItems.length === 0) {
+      const unparameterized = await fetchJson<ClaudeConversationSummary[]>(
+        conversationListUrlUnparameterized(orgId)
+      );
+      if (unparameterized.length > PAGE_SIZE) {
+        return unparameterized;
+      }
+      throw new Error(
+        `Claude conversation listing for org ${orgId} is capped at ${PAGE_SIZE} items even without paging ` +
+          'parameters (offset appears to be ignored). Refusing to report a partial import as complete.'
+      );
     }
+
     for (const item of newItems) {
       seen.add(item.uuid);
       all.push(item);
@@ -132,15 +155,19 @@ export class ClaudeArchiveAdapter implements ArchiveAdapter {
   }
 
   async fetchConversation(entry: ArchiveEntry): Promise<ArchivedConversation> {
-    const { orgId, accountName, detail } = entry.accountId
-      ? {
-          orgId: entry.accountId,
-          accountName: entry.accountName ?? null,
-          detail: await fetchJson<ClaudeConversationDetail>(
-            conversationDetailUrl(entry.accountId, entry.conversationId)
-          ),
-        }
-      : await this.discoverConversation(entry.conversationId);
+    if (!entry.accountId) {
+      // `listConversations()` always tags entries with the org they came
+      // from; a missing `accountId` here means a caller skipped listing or
+      // lost the field, not an org we can safely guess at. Guessing (e.g.
+      // trying every org and swallowing errors) would turn a real outage
+      // in one org into a misleading "not found" from a different one.
+      throw new Error(
+        `Cannot fetch Claude conversation ${entry.conversationId}: missing accountId (expected from listConversations())`
+      );
+    }
+    const orgId = entry.accountId;
+    const accountName = entry.accountName ?? null;
+    const detail = await fetchJson<ClaudeConversationDetail>(conversationDetailUrl(orgId, entry.conversationId));
 
     const nodes = new Map(detail.chat_messages.map((m) => [m.uuid, m]));
     const chain = walkFromLeaf(nodes, detail.current_leaf_message_uuid, (m) => m.parent_message_uuid);
@@ -162,29 +189,5 @@ export class ClaudeArchiveAdapter implements ArchiveAdapter {
       accountId: orgId,
       accountName,
     };
-  }
-
-  /**
-   * Fallback for a fetch that isn't carrying `accountId` (e.g. a
-   * conversation reference persisted before this field existed): rediscover
-   * which org owns it by trying each org in turn. Normal callers always
-   * supply `accountId` from `listConversations()`, so this path is not on
-   * the hot path.
-   */
-  private async discoverConversation(
-    conversationId: string
-  ): Promise<{ orgId: string; accountName: string | null; detail: ClaudeConversationDetail }> {
-    const orgs = await fetchJson<ClaudeOrganization[]>(organizationsUrl());
-    for (const org of orgs) {
-      try {
-        const detail = await fetchJson<ClaudeConversationDetail>(
-          conversationDetailUrl(org.uuid, conversationId)
-        );
-        return { orgId: org.uuid, accountName: org.name ?? null, detail };
-      } catch {
-        continue;
-      }
-    }
-    throw new Error(`Could not find Claude conversation ${conversationId} in any organization`);
   }
 }

@@ -14,6 +14,15 @@ const LIST_2 = [
   { uuid: 'tmp', name: 'Temp', created_at: '2025-01-03T00:00:00Z', is_temporary: true },
 ];
 
+function mkConv(i: number) {
+  return {
+    uuid: `id-${i}`,
+    name: `Conv ${i}`,
+    created_at: '2025-01-01T00:00:00Z',
+    is_temporary: false,
+  };
+}
+
 describe('ClaudeArchiveAdapter', () => {
   it('enumerates conversations across ALL organizations and drops temporary chats', async () => {
     stubFetch({
@@ -69,11 +78,13 @@ describe('ClaudeArchiveAdapter', () => {
       '/api/organizations': ORGS,
     });
     const result = await new ClaudeArchiveAdapter().fetchConversation({
+      accountId: 'org-1',
+      accountName: null,
       conversationId: 'c1',
       title: 'First',
       createdAt: '2024-06-20T20:54:54Z',
       url: '',
-    } as never);
+    });
     expect(result.messages.map((m) => m.sourceId)).toEqual(['m1', 'm2', 'm3']);
     expect(result.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
   });
@@ -119,21 +130,35 @@ describe('ClaudeArchiveAdapter', () => {
       '/api/organizations': ORGS,
     });
     const r = await new ClaudeArchiveAdapter().fetchConversation({
+      accountId: 'org-1',
+      accountName: null,
       conversationId: 'c9',
       title: 'T',
       createdAt: '2024-01-01T00:00:00Z',
       url: '',
-    } as never);
+    });
     expect(r.messages[0].truncated).toBe(true);
   });
 
+  it('throws rather than guessing the organization when accountId is missing', async () => {
+    stubFetch({
+      '/api/organizations/org-1/chat_conversations/c1': { uuid: 'c1' },
+      '/api/organizations': ORGS,
+    });
+    await expect(
+      new ClaudeArchiveAdapter().fetchConversation({
+        accountId: null,
+        accountName: null,
+        conversationId: 'c1',
+        title: 'First',
+        createdAt: '2024-06-20T20:54:54Z',
+        url: '',
+      })
+    ).rejects.toThrow(/accountId/i);
+  });
+
   it('makes a single request when the listing endpoint ignores limit/offset', async () => {
-    const bigList = Array.from({ length: 150 }, (_, i) => ({
-      uuid: `id-${i}`,
-      name: `Conv ${i}`,
-      created_at: '2025-01-01T00:00:00Z',
-      is_temporary: false,
-    }));
+    const bigList = Array.from({ length: 150 }, (_, i) => mkConv(i));
     const mock = stubFetch({
       '/api/organizations/org-1/chat_conversations': bigList,
       '/api/organizations': [{ uuid: 'org-1' }],
@@ -144,18 +169,8 @@ describe('ClaudeArchiveAdapter', () => {
   });
 
   it('pages when the listing endpoint honours limit/offset', async () => {
-    const page0 = Array.from({ length: 100 }, (_, i) => ({
-      uuid: `id-${i}`,
-      name: `Conv ${i}`,
-      created_at: '2025-01-01T00:00:00Z',
-      is_temporary: false,
-    }));
-    const page1 = Array.from({ length: 20 }, (_, i) => ({
-      uuid: `id-${100 + i}`,
-      name: `Conv ${100 + i}`,
-      created_at: '2025-01-01T00:00:00Z',
-      is_temporary: false,
-    }));
+    const page0 = Array.from({ length: 100 }, (_, i) => mkConv(i));
+    const page1 = Array.from({ length: 20 }, (_, i) => mkConv(100 + i));
     const mock = stubFetch({
       '/api/organizations/org-1/chat_conversations?limit=100&offset=0': page0,
       '/api/organizations/org-1/chat_conversations?limit=100&offset=100': page1,
@@ -164,5 +179,45 @@ describe('ClaudeArchiveAdapter', () => {
     const entries = await new ClaudeArchiveAdapter().listConversations();
     expect(entries).toHaveLength(120);
     expect(fetchCallsMatching(mock, 'chat_conversations')).toHaveLength(2);
+  });
+
+  it('retries unparameterized and succeeds when the endpoint honours limit but ignores offset', async () => {
+    const page0 = Array.from({ length: 100 }, (_, i) => mkConv(i));
+    // offset=100 is ignored: the server replays page 0 verbatim.
+    const everything = Array.from({ length: 105 }, (_, i) => mkConv(i));
+    stubFetch({
+      '/api/organizations/org-1/chat_conversations?limit=100&offset=0': page0,
+      '/api/organizations/org-1/chat_conversations?limit=100&offset=100': page0,
+      '/api/organizations/org-1/chat_conversations': everything,
+      '/api/organizations': [{ uuid: 'org-1' }],
+    });
+    const entries = await new ClaudeArchiveAdapter().listConversations();
+    expect(entries).toHaveLength(105);
+  });
+
+  it('throws rather than silently truncating when the endpoint caps the list regardless of parameters', async () => {
+    const page0 = Array.from({ length: 100 }, (_, i) => mkConv(i));
+    // Even the unparameterized request comes back capped at 100 — a real
+    // 105-conversation account would otherwise silently lose 5 entries.
+    const stillCapped = Array.from({ length: 100 }, (_, i) => mkConv(i));
+    stubFetch({
+      '/api/organizations/org-1/chat_conversations?limit=100&offset=0': page0,
+      '/api/organizations/org-1/chat_conversations?limit=100&offset=100': page0,
+      '/api/organizations/org-1/chat_conversations': stillCapped,
+      '/api/organizations': [{ uuid: 'org-1' }],
+    });
+    await expect(new ClaudeArchiveAdapter().listConversations()).rejects.toThrow(/cap|limit/i);
+  });
+
+  it('always fetches with credentials: include', async () => {
+    const mock = stubFetch({
+      '/api/organizations/org-1/chat_conversations': LIST_1,
+      '/api/organizations': [{ uuid: 'org-1' }],
+    });
+    await new ClaudeArchiveAdapter().listConversations();
+    expect(mock.mock.calls.length).toBeGreaterThan(0);
+    for (const call of mock.mock.calls) {
+      expect(call[1]).toEqual({ credentials: 'include' });
+    }
   });
 });
