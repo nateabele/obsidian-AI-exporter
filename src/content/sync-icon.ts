@@ -24,6 +24,15 @@ export interface SyncIconHandlers {
   onRetry: () => void;
   onSyncNow: () => void;
   onOpenPath: (path: string) => void;
+  /**
+   * Repair the current conversation from source (re-import authoritatively
+   * via the platform's own API). Optional and omitted entirely — rather
+   * than provided as a no-op — on a platform/page with no working
+   * `ArchiveAdapter` or no resolvable conversation id, so the menu entry
+   * (see `buildMenuEntries`) simply doesn't appear rather than offering an
+   * action that can only fail.
+   */
+  onRepair?: () => void;
 }
 
 const GLYPHS: Record<SyncIconState, string> = {
@@ -279,15 +288,17 @@ function renderSuggestionGroup(
  * Populate the menu's entries for the given state:
  * - `unconfigured`: only "Open settings".
  * - `offline`: the last error plus "Retry".
- * - any other configured state: "Open transcript", plus "Sync now" unless a
- *   sync is already in flight (`syncing`), in which case it's omitted so it
- *   can't be re-triggered mid-request.
+ * - any other configured state: "Open transcript", plus "Sync now" and
+ *   "Repair this conversation from source" (the latter only when
+ *   `handlers.onRepair` is provided) unless a sync is already in flight
+ *   (`syncing`), in which case both are omitted so neither can be
+ *   re-triggered mid-request.
  *
  * Suggestion groups (related transcripts, then related topics) follow the
  * fixed entries, one heading plus one entry per item, each group omitted
  * entirely when its list is empty.
  */
-function buildMenuEntries(
+export function buildMenuEntries(
   menu: HTMLElement,
   state: SyncIconState,
   handlers: SyncIconHandlers
@@ -319,6 +330,11 @@ function buildMenuEntries(
     addEntry(getMessage('syncIcon_syncNow'), handlers.onSyncNow);
   }
   addEntry(getMessage('syncIcon_openTranscript'), () => handlers.onOpenPath(lastNotePath ?? ''));
+  // Omitted while a sync is already in flight, same as "Sync now" above —
+  // a repair started mid-sync would race it on the icon's paint state.
+  if (state !== 'syncing' && handlers.onRepair) {
+    addEntry(getMessage('syncIcon_repair'), handlers.onRepair);
+  }
   renderSuggestionGroup(
     menu,
     getMessage('syncIcon_relatedConversations'),

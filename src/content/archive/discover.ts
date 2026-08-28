@@ -28,19 +28,28 @@ const ARCHIVE_ADAPTER_CONSTRUCTORS: Partial<Record<AIPlatform, new () => Archive
 };
 
 /**
+ * Resolves the current tab's platform to its `ArchiveAdapter`, or throws
+ * naming the calling action (e.g. "Import history", "Repair") in the
+ * message — both callers below need the identical "no adapter for this
+ * platform" guard, just with a different action name in the error.
+ */
+function resolveAdapter(action: string): ArchiveAdapter {
+  const platform = platformForHost(window.location.hostname);
+  const Adapter = platform ? ARCHIVE_ADAPTER_CONSTRUCTORS[platform] : undefined;
+  if (!Adapter) {
+    throw new Error(`${action} is not supported on ${window.location.hostname}`);
+  }
+  return new Adapter();
+}
+
+/**
  * Fetches every conversation the current session can see and converts each
  * one to a ready-to-send backfill payload. Throws (never returns a partial
  * list) on any adapter failure, matching the adapters' own
  * fail-loudly-rather-than-report-a-truncated-backfill-as-success posture.
  */
 export async function discoverConversations(): Promise<ChatBackfillRequest[]> {
-  const platform = platformForHost(window.location.hostname);
-  const Adapter = platform ? ARCHIVE_ADAPTER_CONSTRUCTORS[platform] : undefined;
-  if (!Adapter) {
-    throw new Error(`Import history is not supported on ${window.location.hostname}`);
-  }
-
-  const adapter = new Adapter();
+  const adapter = resolveAdapter('Import history');
   const entries = await adapter.listConversations();
   const conversations: ChatBackfillRequest[] = [];
   for (const entry of entries) {
@@ -48,6 +57,34 @@ export async function discoverConversations(): Promise<ChatBackfillRequest[]> {
     conversations.push(toBackfillRequest(conversation));
   }
   return conversations;
+}
+
+/**
+ * Fetches and converts a single conversation by id — the content-script
+ * side of the icon menu's "Repair this conversation from source" action
+ * (`src/content/bootstrap.ts`), as opposed to `discoverConversations()`'s
+ * whole-history sweep for the popup's bulk "Import history" flow.
+ *
+ * Still lists first, same as `discoverConversations()`: Claude's
+ * `fetchConversation()` requires the `accountId` that `listConversations()`
+ * tagged the entry with (an org cannot be safely guessed at — see
+ * `ClaudeArchiveAdapter`), and ChatGPT's listing carries the title
+ * `fetchConversation()` doesn't otherwise have.
+ */
+export async function fetchConversationForRepair(
+  conversationId: string
+): Promise<ChatBackfillRequest> {
+  const adapter = resolveAdapter('Repair');
+  const entries = await adapter.listConversations();
+  const entry = entries.find(candidate => candidate.conversationId === conversationId);
+  if (!entry) {
+    throw new Error(
+      `Conversation ${conversationId} was not found in ${adapter.platform} history`
+    );
+  }
+
+  const conversation = await adapter.fetchConversation(entry);
+  return toBackfillRequest(conversation);
 }
 
 /**

@@ -46,9 +46,10 @@ import type {
 } from '../lib/types';
 import { platformForHost } from '../lib/platform-registry';
 import { throttle, debounce } from '../lib/throttle';
+import { ARCHIVE_SUPPORTED_PLATFORMS } from '../lib/constants';
 import { buildManifest, diffBlocks } from './manifest';
 import { getMessage } from '../lib/i18n';
-import { registerArchiveDiscoveryListener } from './archive/discover';
+import { registerArchiveDiscoveryListener, fetchConversationForRepair } from './archive/discover';
 
 /**
  * Platform-specific main content container selectors for optimized observation.
@@ -349,6 +350,88 @@ function settleIcon(configured: boolean, href: string): void {
 }
 
 /**
+ * Run the icon menu's "Repair this conversation from source" action: an
+ * authoritative single-conversation re-import via the platform's own API
+ * (`fetchConversationForRepair`, `src/content/archive/`), for when the
+ * live-DOM sync has drifted or missed something and the whole transcript
+ * needs to be re-derived from the source of truth rather than patched.
+ *
+ * `href` is captured by the caller before either `await` below — an
+ * in-app navigation mid-fetch must not let this repair's outcome paint
+ * onto whatever conversation is now on screen, so every result here goes
+ * through `paintFor()`, never `setSyncState()` directly (see
+ * `test/arch/sync-icon-invariants.test.ts`).
+ *
+ * A `skipped` response (the server refuses a conversation containing a
+ * truncated message, or with no messages at all, and writes nothing) is a
+ * normal outcome, not a failure: it is reported via a toast rather than the
+ * icon's retained `error` field, because setting `error` here would make
+ * `settleIcon()` derive `offline` on every later quiet auto-sync tick until
+ * some future success or failure happened to clear it — turning a benign
+ * skip into a phantom, indefinitely-stuck connection failure.
+ */
+async function repairConversation(href: string, conversationId: string): Promise<void> {
+  paintFor(href, 'syncing');
+  try {
+    const request = await fetchConversationForRepair(conversationId);
+    const response = await sendMessage({ action: 'chatBackfill', data: request });
+    if ('error' in response) {
+      console.warn('[G2O] Repair failed:', response.error);
+      paintFor(href, 'offline', { error: response.error });
+      return;
+    }
+
+    const suggestionCountAfter = getSuggestionCount();
+    const settledState = deriveState({
+      configured: true,
+      syncing: false,
+      error: null,
+      suggestionCount: suggestionCountAfter,
+    });
+    if (response.skipped) {
+      showToast(getMessage('syncIcon_repairSkipped', [response.skipped]), 'info');
+      paintFor(href, settledState, { error: null, suggestionCount: suggestionCountAfter });
+      return;
+    }
+    paintFor(href, settledState, {
+      notePath: response.notePath ?? undefined,
+      error: null,
+      suggestionCount: suggestionCountAfter,
+    });
+  } catch (error) {
+    const message = extractErrorMessage(error);
+    console.error('[G2O] Repair failed:', error);
+    paintFor(href, 'offline', { error: message });
+  }
+}
+
+/**
+ * Handle a click on the icon menu's "Repair this conversation from source"
+ * entry (`SyncIconHandlers.onRepair`).
+ *
+ * Only wired into `injectSyncIcon()` for a platform with a working
+ * `ArchiveAdapter` (see `initialize()`), but the conversation id is
+ * re-resolved here — fresh, at click time, from the live DOM — rather than
+ * captured once when the icon was injected: the SPA can navigate between
+ * conversations without a reload, so a stale id captured at page-load time
+ * could silently repair the wrong (or no longer open) conversation.
+ */
+function handleRepairClick(): void {
+  const startHref = location.href;
+  const extractor = getExtractor();
+  if (!extractor || !ARCHIVE_SUPPORTED_PLATFORMS.includes(extractor.platform)) {
+    paintFor(startHref, 'offline', { error: getMessage('syncIcon_repairUnsupported') });
+    return;
+  }
+  const conversationId = extractor.getConversationId();
+  if (!conversationId) {
+    paintFor(startHref, 'offline', { error: getMessage('syncIcon_repairNoConversationId') });
+    return;
+  }
+  void repairConversation(startHref, conversationId);
+}
+
+/**
  * Whether the freshly-extracted manifest should actually be sent: false for
  * an unchanged manifest (nothing new since the last sync) or one that no
  * longer starts where the last synced manifest did. Both are routine, not
@@ -531,6 +614,16 @@ export async function initialize(): Promise<void> {
           showErrorToast(extractErrorMessage(error));
         });
     },
+    // Only offered on a platform with a working ArchiveAdapter — one of
+    // ARCHIVE_SUPPORTED_PLATFORMS doesn't change for the life of this
+    // content-script instance, unlike the conversation id itself (which
+    // handleRepairClick re-resolves fresh at click time to survive SPA
+    // navigation). Omitted (not a no-op) everywhere else, so the menu
+    // entry simply doesn't appear rather than offering an action that can
+    // only fail.
+    onRepair: ARCHIVE_SUPPORTED_PLATFORMS.includes(extractor.platform)
+      ? handleRepairClick
+      : undefined,
   });
   // Establish the icon's context before any sync can run, so the very
   // first paint isn't dropped for having no context to match against.

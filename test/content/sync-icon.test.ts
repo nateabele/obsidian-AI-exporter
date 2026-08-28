@@ -9,6 +9,7 @@ import {
   setIconContext,
   setSuggestions,
   suggestionCount,
+  buildMenuEntries,
 } from '../../src/content/sync-icon';
 import type { SyncIconHandlers } from '../../src/content/sync-icon';
 import { setClaudeLocation, resetLocation } from '../fixtures/dom-helpers';
@@ -75,6 +76,7 @@ function makeHandlers(overrides: Partial<SyncIconHandlers> = {}): SyncIconHandle
     onRetry: vi.fn(),
     onSyncNow: vi.fn(),
     onOpenPath: vi.fn(),
+    onRepair: vi.fn(),
     ...overrides,
   };
 }
@@ -398,7 +400,12 @@ describe('the icon menu', () => {
     const entries = Array.from(document.querySelectorAll('#g2o-sync-menu .entry')).map(
       e => e.textContent
     );
-    expect(entries).toEqual(['syncIcon_retry', 'syncIcon_syncNow', 'syncIcon_openTranscript']);
+    expect(entries).toEqual([
+      'syncIcon_retry',
+      'syncIcon_syncNow',
+      'syncIcon_openTranscript',
+      'syncIcon_repair',
+    ]);
   });
 
   it('falls back to a generic message when no error detail is known', () => {
@@ -429,6 +436,7 @@ describe('the icon menu', () => {
     expect(entries.map(e => e.textContent)).toEqual([
       'syncIcon_syncNow',
       'syncIcon_openTranscript',
+      'syncIcon_repair',
     ]);
 
     entries[1].dispatchEvent(new Event('click'));
@@ -469,9 +477,62 @@ describe('the icon menu', () => {
     expect(document.querySelector('#g2o-sync-menu .error-detail')?.textContent).toBe(
       'syncIcon_syncFailed'
     );
+    // "Open transcript" is second-to-last: "Repair this conversation from
+    // source" (from the default makeHandlers()) follows it.
     const entries = Array.from(document.querySelectorAll('#g2o-sync-menu .entry'));
-    entries[entries.length - 1].dispatchEvent(new Event('click'));
+    entries[entries.length - 2].dispatchEvent(new Event('click'));
     expect(handlers.onOpenPath).toHaveBeenCalledWith('');
+  });
+});
+
+// Drives buildMenuEntries() directly rather than through injectSyncIcon +
+// click, so a state that has no corresponding icon `data-state` fixture
+// (there isn't one here, but this keeps the repair-specific cases isolated
+// from the fixed-entry assertions above) can be exercised without
+// perturbing them.
+describe('the repair menu entry', () => {
+  let menu: HTMLElement;
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    menu = document.createElement('div');
+    document.body.appendChild(menu);
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  const entries = () => Array.from(menu.querySelectorAll('.entry')).map(e => e.textContent);
+
+  it('offers repair for a configured, idle state', () => {
+    buildMenuEntries(menu, 'synced', makeHandlers());
+    expect(entries()).toContain('syncIcon_repair');
+  });
+
+  it('does not offer repair while a sync is in flight', () => {
+    buildMenuEntries(menu, 'syncing', makeHandlers());
+    expect(entries()).not.toContain('syncIcon_repair');
+  });
+
+  it('does not offer repair when unconfigured', () => {
+    buildMenuEntries(menu, 'unconfigured', makeHandlers());
+    expect(entries()).not.toContain('syncIcon_repair');
+  });
+
+  it('does not offer repair when no handler is provided, e.g. an unsupported platform or no resolvable conversation id', () => {
+    buildMenuEntries(menu, 'synced', makeHandlers({ onRepair: undefined }));
+    expect(entries()).not.toContain('syncIcon_repair');
+  });
+
+  it('calls onRepair when clicked', () => {
+    const handlers = makeHandlers();
+    buildMenuEntries(menu, 'synced', handlers);
+    const btn = Array.from(menu.querySelectorAll<HTMLButtonElement>('.entry')).find(
+      e => e.textContent === 'syncIcon_repair'
+    )!;
+    btn.click();
+    expect(handlers.onRepair).toHaveBeenCalled();
   });
 });
 

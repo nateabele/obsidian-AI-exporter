@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { discoverConversations, registerArchiveDiscoveryListener } from '../../../src/content/archive/discover';
+import {
+  discoverConversations,
+  fetchConversationForRepair,
+  registerArchiveDiscoveryListener,
+} from '../../../src/content/archive/discover';
 import { setClaudeLocation, setNonClaudeLocation, resetLocation } from '../../fixtures/dom-helpers';
 import { stubFetch } from './helpers';
 import type { ArchiveDiscoverResponse } from '../../../src/lib/types';
@@ -49,6 +53,47 @@ describe('discoverConversations', () => {
     });
     expect(conversations[0].messages.map(m => m.role)).toEqual(['user', 'assistant']);
     expect(conversations[0].messages[0].hash).toBeTruthy();
+  });
+});
+
+describe('fetchConversationForRepair', () => {
+  beforeEach(() => {
+    resetLocation();
+  });
+
+  it('rejects platforms without an ArchiveAdapter', async () => {
+    setNonClaudeLocation('gemini.google.com');
+
+    await expect(fetchConversationForRepair('c1')).rejects.toThrow(/not supported/);
+  });
+
+  it('fetches and converts the one matching conversation, tagged with its listing accountId', async () => {
+    setClaudeLocation('c1');
+    stubFetch({
+      '/api/organizations/org-1/chat_conversations/c1': DETAIL,
+      '/api/organizations/org-1/chat_conversations': CONVERSATIONS,
+      '/api/organizations': ORGS,
+    });
+
+    const conversation = await fetchConversationForRepair('c1');
+
+    expect(conversation).toMatchObject({
+      conversationId: 'c1',
+      platform: 'claude',
+      accountId: 'org-1',
+      accountName: 'Personal',
+    });
+    expect(conversation.messages.map(m => m.role)).toEqual(['user', 'assistant']);
+  });
+
+  it('throws when the conversation id is not found in the listing, rather than guessing', async () => {
+    setClaudeLocation('missing');
+    stubFetch({
+      '/api/organizations/org-1/chat_conversations': CONVERSATIONS,
+      '/api/organizations': ORGS,
+    });
+
+    await expect(fetchConversationForRepair('missing')).rejects.toThrow(/not found/);
   });
 });
 

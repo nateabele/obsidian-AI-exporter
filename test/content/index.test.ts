@@ -11,7 +11,9 @@ import {
   loadFixture,
   clearFixture,
   createGeminiConversationDOM,
+  createClaudeConversationDOM,
   setGeminiLocation,
+  setClaudeLocation,
   setNonGeminiLocation,
   resetLocation,
 } from '../fixtures/dom-helpers';
@@ -21,6 +23,11 @@ vi.mock('../../src/content/ui', () => ({
   showErrorToast: vi.fn(),
   showWarningToast: vi.fn(),
   showToast: vi.fn(),
+}));
+
+vi.mock('../../src/content/archive/discover', () => ({
+  registerArchiveDiscoveryListener: vi.fn(),
+  fetchConversationForRepair: vi.fn(),
 }));
 
 vi.mock('../../src/content/sync-icon', async () => {
@@ -65,8 +72,14 @@ import {
   suggestionCount,
 } from '../../src/content/sync-icon';
 import { sendMessage } from '../../src/lib/messaging';
+import { fetchConversationForRepair } from '../../src/content/archive/discover';
 import { AUTO_SYNC_DEBOUNCE } from '../../src/lib/constants';
-import type { ChatSyncResponse, MessageErrorResponse } from '../../src/lib/types';
+import type {
+  ChatSyncResponse,
+  ChatBackfillRequest,
+  ChatBackfillResponse,
+  MessageErrorResponse,
+} from '../../src/lib/types';
 import {
   initialize,
   handleSync,
@@ -119,6 +132,7 @@ function mockMessaging(overrides: {
   connection?: { success: boolean; error?: string };
   save?: MultiOutputResponse;
   chatSync?: ChatSyncResponse | MessageErrorResponse;
+  chatBackfill?: ChatBackfillResponse | MessageErrorResponse;
 }): void {
   vi.mocked(sendMessage).mockImplementation(message => {
     switch ((message as { action: string }).action) {
@@ -130,6 +144,11 @@ function mockMessaging(overrides: {
         return Promise.resolve(overrides.save ?? okSave);
       case 'chatSync':
         return Promise.resolve(overrides.chatSync ?? okChatSync);
+      case 'chatBackfill':
+        if (!overrides.chatBackfill) {
+          return Promise.reject(new Error('unexpected action'));
+        }
+        return Promise.resolve(overrides.chatBackfill);
       default:
         return Promise.reject(new Error('unexpected action'));
     }
@@ -142,6 +161,19 @@ function loadGeminiConversation(): void {
     createGeminiConversationDOM([
       { role: 'user', content: 'Hello Gemini' },
       { role: 'assistant', content: '<p>Hi there!</p>' },
+    ])
+  );
+}
+
+/** A Claude conversation id shaped to match extractors/claude.ts's getConversationId() regex. */
+const CLAUDE_CONVERSATION_ID = '550e8400-e29b-41d4-a716-446655440000';
+
+function loadClaudeConversation(): void {
+  setClaudeLocation(CLAUDE_CONVERSATION_ID);
+  loadFixture(
+    createClaudeConversationDOM([
+      { role: 'user', content: 'Hello Claude' },
+      { role: 'assistant', content: 'Hi there!' },
     ])
   );
 }
@@ -295,6 +327,164 @@ describe('content/bootstrap', () => {
 
         await vi.waitFor(() => expect(showErrorToast).toHaveBeenCalled());
         expect(showErrorToast).toHaveBeenCalledWith('Extension context invalidated');
+      });
+    });
+
+    describe('onRepair handler', () => {
+      const backfillRequest: ChatBackfillRequest = {
+        conversationId: CLAUDE_CONVERSATION_ID,
+        platform: 'claude',
+        title: 'Repaired conversation',
+        url: `https://claude.ai/chat/${CLAUDE_CONVERSATION_ID}`,
+        createdAt: '2026-01-01T00:00:00Z',
+        accountId: 'org-1',
+        accountName: 'Personal',
+        messages: [
+          { role: 'user', markdown: 'Hello Claude', hash: 'h1', sourceId: 'm1' },
+          { role: 'assistant', markdown: 'Hi there!', hash: 'h2', sourceId: 'm2' },
+        ],
+      };
+
+      it('is not offered on a platform with no ArchiveAdapter (e.g. Gemini)', async () => {
+        loadGeminiConversation();
+        await initialize();
+        const handlers = vi.mocked(injectSyncIcon).mock.calls[0][0];
+
+        expect(handlers.onRepair).toBeUndefined();
+      });
+
+      it('is offered on a platform with a working ArchiveAdapter (e.g. Claude)', async () => {
+        loadClaudeConversation();
+        await initialize();
+        const handlers = vi.mocked(injectSyncIcon).mock.calls[0][0];
+
+        expect(handlers.onRepair).toEqual(expect.any(Function));
+      });
+
+      it('fetches, converts, and backfills the current conversation, then paints the icon from the response', async () => {
+        loadClaudeConversation();
+        vi.mocked(fetchConversationForRepair).mockResolvedValue(backfillRequest);
+        mockMessaging({
+          chatBackfill: {
+            notePath: 'AI/claude/repaired-conversation.md',
+            anchorsPreserved: 2,
+            anchorsIssued: 0,
+            superseded: 0,
+            skipped: null,
+          },
+        });
+        await initialize();
+        const handlers = vi.mocked(injectSyncIcon).mock.calls[0][0];
+
+        handlers.onRepair!();
+
+        expect(fetchConversationForRepair).toHaveBeenCalledWith(CLAUDE_CONVERSATION_ID);
+        await vi.waitFor(() =>
+          expect(sendMessage).toHaveBeenCalledWith({
+            action: 'chatBackfill',
+            data: backfillRequest,
+          })
+        );
+        await vi.waitFor(() =>
+          expect(paintFor).toHaveBeenCalledWith(
+            location.href,
+            expect.any(String),
+            expect.objectContaining({
+              notePath: 'AI/claude/repaired-conversation.md',
+              error: null,
+            })
+          )
+        );
+        // Never painted via setSyncState directly across the fetch/send
+        // awaits — see test/arch/sync-icon-invariants.test.ts.
+        expect(paintFor).toHaveBeenCalledWith(location.href, 'syncing');
+      });
+
+      it('treats a skipped response as a normal outcome, not a failure', async () => {
+        loadClaudeConversation();
+        vi.mocked(fetchConversationForRepair).mockResolvedValue(backfillRequest);
+        mockMessaging({
+          chatBackfill: {
+            notePath: null,
+            anchorsPreserved: 0,
+            anchorsIssued: 0,
+            superseded: 0,
+            skipped: 'truncated',
+          },
+        });
+        await initialize();
+        const handlers = vi.mocked(injectSyncIcon).mock.calls[0][0];
+
+        handlers.onRepair!();
+
+        await vi.waitFor(() => expect(showToast).toHaveBeenCalled());
+        // chrome.i18n.getMessage is stubbed in test/setup.ts to return the
+        // raw key (ignoring substitutions), so this asserts the reason was
+        // passed through to chrome.i18n.getMessage() rather than on the
+        // rendered copy.
+        expect(vi.mocked(chrome.i18n.getMessage)).toHaveBeenCalledWith('syncIcon_repairSkipped', [
+          'truncated',
+        ]);
+        expect(showToast).toHaveBeenCalledWith('syncIcon_repairSkipped', 'info');
+        // A skip must not land on 'offline' -- see repairConversation()'s
+        // comment on why the retained `error` field is never used for it.
+        expect(paintFor).not.toHaveBeenCalledWith(
+          location.href,
+          'offline',
+          expect.anything()
+        );
+      });
+
+      it('paints the icon offline, visibly, when the server rejects the backfill', async () => {
+        loadClaudeConversation();
+        vi.mocked(fetchConversationForRepair).mockResolvedValue(backfillRequest);
+        mockMessaging({ chatBackfill: { error: 'Companion is offline' } });
+        await initialize();
+        const handlers = vi.mocked(injectSyncIcon).mock.calls[0][0];
+
+        handlers.onRepair!();
+
+        await vi.waitFor(() =>
+          expect(paintFor).toHaveBeenCalledWith(location.href, 'offline', {
+            error: 'Companion is offline',
+          })
+        );
+      });
+
+      it('paints the icon offline, visibly, when fetching the conversation from source throws', async () => {
+        loadClaudeConversation();
+        vi.mocked(fetchConversationForRepair).mockRejectedValue(
+          new Error('Claude API request failed (401)')
+        );
+        await initialize();
+        const handlers = vi.mocked(injectSyncIcon).mock.calls[0][0];
+
+        handlers.onRepair!();
+
+        await vi.waitFor(() =>
+          expect(paintFor).toHaveBeenCalledWith(location.href, 'offline', {
+            error: 'Claude API request failed (401)',
+          })
+        );
+        expect(sendMessage).not.toHaveBeenCalledWith(
+          expect.objectContaining({ action: 'chatBackfill' })
+        );
+      });
+
+      it('paints the icon offline, visibly, when no conversation id is resolvable on the current page', async () => {
+        setClaudeLocation('');
+        loadFixture(createClaudeConversationDOM([{ role: 'user', content: 'Hello Claude' }]));
+        await initialize();
+        const handlers = vi.mocked(injectSyncIcon).mock.calls[0][0];
+
+        handlers.onRepair!();
+
+        expect(paintFor).toHaveBeenCalledWith(
+          location.href,
+          'offline',
+          expect.objectContaining({ error: expect.any(String) })
+        );
+        expect(fetchConversationForRepair).not.toHaveBeenCalled();
       });
     });
   });

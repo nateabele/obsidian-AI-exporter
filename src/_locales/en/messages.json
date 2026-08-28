@@ -28,6 +28,10 @@
     "message": "Open transcript",
     "description": "Sync icon menu entry: open the last saved note"
   },
+  "syncIcon_repair": {
+    "message": "Repair this conversation from source",
+    "description": "Sync icon menu entry: re-import this one conversation authoritatively from the platform's own API"
+  },
   "syncIcon_syncFailed": {
     "message": "Sync failed",
     "description": "Fallback detail shown in the sync icon menu when no specific error is known"
@@ -39,6 +43,24 @@
   "syncIcon_fullContentLoop": {
     "message": "Sync failed: the server repeatedly asked for the full conversation",
     "description": "Error detail shown when the server responds needsFullContent a second time in the same sync attempt, after a full-content resend"
+  },
+  "syncIcon_repairUnsupported": {
+    "message": "Repair from source isn't supported on this platform",
+    "description": "Error detail when the repair action is invoked on a platform with no ArchiveAdapter"
+  },
+  "syncIcon_repairNoConversationId": {
+    "message": "Couldn't determine which conversation to repair",
+    "description": "Error detail when the current page has no resolvable conversation id at the time repair is clicked"
+  },
+  "syncIcon_repairSkipped": {
+    "message": "Repair skipped ($REASON$) — nothing was written",
+    "description": "Toast shown when the server declines to import the repaired conversation (e.g. a truncated message), a normal outcome rather than a failure",
+    "placeholders": {
+      "reason": {
+        "content": "$1",
+        "example": "truncated"
+      }
+    }
   },
   "syncIcon_relatedConversations": {
     "message": "Related conversations",
