@@ -8,7 +8,14 @@
  */
 
 import { getSettings, saveSettings } from '../lib/storage';
-import type { ExtensionSettings, TemplateOptions, OutputOptions, AIPlatform } from '../lib/types';
+import type {
+  ExtensionSettings,
+  TemplateOptions,
+  OutputOptions,
+  AIPlatform,
+  ArchiveDiscoverResponse,
+  ChatBackfillRequest,
+} from '../lib/types';
 import {
   validateCalloutType,
   validateVaultPath,
@@ -20,10 +27,12 @@ import {
   DEFAULT_MAX_CALLOUT_LINES,
   DEFAULT_COMPANION_URL,
   VALID_MESSAGE_FORMATS,
+  ARCHIVE_SUPPORTED_PLATFORMS,
 } from '../lib/constants';
 import { getMessage } from '../lib/i18n';
 import { sendMessage } from '../lib/messaging';
-import { ALL_PLATFORMS } from '../lib/platform-registry';
+import { extractErrorMessage } from '../lib/error-utils';
+import { ALL_PLATFORMS, platformForHost } from '../lib/platform-registry';
 
 /**
  * Per-platform auto-sync checkbox element ids, keyed by {@link AIPlatform}.
@@ -127,6 +136,8 @@ function queryElements() {
     testBtn: getElement<HTMLButtonElement>('testBtn'),
     saveBtn: getElement<HTMLButtonElement>('saveBtn'),
     status: getElement<HTMLDivElement>('status'),
+    importBtn: getElement<HTMLButtonElement>('importBtn'),
+    importResults: getElement<HTMLDivElement>('importResults'),
   };
 }
 
@@ -151,6 +162,11 @@ export async function initPopup(): Promise<void> {
     showStatus(getMessage('toast_error_connectionFailed'), 'error');
     console.error('[G2O Popup] Init error:', error);
   }
+  // Kept outside the try/catch above: the active-tab lookup is independent
+  // of settings storage, and a failure here (e.g. no active tab) should
+  // leave "Import history" disabled rather than surface as a connection
+  // error on the whole popup.
+  await setupImportHistory();
 }
 
 /**
@@ -624,4 +640,124 @@ function showStatus(message: string, type: 'success' | 'error' | 'warning' | 'in
 function clearStatus(): void {
   elements.status.textContent = '';
   elements.status.className = 'status';
+}
+
+/**
+ * Enables "Import history" only when the active tab is on a platform with
+ * a working ArchiveAdapter (see ARCHIVE_SUPPORTED_PLATFORMS) — discovery
+ * runs cookie-authenticated in that tab's content script, so an
+ * unsupported tab has nothing to discover.
+ */
+async function setupImportHistory(): Promise<void> {
+  elements.importBtn.disabled = true;
+  const tabId = await getImportTabId();
+  if (tabId === null) {
+    return;
+  }
+  elements.importBtn.disabled = false;
+  elements.importBtn.addEventListener('click', () => void handleImportHistory(tabId));
+}
+
+/**
+ * Resolves the active tab's id, but only if its hostname maps to a
+ * backfill-supported platform. Returns null (never throws) for any
+ * unsupported tab, missing tab id/url, or `chrome.tabs` failure, so a
+ * lookup problem simply leaves the button disabled.
+ */
+async function getImportTabId(): Promise<number | null> {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id || !tab.url) {
+      return null;
+    }
+    const platform = platformForHost(new URL(tab.url).hostname);
+    if (!platform || !ARCHIVE_SUPPORTED_PLATFORMS.includes(platform)) {
+      return null;
+    }
+    return tab.id;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Drives one backfill run: discovers every conversation the active tab's
+ * signed-in session can see, then imports each one in turn, reporting
+ * progress and results in `#importResults`.
+ */
+async function handleImportHistory(tabId: number): Promise<void> {
+  elements.importBtn.disabled = true;
+  elements.importResults.textContent = '';
+  appendImportLine(getMessage('popup_importDiscovering'));
+
+  try {
+    const discovery = await chrome.tabs.sendMessage<
+      { action: 'archiveDiscover' },
+      ArchiveDiscoverResponse
+    >(tabId, { action: 'archiveDiscover' });
+
+    if (!discovery.success) {
+      appendImportLine(`${getMessage('popup_importError')}: ${discovery.error}`);
+      return;
+    }
+    await importConversations(discovery.conversations);
+  } catch (error) {
+    appendImportLine(`${getMessage('popup_importError')}: ${extractErrorMessage(error)}`);
+  } finally {
+    elements.importBtn.disabled = false;
+  }
+}
+
+/**
+ * Imports every discovered conversation via one `chatBackfill` message
+ * each. A `skipped` response (no note written) is a normal outcome — the
+ * server refuses a conversation with a truncated message or no messages
+ * at all — and is reported with its reason, not as an error.
+ */
+async function importConversations(conversations: ChatBackfillRequest[]): Promise<void> {
+  if (conversations.length === 0) {
+    appendImportLine(getMessage('popup_importNoneFound'));
+    return;
+  }
+
+  // One run only ever covers one signed-in account. Showing the discovered
+  // account name up front — before anything is imported — is the only way
+  // to tell "I re-ran this against the same login" apart from "I signed
+  // into a different account", which otherwise look identical.
+  const accountName = conversations[0].accountName;
+  appendImportLine(
+    accountName
+      ? `${getMessage('popup_importAccount')}: ${accountName}`
+      : getMessage('popup_importAccountUnknown')
+  );
+
+  let imported = 0;
+  let skipped = 0;
+  for (const conversation of conversations) {
+    const response = await sendMessage({ action: 'chatBackfill', data: conversation });
+    if ('error' in response) {
+      appendImportLine(`${getMessage('popup_importError')}: ${conversation.title} — ${response.error}`);
+      continue;
+    }
+    if (response.skipped) {
+      skipped += 1;
+      appendImportLine(
+        `${getMessage('popup_importSkipped')}: ${conversation.title} (${response.skipped})`
+      );
+    } else {
+      imported += 1;
+      appendImportLine(`${getMessage('popup_importSaved')}: ${conversation.title}`);
+    }
+  }
+
+  // Worded to cover only the signed-in account, never "all your
+  // conversations" — a single run cannot know about accounts the user
+  // hasn't signed into yet on this tab.
+  appendImportLine(`${getMessage('popup_importComplete')} ${imported} imported, ${skipped} skipped.`);
+}
+
+function appendImportLine(text: string): void {
+  const line = document.createElement('div');
+  line.textContent = text;
+  elements.importResults.appendChild(line);
 }

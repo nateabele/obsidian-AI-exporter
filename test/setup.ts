@@ -53,6 +53,13 @@ const chromeMock = {
     closeDocument: vi.fn(() => Promise.resolve()),
     Reason: { CLIPBOARD: 'CLIPBOARD' },
   },
+  // For the popup's active-tab lookup (Import history). Defaults to "no
+  // active tab" so tests that don't care about this feature see it stay
+  // disabled rather than throw.
+  tabs: {
+    query: vi.fn(() => Promise.resolve([])),
+    sendMessage: vi.fn(() => Promise.resolve(undefined)),
+  },
 };
 
 vi.stubGlobal('chrome', chromeMock);

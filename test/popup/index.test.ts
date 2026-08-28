@@ -6,7 +6,7 @@
  * index.ts entry shim stays a DOMContentLoaded one-liner.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { ExtensionSettings } from '../../src/lib/types';
+import type { ExtensionSettings, ChatBackfillRequest } from '../../src/lib/types';
 
 vi.mock('../../src/lib/storage', () => ({
   getSettings: vi.fn(),
@@ -113,6 +113,8 @@ function buildPopupDom(): void {
     <button id="testBtn"></button>
     <button id="saveBtn"></button>
     <div id="status" class="status"></div>
+    <button id="importBtn"></button>
+    <div id="importResults"></div>
   `;
 }
 
@@ -530,6 +532,113 @@ describe('popup/app', () => {
       await vi.waitFor(() => expect(statusEl().textContent).toBe('port closed'));
       expect(statusEl().className).toBe('status error');
       errorSpy.mockRestore();
+    });
+  });
+
+  describe('import history', () => {
+    function stubActiveTab(url: string): void {
+      vi.mocked(chrome.tabs.query).mockResolvedValue([{ id: 7, url } as chrome.tabs.Tab]);
+    }
+
+    function stubDiscovery(conversations: Partial<ChatBackfillRequest>[]): void {
+      vi.mocked(chrome.tabs.sendMessage).mockResolvedValue({ success: true, conversations });
+    }
+
+    function importResultsText(): string {
+      return el<HTMLDivElement>('importResults').textContent ?? '';
+    }
+
+    it('disables Import history when the active tab is not a supported platform', async () => {
+      stubActiveTab('https://example.com/');
+      await initWithDefaults();
+
+      expect(el<HTMLButtonElement>('importBtn').disabled).toBe(true);
+    });
+
+    it('enables Import history when the active tab is a supported platform', async () => {
+      stubActiveTab('https://claude.ai/chat/abc');
+      await initWithDefaults();
+
+      expect(el<HTMLButtonElement>('importBtn').disabled).toBe(false);
+    });
+
+    it('dispatches one chatBackfill message per discovered conversation', async () => {
+      stubActiveTab('https://claude.ai/chat/abc');
+      stubDiscovery([{ conversationId: 'c1' }, { conversationId: 'c2' }]);
+      await initWithDefaults();
+      vi.mocked(sendMessage).mockResolvedValue({
+        notePath: '/vault/note.md',
+        anchorsPreserved: 0,
+        anchorsIssued: 0,
+        superseded: 0,
+        skipped: null,
+      });
+
+      el<HTMLButtonElement>('importBtn').click();
+
+      await vi.waitFor(() => {
+        const calls = vi
+          .mocked(sendMessage)
+          .mock.calls.filter(([message]) => message.action === 'chatBackfill');
+        expect(calls).toHaveLength(2);
+      });
+    });
+
+    it('reports a skipped conversation with its reason', async () => {
+      stubActiveTab('https://claude.ai/chat/abc');
+      stubDiscovery([{ conversationId: 'c1' }]);
+      await initWithDefaults();
+      vi.mocked(sendMessage).mockResolvedValue({
+        notePath: null,
+        anchorsPreserved: 0,
+        anchorsIssued: 0,
+        superseded: 0,
+        skipped: 'truncated',
+      });
+
+      el<HTMLButtonElement>('importBtn').click();
+
+      await vi.waitFor(() => expect(importResultsText()).toMatch(/truncated/));
+    });
+
+    it('shows the discovered account before importing anything', async () => {
+      stubActiveTab('https://claude.ai/chat/abc');
+      stubDiscovery([{ conversationId: 'c1', accountName: 'work@example.com' }]);
+      await initWithDefaults();
+      vi.mocked(sendMessage).mockResolvedValue({
+        notePath: '/vault/note.md',
+        anchorsPreserved: 0,
+        anchorsIssued: 0,
+        superseded: 0,
+        skipped: null,
+      });
+
+      el<HTMLButtonElement>('importBtn').click();
+
+      await vi.waitFor(() => expect(importResultsText()).toContain('work@example.com'));
+    });
+
+    it('words the completion summary as covering the signed-in account, not all accounts', async () => {
+      stubActiveTab('https://claude.ai/chat/abc');
+      stubDiscovery([{ conversationId: 'c1' }]);
+      await initWithDefaults();
+      vi.mocked(sendMessage).mockResolvedValue({
+        notePath: '/vault/note.md',
+        anchorsPreserved: 0,
+        anchorsIssued: 0,
+        superseded: 0,
+        skipped: null,
+      });
+      // The test-wide chrome.i18n mock just echoes the key back, so the
+      // real wording (asserted below) is supplied here for this one key.
+      vi.mocked(chrome.i18n.getMessage).mockImplementation((key: string) =>
+        key === 'popup_importComplete' ? 'Finished importing the signed-in account.' : key
+      );
+
+      el<HTMLButtonElement>('importBtn').click();
+
+      await vi.waitFor(() => expect(importResultsText()).toMatch(/signed-in account/));
+      expect(importResultsText()).not.toMatch(/all your conversations/i);
     });
   });
 });

@@ -485,6 +485,51 @@
     "description": "Auto-sync toggle label for the NotebookLM platform"
   },
 
+  "popup_importHistoryLabel": {
+    "message": "Import history",
+    "description": "Label for the Import history form group in the popup"
+  },
+  "popup_importHistoryHelp": {
+    "message": "Imports every conversation visible to the signed-in account on this tab. Sign into another account and run it again to import that account too.",
+    "description": "Help text for the Import history button, explaining it covers one signed-in account per run"
+  },
+  "popup_importHistory": {
+    "message": "Import history",
+    "description": "Button label that starts a backfill import of the active tab's conversation history"
+  },
+  "popup_importDiscovering": {
+    "message": "Looking for conversations…",
+    "description": "Import history progress line shown while discovery is in progress"
+  },
+  "popup_importAccount": {
+    "message": "Importing from account",
+    "description": "Import history line prefix naming the discovered account before import starts"
+  },
+  "popup_importAccountUnknown": {
+    "message": "Importing from the signed-in account",
+    "description": "Import history line shown before import starts when the platform reports no account name"
+  },
+  "popup_importNoneFound": {
+    "message": "No conversations found for the signed-in account",
+    "description": "Import history line shown when discovery finds nothing to import"
+  },
+  "popup_importSaved": {
+    "message": "Imported",
+    "description": "Import history line prefix for a successfully imported conversation"
+  },
+  "popup_importSkipped": {
+    "message": "Skipped",
+    "description": "Import history line prefix for a conversation the server declined to import (e.g. truncated content), reported with its reason"
+  },
+  "popup_importError": {
+    "message": "Import error",
+    "description": "Import history line prefix for a conversation or discovery request that failed"
+  },
+  "popup_importComplete": {
+    "message": "Finished importing the signed-in account.",
+    "description": "Import history completion summary — deliberately scoped to one signed-in account, never worded as covering all accounts"
+  },
+
   "toast_appended": {
     "message": "$COUNT$ new message(s) appended",
     "description": "Toast when messages are appended",
