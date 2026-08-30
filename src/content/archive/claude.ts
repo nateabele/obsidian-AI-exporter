@@ -10,21 +10,27 @@
  * only the first would silently miss whole organizations while still
  * looking like a successful backfill.
  *
- * Each listed entry is tagged with the org it came from (`accountId` /
- * `accountName`) so `fetchConversation` never has to re-derive it, and so
- * the user can tell conversations from different accounts apart once
- * they're all imported into one vault.
+ * Each listed entry is tagged with the org it came from (`accountId`) so
+ * `fetchConversation` never has to re-derive it. `accountName` instead
+ * identifies the signed-in *login* — read once per run from the page's own
+ * user menu (`account-identity.ts`), since the org's own name only tells
+ * orgs apart, not logins, and two orgs under the same login would
+ * otherwise look like different accounts in the vault. Together they let
+ * the user tell conversations from different accounts apart once they're
+ * all imported into one vault: two orgs under one login share an
+ * `accountName` but differ by `accountId`; three separate logins give
+ * three different `accountName`s.
  */
 
 import type { ArchiveAdapter, ArchiveEntry, ArchivedConversation, ArchivedMessage } from './types';
 import { walkFromLeaf } from './walk';
+import { readSignedInAccountName } from './account-identity';
 
 /** Page size used when probing whether the listing endpoint honours limit/offset. */
 const PAGE_SIZE = 100;
 
 interface ClaudeOrganization {
   uuid: string;
-  name?: string;
 }
 
 interface ClaudeConversationSummary {
@@ -133,6 +139,11 @@ export class ClaudeArchiveAdapter implements ArchiveAdapter {
   readonly platform = 'claude' as const;
 
   async listConversations(): Promise<ArchiveEntry[]> {
+    // Read once for the whole run: the signed-in login doesn't change
+    // mid-listing, and opening/closing the user menu per org (or per
+    // conversation) would flicker the page across what can be dozens of
+    // entries.
+    const accountName = await readSignedInAccountName();
     const orgs = await fetchJson<ClaudeOrganization[]>(organizationsUrl());
     const entries: ArchiveEntry[] = [];
     for (const org of orgs) {
@@ -147,7 +158,7 @@ export class ClaudeArchiveAdapter implements ArchiveAdapter {
           createdAt: conv.created_at,
           url: `https://claude.ai/chat/${conv.uuid}`,
           accountId: org.uuid,
-          accountName: org.name ?? null,
+          accountName,
         });
       }
     }

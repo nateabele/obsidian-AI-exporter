@@ -8,7 +8,11 @@ import { setClaudeLocation, setNonClaudeLocation, resetLocation } from '../../fi
 import { stubFetch } from './helpers';
 import type { ArchiveDiscoverResponse } from '../../../src/lib/types';
 
-const ORGS = [{ uuid: 'org-1', name: 'Personal' }];
+vi.mock('../../../src/content/archive/account-identity', () => ({
+  readSignedInAccountName: vi.fn(async () => 'Personal'),
+}));
+
+const ORGS = [{ uuid: 'org-1' }];
 const CONVERSATIONS = [
   { uuid: 'c1', name: 'Conv 1', created_at: '2025-01-01T00:00:00Z', is_temporary: false },
 ];

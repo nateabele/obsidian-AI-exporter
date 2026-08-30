@@ -1,6 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ClaudeArchiveAdapter } from '../../../src/content/archive/claude';
 import { stubFetch, fetchCallsMatching } from './helpers';
+
+vi.mock('../../../src/content/archive/account-identity', () => ({
+  readSignedInAccountName: vi.fn(),
+}));
+
+import { readSignedInAccountName } from '../../../src/content/archive/account-identity';
+
+const mockedReadSignedInAccountName = vi.mocked(readSignedInAccountName);
 
 // `stubFetch` matches the FIRST route key that is a substring of the
 // requested URL, and every Claude endpoint is nested under
@@ -24,6 +32,11 @@ function mkConv(i: number) {
 }
 
 describe('ClaudeArchiveAdapter', () => {
+  beforeEach(() => {
+    mockedReadSignedInAccountName.mockReset();
+    mockedReadSignedInAccountName.mockResolvedValue(null);
+  });
+
   it('enumerates conversations across ALL organizations and drops temporary chats', async () => {
     stubFetch({
       '/api/organizations/org-1/chat_conversations': LIST_1,
@@ -34,11 +47,9 @@ describe('ClaudeArchiveAdapter', () => {
     expect(entries.map((e) => e.conversationId)).toEqual(['c1', 'c2']);
   });
 
-  it('tags each entry with the organization it came from', async () => {
-    const orgs = [
-      { uuid: 'org-1', name: 'Personal' },
-      { uuid: 'org-2', name: 'Work' },
-    ];
+  it('tags each entry with the org it came from (accountId) and the signed-in login (accountName)', async () => {
+    mockedReadSignedInAccountName.mockResolvedValue('nate@example.com');
+    const orgs = [{ uuid: 'org-1' }, { uuid: 'org-2' }];
     stubFetch({
       '/api/organizations/org-1/chat_conversations': LIST_1,
       '/api/organizations/org-2/chat_conversations': LIST_2,
@@ -48,9 +59,20 @@ describe('ClaudeArchiveAdapter', () => {
     const fromOrg1 = entries.find((e) => e.conversationId === 'c1');
     const fromOrg2 = entries.find((e) => e.conversationId === 'c2');
     expect(fromOrg1?.accountId).toBe('org-1');
-    expect(fromOrg1?.accountName).toBe('Personal');
+    expect(fromOrg1?.accountName).toBe('nate@example.com');
     expect(fromOrg2?.accountId).toBe('org-2');
-    expect(fromOrg2?.accountName).toBe('Work');
+    expect(fromOrg2?.accountName).toBe('nate@example.com');
+  });
+
+  it('reads the signed-in account name once per listing, not once per organization', async () => {
+    mockedReadSignedInAccountName.mockResolvedValue('nate@example.com');
+    stubFetch({
+      '/api/organizations/org-1/chat_conversations': LIST_1,
+      '/api/organizations/org-2/chat_conversations': LIST_2,
+      '/api/organizations': ORGS,
+    });
+    await new ClaudeArchiveAdapter().listConversations();
+    expect(mockedReadSignedInAccountName).toHaveBeenCalledTimes(1);
   });
 
   it('follows the active leaf, dropping abandoned branches, and maps human to user', async () => {
