@@ -231,6 +231,77 @@ describe('ClaudeArchiveAdapter', () => {
     await expect(new ClaudeArchiveAdapter().listConversations()).rejects.toThrow(/cap|limit/i);
   });
 
+  it('imports the other org\'s conversations and reports the one that 403s, naming its uuid', async () => {
+    const mock = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes('/api/organizations/org-2/chat_conversations')) {
+        return { ok: false, status: 403, json: async () => ({}) };
+      }
+      if (u.includes('/api/organizations/org-1/chat_conversations')) {
+        return { ok: true, status: 200, json: async () => LIST_1 };
+      }
+      if (u.includes('/api/organizations')) {
+        return { ok: true, status: 200, json: async () => ORGS };
+      }
+      throw new Error(`Unstubbed fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', mock);
+
+    const adapter = new ClaudeArchiveAdapter();
+    const entries = await adapter.listConversations();
+
+    expect(entries.map((e) => e.conversationId)).toEqual(['c1']);
+    expect(adapter.listFailures).toHaveLength(1);
+    expect(adapter.listFailures?.[0].error).toContain('403');
+    expect(adapter.listFailures?.[0].title).toContain('org-2');
+  });
+
+  it('skips an org without chat capability, never requesting its conversation list', async () => {
+    const orgs = [{ uuid: 'org-1', capabilities: ['chat'] }, { uuid: 'org-2', capabilities: ['api'] }];
+    const mock = stubFetch({
+      '/api/organizations/org-1/chat_conversations': LIST_1,
+      '/api/organizations': orgs,
+    });
+    const entries = await new ClaudeArchiveAdapter().listConversations();
+    expect(entries.map((e) => e.conversationId)).toEqual(['c1']);
+    expect(fetchCallsMatching(mock, 'org-2/chat_conversations')).toHaveLength(0);
+  });
+
+  it('still attempts an org whose capabilities are missing, non-array, or empty', async () => {
+    const orgs = [
+      { uuid: 'org-1' }, // missing entirely
+      { uuid: 'org-2', capabilities: 'chat' }, // not an array
+      { uuid: 'org-3', capabilities: [] }, // empty array
+    ];
+    const mock = stubFetch({
+      '/api/organizations/org-1/chat_conversations': [mkConv(1)],
+      '/api/organizations/org-2/chat_conversations': [mkConv(2)],
+      '/api/organizations/org-3/chat_conversations': [mkConv(3)],
+      '/api/organizations': orgs,
+    });
+    const entries = await new ClaudeArchiveAdapter().listConversations();
+    expect(entries.map((e) => e.conversationId).sort()).toEqual(['id-1', 'id-2', 'id-3']);
+    expect(fetchCallsMatching(mock, 'org-1/chat_conversations')).toHaveLength(1);
+    expect(fetchCallsMatching(mock, 'org-2/chat_conversations')).toHaveLength(1);
+    expect(fetchCallsMatching(mock, 'org-3/chat_conversations')).toHaveLength(1);
+  });
+
+  it('throws rather than returning [] when every organization fails', async () => {
+    const mock = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes('/api/organizations/') && u.includes('chat_conversations')) {
+        return { ok: false, status: 403, json: async () => ({}) };
+      }
+      if (u.includes('/api/organizations')) {
+        return { ok: true, status: 200, json: async () => ORGS };
+      }
+      throw new Error(`Unstubbed fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', mock);
+
+    await expect(new ClaudeArchiveAdapter().listConversations()).rejects.toThrow(/organization/i);
+  });
+
   it('always fetches with credentials: include', async () => {
     const mock = stubFetch({
       '/api/organizations/org-1/chat_conversations': LIST_1,

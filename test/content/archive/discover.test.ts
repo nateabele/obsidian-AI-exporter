@@ -60,6 +60,39 @@ describe('discoverConversations', () => {
     expect(failures).toEqual([]);
   });
 
+  // Regression: a Claude account with an inaccessible org (Console/API-only,
+  // pending membership) 403'd on that one org's listing and aborted the
+  // whole `listConversations()` call before any entries were built — so the
+  // popup reported total failure even though every other org was readable.
+  it('imports conversations from a working org when a sibling org 403s, and reports the skip', async () => {
+    setClaudeLocation('c1');
+    const orgs = [{ uuid: 'org-1' }, { uuid: 'org-2' }];
+    const mock = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes('/api/organizations/org-2/chat_conversations')) {
+        return { ok: false, status: 403, json: async () => ({}) };
+      }
+      if (u.includes('/api/organizations/org-1/chat_conversations/c1')) {
+        return { ok: true, status: 200, json: async () => DETAIL };
+      }
+      if (u.includes('/api/organizations/org-1/chat_conversations')) {
+        return { ok: true, status: 200, json: async () => CONVERSATIONS };
+      }
+      if (u.includes('/api/organizations')) {
+        return { ok: true, status: 200, json: async () => orgs };
+      }
+      throw new Error(`Unstubbed fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', mock);
+
+    const { conversations, failures } = await discoverConversations();
+
+    expect(conversations.map((c) => c.conversationId)).toEqual(['c1']);
+    expect(failures).toHaveLength(1);
+    expect(failures[0].error).toContain('org-2');
+    expect(failures[0].title).toContain('org-2');
+  });
+
   // Regression: with no per-entry guard, one unreadable conversation threw
   // out of the loop and the discovery listener turned it into
   // `{success: false}` — so a sweep over 40 conversations that hit a single

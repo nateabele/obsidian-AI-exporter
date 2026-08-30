@@ -1,4 +1,4 @@
-import type { AIPlatform } from '../../lib/types';
+import type { AIPlatform, ArchiveDiscoverFailure } from '../../lib/types';
 
 /**
  * A conversation summary from a platform's list/history endpoint, as
@@ -39,4 +39,14 @@ export interface ArchiveAdapter {
   platform: AIPlatform;
   listConversations(): Promise<ArchiveEntry[]>;
   fetchConversation(entry: ArchiveEntry): Promise<ArchivedConversation>;
+  /**
+   * Survivable failures from the most recent `listConversations()` call —
+   * e.g. one organization out of several that 403'd (Claude). Optional and
+   * left `undefined` by adapters (ChatGPT) that have nothing analogous to
+   * report; `discoverConversations()` folds it into the same `failures`
+   * list it already builds per-conversation, so a skipped org surfaces the
+   * same way a skipped conversation does rather than through a parallel
+   * channel.
+   */
+  listFailures?: ArchiveDiscoverFailure[];
 }

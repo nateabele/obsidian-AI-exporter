@@ -68,7 +68,11 @@ export async function discoverConversations(): Promise<{
   const adapter = resolveAdapter('Import history');
   const entries = await adapter.listConversations();
   const conversations: ChatBackfillRequest[] = [];
-  const failures: ArchiveDiscoverFailure[] = [];
+  // Carries forward any survivable listing-level failures (e.g. a Claude
+  // org that 403'd) reported via `ArchiveAdapter.listFailures` — same shape
+  // and same rendering as a per-conversation failure below, so the popup
+  // doesn't need a second code path to surface them.
+  const failures: ArchiveDiscoverFailure[] = [...(adapter.listFailures ?? [])];
   for (const entry of entries) {
     try {
       const conversation = await adapter.fetchConversation(entry);

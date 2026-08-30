@@ -25,12 +25,38 @@
 import type { ArchiveAdapter, ArchiveEntry, ArchivedConversation, ArchivedMessage } from './types';
 import { walkFromLeaf } from './walk';
 import { readSignedInAccountName } from './account-identity';
+import type { ArchiveDiscoverFailure } from '../../lib/types';
+import { extractErrorMessage } from '../../lib/error-utils';
 
 /** Page size used when probing whether the listing endpoint honours limit/offset. */
 const PAGE_SIZE = 100;
 
 interface ClaudeOrganization {
   uuid: string;
+  /**
+   * Values like `chat`, `api`, `claude_pro` — an org without `chat` is a
+   * Console/API-only org (or a pending membership) that will 403 on the
+   * conversation-listing endpoint every time. `unknown` on purpose: this is
+   * read defensively (see `orgMayHaveChat`) rather than trusted, since a
+   * missing whole organization's conversations while still reporting
+   * success is worse than one avoidable 403.
+   */
+  capabilities?: unknown;
+}
+
+/**
+ * Whether an org's conversation-listing endpoint is even worth calling.
+ * Only skips when `capabilities` is a genuine, non-empty array that omits
+ * `chat` — any other shape (missing, not an array, empty) is treated as
+ * "unknown" and the org is still attempted, per the fail-open posture
+ * described on `ClaudeOrganization.capabilities`.
+ */
+function orgMayHaveChat(org: ClaudeOrganization): boolean {
+  const caps = org.capabilities;
+  if (!Array.isArray(caps) || caps.length === 0) {
+    return true;
+  }
+  return caps.includes('chat');
 }
 
 interface ClaudeConversationSummary {
@@ -138,6 +164,15 @@ async function fetchOrgConversationList(orgId: string): Promise<ClaudeConversati
 export class ClaudeArchiveAdapter implements ArchiveAdapter {
   readonly platform = 'claude' as const;
 
+  /**
+   * Orgs skipped by `listConversations()` because they failed anyway (403,
+   * network error, unexpected response shape) after being deemed worth
+   * attempting. Reset at the start of every `listConversations()` call, not
+   * accumulated across calls — `discoverConversations()` reads this right
+   * after awaiting `listConversations()`.
+   */
+  listFailures: ArchiveDiscoverFailure[] = [];
+
   async listConversations(): Promise<ArchiveEntry[]> {
     // Read once for the whole run: the signed-in login doesn't change
     // mid-listing, and opening/closing the user menu per org (or per
@@ -146,22 +181,53 @@ export class ClaudeArchiveAdapter implements ArchiveAdapter {
     const accountName = await readSignedInAccountName();
     const orgs = await fetchJson<ClaudeOrganization[]>(organizationsUrl());
     const entries: ArchiveEntry[] = [];
+    const failures: ArchiveDiscoverFailure[] = [];
+    let attempted = 0;
     for (const org of orgs) {
-      const conversations = await fetchOrgConversationList(org.uuid);
-      for (const conv of conversations) {
-        if (conv.is_temporary) {
-          continue;
+      if (!orgMayHaveChat(org)) {
+        continue;
+      }
+      attempted += 1;
+      try {
+        const conversations = await fetchOrgConversationList(org.uuid);
+        for (const conv of conversations) {
+          if (conv.is_temporary) {
+            continue;
+          }
+          entries.push({
+            conversationId: conv.uuid,
+            title: conv.name,
+            createdAt: conv.created_at,
+            url: `https://claude.ai/chat/${conv.uuid}`,
+            accountId: org.uuid,
+            accountName,
+          });
         }
-        entries.push({
-          conversationId: conv.uuid,
-          title: conv.name,
-          createdAt: conv.created_at,
-          url: `https://claude.ai/chat/${conv.uuid}`,
-          accountId: org.uuid,
-          accountName,
+      } catch (error) {
+        // One org that can't be listed (a Console/API-only org the
+        // `capabilities` check didn't catch, a transient 403, a network
+        // blip) must not cost the user every other org's conversations —
+        // record it and keep going.
+        failures.push({
+          conversationId: org.uuid,
+          title: `Claude organization ${org.uuid}`,
+          error: extractErrorMessage(error),
         });
       }
     }
+    this.listFailures = failures;
+
+    // A skipped org is survivable; every attempted org failing is not — an
+    // empty array here is indistinguishable from "you have no
+    // conversations", which would report a total failure as a successful
+    // import of nothing.
+    if (attempted > 0 && failures.length === attempted) {
+      throw new Error(
+        `Claude conversation listing failed for every accessible organization (${failures.length}/${orgs.length}): ` +
+          failures.map((f) => f.error).join('; ')
+      );
+    }
+
     return entries;
   }
 
