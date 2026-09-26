@@ -44,6 +44,7 @@ function makeDetail(overrides: Partial<TargetDetail> = {}): TargetDetail {
     classification: {
       pass: [makeSelectorResult()],
       warn: [],
+      deadMiddle: [],
       fail: [],
       baselineBlocking: [],
       baselineAdvisory: [],
@@ -98,6 +99,7 @@ describe('processTestResult', () => {
       classification: {
         pass: [makeSelectorResult({ name: 'a' })],
         warn: [],
+        deadMiddle: [],
         fail: [],
         baselineBlocking: [],
         baselineAdvisory: [makeComparison({ status: 'degraded' })],
@@ -108,6 +110,7 @@ describe('processTestResult', () => {
       classification: {
         pass: [makeSelectorResult({ name: 'b' }), makeSelectorResult({ name: 'c' })],
         warn: [],
+        deadMiddle: [],
         fail: [],
         baselineBlocking: [makeComparison({ status: 'lost', currentCount: 0 })],
         baselineAdvisory: [],
@@ -200,6 +203,7 @@ describe('buildValidationReport overallStatus', () => {
       classification: {
         pass: [],
         warn: [],
+        deadMiddle: [],
         fail: [],
         baselineBlocking: [makeComparison({ status: 'new_selector', baselineCount: -1 })],
         baselineAdvisory: [],
@@ -217,6 +221,7 @@ describe('buildValidationReport overallStatus', () => {
       classification: {
         pass: [],
         warn: [warnDetail],
+        deadMiddle: [],
         fail: [],
         baselineBlocking: [],
         baselineAdvisory: [],
@@ -244,6 +249,7 @@ describe('buildValidationReport overallStatus', () => {
       classification: {
         pass: [makeSelectorResult()],
         warn: [],
+        deadMiddle: [],
         fail: [],
         baselineBlocking: [],
         baselineAdvisory: [makeComparison({ status: 'degraded', currentCount: 1 })],

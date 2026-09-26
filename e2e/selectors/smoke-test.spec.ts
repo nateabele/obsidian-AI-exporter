@@ -59,7 +59,13 @@ const READY_SELECTORS: Readonly<Record<string, string>> = {
   gemini_dr: 'deep-research-immersive-panel',
   claude_conv: '.font-claude-response',
   claude_dr: '#markdown-artifact',
-  chatgpt_conv: 'section[data-turn-id]',
+  // ChatGPT's 2026-09 DOM overhaul dropped `section[data-turn-id]` in favor
+  // of `[data-content-search-unit-key]` (verified live 2026-09-26). This is
+  // a CSS selector LIST (comma-separated, same pattern as LOADING_SELECTORS
+  // below): either hook satisfies readiness, so the old selector keeps
+  // working as a fallback signal if ChatGPT ever reintroduces it, instead of
+  // being silently dropped.
+  chatgpt_conv: '[data-content-search-unit-key], section[data-turn-id]',
   perplexity_conv: 'div[id^="markdown-content-"]',
   notebooklm_conv: '.chat-message-pair',
 };
@@ -269,32 +275,35 @@ async function runPlatformValidation(
       classification: classified,
     });
 
-    // Assert: the baseline itself must be usable before its diff means anything
-    expect(
-      baselineState,
-      `${platform}: baseline file is legacy v1 — run 'npm run e2e:baseline:update'`
-    ).not.toBe('legacy');
-    expect(
-      baselineState,
-      `${platform}: no baseline for group(s) ${missingGroups.join(', ')} — run 'npm run e2e:baseline:update'`
-    ).not.toBe('missing_groups');
+    // --- Ordering note: live-DOM findings BEFORE baseline-usability checks ---
+    //
+    // It is tempting to "clean this up" by asserting baselineState first —
+    // logically, a diff against a baseline you can't load doesn't mean much,
+    // so checking usability up front reads as the natural order. Resist that:
+    // `e2e/baselines/` is gitignored and starts empty on every fresh checkout
+    // (see baseline.ts's header), so `missing_groups` is the FIRST thing every
+    // clean clone hits — on every platform, every time — regardless of
+    // whether the live selectors are healthy or completely rotted. `expect()`
+    // throws on failure and aborts the rest of this function, so whichever
+    // assertion runs first is the ONLY one a fresh run ever reports.
+    //
+    // classified.fail / classified.warn / classified.deadMiddle are computed
+    // straight from the live DOM and don't need a baseline to mean something
+    // (a selector with 0 matches is broken whether or not we have history to
+    // diff against). Baseline-usability is reported too — just afterward —
+    // so it never SILENTLY replaces a real finding; it can still fail the
+    // run on its own when the live selectors are fine but the baseline
+    // genuinely needs `npm run e2e:baseline:update`.
+    //
+    // Do NOT reorder this back to baseline-first: that is exactly the bug
+    // that let a total ChatGPT selector rewrite ship with e.g. zero live
+    // selectors matching while CI only ever printed "run baseline:update".
 
     // Assert: zero-match selector names always fail
     expect(
       classified.fail,
       `${platform}: selectors with zero matches: ${classified.fail.map(f => `${f.group}:${f.name}`).join(', ')}`
     ).toHaveLength(0);
-
-    // Assert: baseline contract violations fail (lost / new_selector / removed).
-    // new_selector and removed mean the code and the baseline diverged —
-    // intentional selector changes must be recorded via 'npm run e2e:baseline:update'.
-    expect(
-      classified.baselineBlocking.map(
-        b =>
-          `${b.group}:${b.name} [${b.status}] ${b.baselineCount} -> ${b.currentCount} (${b.selector})`
-      ),
-      `${platform}: baseline contract violations — if the selector change is intentional, run 'npm run e2e:baseline:update'`
-    ).toEqual([]);
 
     // Assert: a dead primary selector fails even while a fallback carries it.
     // The extension still works via the fallback, but a primary that stays
@@ -306,6 +315,44 @@ async function runPlatformValidation(
           `has 0 matches (fallback '${w.workingFallback.selector}' carrying)`
       ),
       `${platform}: dead primary selectors — fix the primary or promote the working fallback in src/content/extractors/selectors/`
+    ).toEqual([]);
+
+    // Assert: a dead non-primary entry fails even while a later (or earlier,
+    // for a dead primary already reported above) sibling carries the group.
+    // Without this, entry 1 of 3 dying while entry 0 stays alive is a silent
+    // PASS — classified.warn only ever looks at index 0, so a middle
+    // fallback can rot indefinitely as long as *something* in the group
+    // still matches.
+    expect(
+      classified.deadMiddle.map(
+        d =>
+          `${d.dead.group}:${d.dead.name} entry #${d.dead.index} '${d.dead.selector}' ` +
+          `has 0 matches (sibling '${d.liveSibling.selector}' still carrying the group)`
+      ),
+      `${platform}: dead fallback selectors — repair them in src/content/extractors/selectors/`
+    ).toEqual([]);
+
+    // Assert: the baseline itself must be usable before its diff means anything.
+    // (Reported here, after the live-DOM findings above — see the ordering
+    // note at the top of this block.)
+    expect(
+      baselineState,
+      `${platform}: baseline file is legacy v1 — run 'npm run e2e:baseline:update'`
+    ).not.toBe('legacy');
+    expect(
+      baselineState,
+      `${platform}: no baseline for group(s) ${missingGroups.join(', ')} — run 'npm run e2e:baseline:update'`
+    ).not.toBe('missing_groups');
+
+    // Assert: baseline contract violations fail (lost / new_selector / removed).
+    // new_selector and removed mean the code and the baseline diverged —
+    // intentional selector changes must be recorded via 'npm run e2e:baseline:update'.
+    expect(
+      classified.baselineBlocking.map(
+        b =>
+          `${b.group}:${b.name} [${b.status}] ${b.baselineCount} -> ${b.currentCount} (${b.selector})`
+      ),
+      `${platform}: baseline contract violations — if the selector change is intentional, run 'npm run e2e:baseline:update'`
     ).toEqual([]);
   } finally {
     await page.close();

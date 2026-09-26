@@ -30,6 +30,7 @@ function makePlatform(overrides: Partial<PlatformReport> = {}): PlatformReport {
     classification: {
       pass: [makeSelectorResult()],
       warn: [],
+      deadMiddle: [],
       fail: [],
       baselineBlocking: [],
       baselineAdvisory: [],
@@ -55,6 +56,7 @@ describe('buildStateFingerprint', () => {
         classification: {
           pass: [makeSelectorResult()],
           warn: [],
+          deadMiddle: [],
           fail: [makeSelectorResult({ name: 'turn', selector: '.gone' })],
           baselineBlocking: [],
           baselineAdvisory: [],
