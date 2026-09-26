@@ -10,13 +10,42 @@ import { injectStyles } from './ui';
 import { getMessage } from '../lib/i18n';
 import type { ChatSyncResponse, ChatSuggestion } from '../lib/types';
 
-export type SyncIconState = 'unconfigured' | 'offline' | 'syncing' | 'synced' | 'suggestions';
+export type SyncIconState =
+  | 'unconfigured'
+  | 'offline'
+  | 'syncing'
+  | 'synced'
+  | 'suggestions'
+  | 'disabled'
+  | 'attention';
 
 export interface SyncStateInput {
   configured: boolean;
   syncing: boolean;
   error: string | null;
   suggestionCount: number;
+  /**
+   * The current conversation's platform is deliberately excluded from
+   * `autoSyncPlatforms` (a user setting), so this tick never even attempted
+   * a sync. Optional — every existing caller that doesn't know about this
+   * dimension simply omits it, which is treated as `false`. Ranked below
+   * `suggestionCount` (below, in `deriveState()`): existing suggestions are
+   * still worth surfacing even on a platform the user has opted out of
+   * continuous sync for.
+   */
+  disabled?: boolean;
+  /**
+   * A fresh, specific reason THIS tick could not even attempt a real sync —
+   * rotted `canExtract()`, an extraction that yielded no data, or a
+   * virtualized manifest window that can't be safely diffed. Distinct from
+   * `error`: `error` is a genuine connectivity/companion failure from an
+   * attempt that actually reached the network, while this is a local
+   * blockage the network was never involved in. Optional and falsy
+   * (`undefined`/`null`) when nothing is blocking. A real `error` still
+   * wins over this in `deriveState()` — an unresolved connectivity failure
+   * is more urgent than a same-tick local blockage.
+   */
+  blocked?: string | null;
 }
 
 export interface SyncIconHandlers {
@@ -52,6 +81,8 @@ const GLYPHS: Record<SyncIconState, string> = {
   syncing: '↻',
   synced: '✓',
   suggestions: '◉',
+  disabled: '⏸',
+  attention: '❗',
 };
 
 /**
@@ -62,14 +93,22 @@ const GLYPHS: Record<SyncIconState, string> = {
  * first, even if a stale error or suggestions are also present. An in-flight
  * request (`syncing`) beats a stale `error` from the previous attempt — a
  * sync already underway supersedes whatever the last one left behind. Errors
- * beat suggestions, since a broken connection is more urgent than a
- * related-note nudge. `synced` is the quiet fallback.
+ * beat `blocked`, since a broken connection (something actually attempted
+ * and failed) is more urgent than a same-tick local blockage that never
+ * reached the network. `blocked` in turn beats suggestions, since a sync
+ * that couldn't even run is more actionable than a related-note nudge.
+ * `disabled` sits below suggestions — an existing suggestion badge is still
+ * worth showing even on a platform the user has opted out of continuous
+ * sync for — and above the quiet `synced` fallback, since a deliberately
+ * excluded platform must never claim the quiet-default "all good" state.
  */
 export function deriveState(input: SyncStateInput): SyncIconState {
   if (!input.configured) return 'unconfigured';
   if (input.syncing) return 'syncing';
   if (input.error) return 'offline';
+  if (input.blocked) return 'attention';
   if (input.suggestionCount > 0) return 'suggestions';
+  if (input.disabled) return 'disabled';
   return 'synced';
 }
 
@@ -80,6 +119,17 @@ export function deriveState(input: SyncStateInput): SyncIconState {
 let lastError: string | null = null;
 let lastNotePath: string | null = null;
 let lastSuggestionCount = 0;
+
+// Retained detail: the last reason a background sync was `blocked` (see
+// `SyncStateInput.blocked`) rather than a genuine connectivity `error` —
+// e.g. the extractor yielded no data, or a virtualized manifest window
+// couldn't be safely diffed. Kept separate from `lastError` rather than
+// folded into it: the two are different failure DIMENSIONS (a local
+// blockage that never reached the network vs. a real transport/companion
+// failure that did), and a bail-out that only knows about one must never
+// have its detail misread as the other on a later tick — see
+// `deriveState()`'s precedence between `error` and `blocked`.
+let lastBlockedReason: string | null = null;
 
 // The suggested related transcripts/topics for the current conversation, as
 // last reported via `setSuggestions()`. Retained detail like the rest of
@@ -134,6 +184,16 @@ export function getLastError(): string | null {
   return lastError;
 }
 
+/**
+ * The last known `blocked` reason (see `SyncStateInput.blocked`), as last
+ * reported via `setSyncState`, or `null` if nothing is currently blocking a
+ * sync attempt from even starting. Distinct from `getLastError()` — see
+ * `lastBlockedReason`'s doc comment for why the two are never merged.
+ */
+export function getLastBlockedReason(): string | null {
+  return lastBlockedReason;
+}
+
 // The href of the conversation the retained detail above belongs to, or
 // `null` before any conversation has been established. This is the single
 // mechanism a stale async result is checked against before it's allowed to
@@ -162,6 +222,7 @@ export function setIconContext(href: string): void {
   lastError = null;
   lastNotePath = null;
   lastSuggestionCount = 0;
+  lastBlockedReason = null;
   currentSuggestions = { transcripts: [], pages: [] };
 }
 
@@ -220,6 +281,7 @@ export type SyncStateDetail = {
   suggestionCount?: number;
   error?: string | null;
   notePath?: string;
+  blocked?: string | null;
 };
 
 /**
@@ -238,7 +300,10 @@ export function setSyncState(state: SyncIconState, detail: SyncStateDetail = {})
   // clearing it — only a call that explicitly passes `error` (a real
   // failure, or `null` for a real success) should update it.
   if (detail.error !== undefined) lastError = detail.error;
-  button.title = lastError ?? state;
+  // Same retain-unless-explicit convention as `lastError` above, for the
+  // separate `blocked` dimension.
+  if (detail.blocked !== undefined) lastBlockedReason = detail.blocked;
+  button.title = lastError ?? lastBlockedReason ?? state;
   if (detail.notePath !== undefined) lastNotePath = detail.notePath;
   if (detail.suggestionCount !== undefined) lastSuggestionCount = detail.suggestionCount;
 
@@ -296,15 +361,55 @@ function renderSuggestionGroup(
 }
 
 /**
+ * Append a single explanatory note line to `menu` — the shared shape behind
+ * `offline`'s error detail, `attention`'s blocked-reason detail, and
+ * `disabled`'s fixed note below. Split out purely to keep `buildMenuEntries`
+ * under the line-count lint limit.
+ */
+function appendMenuDetail(menu: HTMLElement, className: string, text: string): void {
+  const detail = document.createElement('div');
+  detail.className = className;
+  detail.textContent = text;
+  menu.appendChild(detail);
+}
+
+/**
+ * Append the explanatory note for whichever of the three "something to
+ * explain" states `state` is — a no-op for every other state. Split out of
+ * `buildMenuEntries` purely to keep it under the line-count lint limit; the
+ * "Retry" entry that follows `offline`'s note is NOT included here since it
+ * needs `buildMenuEntries`'s own `addEntry` closure.
+ */
+function appendStateNote(menu: HTMLElement, state: SyncIconState): void {
+  if (state === 'offline') {
+    appendMenuDetail(menu, 'error-detail', lastError ?? getMessage('syncIcon_syncFailed'));
+  } else if (state === 'attention') {
+    appendMenuDetail(
+      menu,
+      'attention-detail',
+      lastBlockedReason ?? getMessage('syncIcon_attentionDefault')
+    );
+  } else if (state === 'disabled') {
+    appendMenuDetail(menu, 'note-detail', getMessage('syncIcon_autoSyncDisabled'));
+  }
+}
+
+/**
  * Populate the menu's entries for the given state:
  * - `unconfigured`: only "Open settings".
  * - `offline`: the last error plus "Retry".
+ * - `attention`: the retained blocked-reason (or a generic fallback) as a
+ *   note, no "Retry" entry — unlike `offline`, nothing was actually sent
+ *   anywhere to retry; "Sync now" below covers trying again.
+ * - `disabled`: a fixed note explaining auto-sync is off for this platform.
  * - any other configured state: "Open transcript", plus "Sync now" and
  *   "Repair this conversation from source" (the latter only when
  *   `handlers.onRepair` is provided and `handlers.canRepair` — re-checked
  *   here, fresh, every time the menu is built — doesn't say otherwise)
  *   unless a sync is already in flight (`syncing`), in which case both are
- *   omitted so neither can be re-triggered mid-request.
+ *   omitted so neither can be re-triggered mid-request. `attention` and
+ *   `disabled` both fall through to this shared block too — neither
+ *   prevents a manual sync, so both still offer it.
  *
  * Suggestion groups (related transcripts, then related topics) follow the
  * fixed entries, one heading plus one entry per item, each group omitted
@@ -331,11 +436,8 @@ export function buildMenuEntries(
     return;
   }
 
+  appendStateNote(menu, state);
   if (state === 'offline') {
-    const errorDetail = document.createElement('div');
-    errorDetail.className = 'error-detail';
-    errorDetail.textContent = lastError ?? getMessage('syncIcon_syncFailed');
-    menu.appendChild(errorDetail);
     addEntry(getMessage('syncIcon_retry'), handlers.onRetry);
   }
   if (state !== 'syncing') {

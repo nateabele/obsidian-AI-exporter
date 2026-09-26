@@ -39,6 +39,8 @@ import type {
   ChatSyncRequest,
   ChatSyncResponse,
   ContentScriptSettings,
+  ConversationData,
+  ExtractionResult,
   ObsidianNote,
   OutputDestination,
   OutputResult,
@@ -326,10 +328,16 @@ async function sendChatSync(
  * Return the icon to a resting state after a background auto-sync exits
  * early without ever reaching `sendChatSync` — e.g. an unchanged manifest,
  * the common case on a quiet page. Every early return in `runAutoSync` must
- * call this so `handleSync`'s `reportSyncOutcome()` can safely defer to an
- * in-flight auto-sync: that deferral is only correct if the in-flight run
- * is guaranteed to leave the icon in *some* terminal state, rather than
- * (as before this fix) sometimes leaving it stuck on `syncing` forever.
+ * call this, or one of its siblings below (`settleBlocked`/`settleDisabled`),
+ * so `handleSync`'s `reportSyncOutcome()` can safely defer to an in-flight
+ * auto-sync: that deferral is only correct if the in-flight run is
+ * guaranteed to leave the icon in *some* terminal state, rather than (as
+ * before this fix) sometimes leaving it stuck on `syncing` forever.
+ *
+ * Reserved for bail-outs that genuinely have nothing new to report — an
+ * unconfigured companion, or an unchanged manifest — as opposed to
+ * `settleBlocked`, for a bail-out that DOES know something specific went
+ * wrong this tick.
  */
 function settleIcon(configured: boolean, href: string): void {
   // A bail-out never checked whether the last attempt actually failed, so
@@ -347,6 +355,75 @@ function settleIcon(configured: boolean, href: string): void {
       suggestionCount: getSuggestionCount(),
     })
   );
+}
+
+/**
+ * Settle the icon on `attention` (or whatever `deriveState` derives instead —
+ * see below) after a bail-out that knows a SPECIFIC, fresh reason this tick
+ * could not even attempt a real sync: a rotted `canExtract()`, an extraction
+ * that yielded no data, or a manifest window that can't be safely diffed
+ * (see `decideManifestSend`). Unlike `settleIcon`'s deferral to whatever the
+ * last resolved attempt left behind, `reason` is asserted here every time —
+ * it describes what just happened, not a guess about stale state.
+ *
+ * Still passes the retained `error` (via `getLastError()`) through to
+ * `deriveState`, so a genuine unresolved connectivity failure continues to
+ * outrank a same-tick local blockage rather than being silently papered
+ * over by it (see `deriveState`'s precedence comment).
+ */
+function settleBlocked(href: string, reason: string): void {
+  paintFor(
+    href,
+    deriveState({
+      configured: true,
+      syncing: false,
+      error: getLastError(),
+      suggestionCount: getSuggestionCount(),
+      blocked: reason,
+    }),
+    { blocked: reason }
+  );
+}
+
+/**
+ * Settle the icon on `disabled` (or whatever `deriveState` derives instead)
+ * after auto-sync is skipped because the current platform is deliberately
+ * excluded from `autoSyncPlatforms`. No `reason` to retain — unlike
+ * `settleBlocked`, the note shown for this state (see
+ * `syncIcon_autoSyncDisabled`) is fixed, not derived from what happened this
+ * tick — so there is nothing here to pass as `detail`.
+ */
+function settleDisabled(href: string): void {
+  paintFor(
+    href,
+    deriveState({
+      configured: true,
+      syncing: false,
+      error: getLastError(),
+      suggestionCount: getSuggestionCount(),
+      disabled: true,
+    })
+  );
+}
+
+/**
+ * Settle the icon after `runAutoSync`'s try block throws — `getSettings()`
+ * and `sendMessage()` (inside `sendChatSync`) both REJECT on
+ * extension-context invalidation (e.g. after an extension reload/update —
+ * see messaging.ts) or any other unexpected messaging failure. Every caller
+ * of `runAutoSync` is `void runAutoSync()` or driven through `debounce()`
+ * (neither awaits nor catches), so without a catch calling this, a rejection
+ * here would surface only as an unhandled promise rejection — no paint at
+ * all, leaving the icon frozen on whatever it last showed (often `synced`)
+ * forever. This isn't a local extraction blockage (`attention`); it's the
+ * same flavor of failure a resolved `{ error }` chatSync response already
+ * paints, so it reuses `offline` rather than inventing a third failure state
+ * for what is, from the user's side, the same "a sync attempt failed" story.
+ */
+function settleAutoSyncFailure(href: string, error: unknown): void {
+  const message = extractErrorMessage(error);
+  console.error('[G2O] Auto-sync failed:', error);
+  paintFor(href, 'offline', { error: message });
 }
 
 /**
@@ -460,17 +537,64 @@ function handleRepairClick(): void {
 }
 
 /**
- * Whether the freshly-extracted manifest should actually be sent: false for
- * an unchanged manifest (nothing new since the last sync) or one that no
- * longer starts where the last synced manifest did. Both are routine, not
- * errors — split out from `runAutoSync` purely to keep it under the
- * line-count lint limit.
+ * The reason to surface via `settleBlocked` when `extractor.extract()`
+ * returns no data — prefers the extractor's own `result.error`, then its
+ * `result.warnings` (joined), and only falls back to a generic message if
+ * neither is present. Surfacing these rather than a hardcoded string is the
+ * whole point of this fix: `result.error`/`result.warnings` used to be read
+ * by nobody on this path, which is exactly how a rotted selector (e.g.
+ * `base.ts`'s "Primary selectors may have changed" warning) could paint
+ * `synced` indefinitely. Split out from `runAutoSync` purely to keep it
+ * under the line-count lint limit.
  */
-function shouldSendManifest(manifest: string[]): boolean {
+function extractionFailureReason(result: ExtractionResult): string {
+  if (result.error) return result.error;
+  if (result.warnings && result.warnings.length > 0) return result.warnings.join('; ');
+  return getMessage('syncIcon_extractionFailed');
+}
+
+/**
+ * Build the `chatSync` request body for the current manifest/blocks. Split
+ * out from `runAutoSync` purely to keep it under the line-count lint limit.
+ */
+function buildChatSyncRequest(
+  data: ConversationData,
+  manifest: string[],
+  blocks: ChatSyncBlock[]
+): ChatSyncRequest {
+  return {
+    conversationId: data.id,
+    platform: data.source,
+    title: data.title,
+    url: data.url,
+    manifest,
+    newBlocks: diffBlocks(previousManifest, manifest, blocks),
+  };
+}
+
+/**
+ * Whether — and why not — the freshly-extracted manifest should actually be
+ * sent:
+ * - `'unchanged'`: nothing new since the last sync, the common case on a
+ *   quiet page. Routine; `runAutoSync` settles the icon via `settleIcon`.
+ * - `'windowed'`: the manifest looks like a virtualized window rather than a
+ *   true growth of the last synced manifest (see below) — sending it would
+ *   risk corrupting the server's copy, or silently stop tracking messages
+ *   the client no longer has any record of. Not routine: `runAutoSync`
+ *   settles the icon via `settleBlocked`, surfacing it rather than staying
+ *   silently green.
+ * - `'send'`: safe to diff and send.
+ *
+ * Split out from `runAutoSync` purely to keep it under the line-count lint
+ * limit.
+ */
+type ManifestSendDecision = 'send' | 'unchanged' | 'windowed';
+
+function decideManifestSend(manifest: string[]): ManifestSendDecision {
   const unchanged =
     manifest.length === previousManifest.length &&
     manifest.every((h, i) => h === previousManifest[i]);
-  if (unchanged) return false;
+  if (unchanged) return 'unchanged';
 
   // Virtualized platforms (ADR-017) drop off-screen messages from the DOM,
   // so an extraction taken without scrolling can return a *window* of the
@@ -483,10 +607,32 @@ function shouldSendManifest(manifest: string[]): boolean {
       '[G2O] Auto-sync skipped: manifest no longer starts where the previous one did ' +
         '(likely a virtualized window, not a true prefix) — not sending'
     );
-    return false;
+    return 'windowed';
   }
 
-  return true;
+  // The sibling truncation: the window narrowed from the TAIL instead of
+  // the head — every hash still present matches the start of
+  // `previousManifest`, but there are fewer of them (messages scrolled out
+  // of view and virtualized away). `diffBlocks` against this would compute
+  // an EMPTY delta (nothing beyond `divergeAt` to slice), so a caller that
+  // didn't check for this and sent anyway would get back a harmless-looking
+  // response and advance `previousManifest` to this truncated manifest —
+  // poisoning the baseline for every later comparison, since the next real
+  // diff would then treat already-synced messages beyond this point as
+  // "new" (see the regression pin for this in index.test.ts). Refuse here,
+  // before a diff is ever computed, exactly like the head-shift case above.
+  if (
+    previousManifest.length > manifest.length &&
+    manifest.every((h, i) => h === previousManifest[i])
+  ) {
+    console.warn(
+      '[G2O] Auto-sync skipped: manifest shrank to a prefix of the previous one ' +
+        '(likely virtualized tail truncation) — not sending, not advancing the baseline'
+    );
+    return 'windowed';
+  }
+
+  return 'send';
 }
 
 /**
@@ -531,11 +677,25 @@ export async function runAutoSync(): Promise<ChatSyncResponse | null> {
 
     const extractor = getExtractor();
     if (!extractor || !extractor.canExtract()) {
-      settleIcon(true, startHref);
+      // Ambiguous by construction: every extractor's `canExtract()` today
+      // just re-checks the hostname (see e.g. GeminiExtractor), which
+      // cannot itself change mid-session — so in practice this never fires.
+      // If a future extractor makes it richer (e.g. also requiring a
+      // resolvable conversation id), this branch would then cover BOTH "not
+      // actually on a conversation page right now" (expected) and "the
+      // selectors it depends on rotted" (not). Since this bail-out can't
+      // tell those apart, and the harm of wrongly claiming `synced` is worse
+      // than the harm of an occasional false `attention`, treat it as
+      // blocked rather than assume the benign case.
+      settleBlocked(startHref, getMessage('syncIcon_notOnConversationPage'));
       return null;
     }
     if (!settings.autoSyncPlatforms.includes(extractor.platform)) {
-      settleIcon(true, startHref);
+      // Unlike the branches above and below, this one IS unambiguous: the
+      // user deliberately excluded this platform from auto-sync in
+      // settings. Genuinely nothing was attempted, on purpose — that's
+      // `disabled`, not `attention`.
+      settleDisabled(startHref);
       return null;
     }
 
@@ -546,29 +706,30 @@ export async function runAutoSync(): Promise<ChatSyncResponse | null> {
     extractor.applySettings({ ...settings, enableAutoScroll: false });
     const result = await extractor.extract();
     if (!result.data) {
-      settleIcon(true, startHref);
+      settleBlocked(startHref, extractionFailureReason(result));
       return null;
     }
 
     const { manifest, blocks } = buildManifest(result.data.messages);
-    if (!shouldSendManifest(manifest)) {
+    const manifestDecision = decideManifestSend(manifest);
+    if (manifestDecision === 'unchanged') {
       settleIcon(true, startHref);
+      return null;
+    }
+    if (manifestDecision === 'windowed') {
+      settleBlocked(startHref, getMessage('syncIcon_syncStalled'));
       return null;
     }
 
     return await sendChatSync(
-      {
-        conversationId: result.data.id,
-        platform: result.data.source,
-        title: result.data.title,
-        url: result.data.url,
-        manifest,
-        newBlocks: diffBlocks(previousManifest, manifest, blocks),
-      },
+      buildChatSyncRequest(result.data, manifest, blocks),
       manifest,
       blocks,
       startHref
     );
+  } catch (error) {
+    settleAutoSyncFailure(startHref, error);
+    return null;
   } finally {
     autoSyncInFlight = false;
   }

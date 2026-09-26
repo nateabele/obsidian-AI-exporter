@@ -52,6 +52,18 @@ const STYLES = `
     background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
   }
 
+  /* Same amber as the warning toast (see .g2o-toast.warning below) — a
+     blocked local extraction/manifest issue, not a companion connectivity
+     failure (which stays offline's red). */
+  #g2o-sync-icon[data-state='attention'] {
+    background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  }
+
+  /* No override for disabled -- it deliberately shares the same neutral
+     gray as the base rule above and unconfigured (which also has no
+     override): a platform excluded from auto-sync is a quiet, expected
+     state, not a health claim to draw the eye toward or away from. */
+
   #g2o-sync-icon:hover {
     transform: translateY(-2px);
     box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
@@ -120,6 +132,18 @@ const STYLES = `
   #g2o-sync-menu .error-detail {
     padding: 4px 12px 8px;
     color: #dc2626;
+    font-size: 12px;
+  }
+
+  #g2o-sync-menu .attention-detail {
+    padding: 4px 12px 8px;
+    color: #d97706;
+    font-size: 12px;
+  }
+
+  #g2o-sync-menu .note-detail {
+    padding: 4px 12px 8px;
+    color: #6b7280;
     font-size: 12px;
   }
 

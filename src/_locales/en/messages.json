@@ -58,6 +58,22 @@
       }
     }
   },
+  "syncIcon_attentionDefault": {
+    "message": "This conversation couldn't be synced. Check the page and try again.",
+    "description": "Fallback detail shown in the sync icon menu for the `attention` state when no more specific blocked reason is known"
+  },
+  "syncIcon_notOnConversationPage": {
+    "message": "Couldn't find an active conversation on this page",
+    "description": "Blocked-reason detail when the extractor reports it can no longer handle the current page"
+  },
+  "syncIcon_extractionFailed": {
+    "message": "Extraction failed",
+    "description": "Fallback blocked-reason detail when extraction yields no data and no specific error or warning is available"
+  },
+  "syncIcon_autoSyncDisabled": {
+    "message": "Auto-sync is off for this platform — use Sync now to sync manually, or turn it on in settings",
+    "description": "Note shown in the sync icon menu's `disabled` state, when the current platform is excluded from autoSyncPlatforms"
+  },
   "syncIcon_relatedConversations": {
     "message": "Related conversations",
     "description": "Sync icon menu group heading: suggested related transcripts"

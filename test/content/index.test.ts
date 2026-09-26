@@ -1054,9 +1054,10 @@ describe('content/bootstrap', () => {
       // detail (error/note path/suggestion count) that travels with it.
       // Without setIconContext(), a failed manual sync in conversation A
       // leaves lastError set; navigating in-app to conversation B and
-      // hitting any bail-out there (e.g. B has no messages yet) would
-      // settle the icon offline with A's error against a conversation that
-      // was never attempted.
+      // hitting any bail-out there (e.g. B has no messages yet, which
+      // settles via settleBlocked — see below) would settle the icon
+      // offline with A's error against a conversation that was never
+      // attempted.
       setGeminiLocation('auto-sync-nav-a');
       loadFixture(
         createGeminiConversationDOM([
@@ -1097,7 +1098,7 @@ describe('content/bootstrap', () => {
         loadFixture(createGeminiConversationDOM([]));
 
         expect(setIconContext).not.toHaveBeenCalled();
-        await runAutoSync(); // B has no messages: extract() fails, settleIcon(true) bail-out
+        await runAutoSync(); // B has no messages: extract() fails, settleBlocked(true) bail-out
         expect(setIconContext).toHaveBeenCalledWith(hrefB);
         expect(setIconContext).toHaveBeenCalledTimes(1);
 
@@ -1107,15 +1108,22 @@ describe('content/bootstrap', () => {
 
         vi.mocked(paintFor).mockClear();
         vi.mocked(deriveState).mockClear();
-        await runAutoSync(); // same empty DOM, same href: routine bail-out only
+        await runAutoSync(); // same empty DOM, same href: same blocked bail-out again
 
+        // No messages extracted is itself surfaced as a fresh `blocked`
+        // reason every tick (see settleBlocked) — it is never routine, so
+        // this must NOT fall back to a bare configured/error/suggestionCount
+        // call the way the old settleIcon(true) bail-out used to.
         expect(deriveState).toHaveBeenLastCalledWith({
           configured: true,
           syncing: false,
           error: null,
           suggestionCount: 0,
+          blocked: 'No messages found in conversation',
         });
-        expect(paintFor).toHaveBeenLastCalledWith(hrefB, 'synced');
+        expect(paintFor).toHaveBeenLastCalledWith(hrefB, 'attention', {
+          blocked: 'No messages found in conversation',
+        });
         // Already inside conversation B — no further reset on this tick.
         expect(setIconContext).toHaveBeenCalledTimes(1);
       } finally {
@@ -1182,7 +1190,7 @@ describe('content/bootstrap', () => {
     it('does not advance the baseline and paints offline when the server no-ops a non-empty delta (reload stall)', async () => {
       // Regression pin: after a page reload, previousManifest is empty in
       // this fresh module instance, so the window guard in
-      // shouldSendManifest() can't fire — the client sends a (possibly
+      // decideManifestSend() can't fire — the client sends a (possibly
       // windowed) manifest with a non-empty newBlocks. If the server
       // rejects it as a no-op (its own index-0 guard), a client that
       // ignores `response.mode` would advance previousManifest anyway and
@@ -1217,14 +1225,22 @@ describe('content/bootstrap', () => {
       expect(chatSyncCallsOf()).toHaveLength(2);
     });
 
-    it('still settles normally on a genuine noop for an empty delta', async () => {
-      // Contrast case: a `noop` response to an EMPTY newBlocks (nothing new
-      // to actually append) is a real, routine outcome — not a stall — and
-      // must not be treated as an error. Constructed via a manifest that
-      // shrinks (same leading message, fewer trailing ones) so the window
-      // guard still lets it through but diffBlocks() computes an empty
-      // delta, mirroring what the server would legitimately no-op.
-      setGeminiLocation('auto-sync-genuine-noop');
+    it('refuses to send, and does not advance the baseline, when the manifest shrinks to a matching prefix (virtualized tail truncation)', async () => {
+      // Regression pin for the row-11 audit finding: a manifest that shrinks
+      // to a strict, matching PREFIX of previousManifest (tail messages
+      // virtualized out of the DOM) passes the unchanged-check (different
+      // length) and the head-shift window guard (index 0 still matches), so
+      // diffBlocks() would compute an EMPTY delta. The old code sent that
+      // empty delta anyway; the server no-op'd it, and the client — reading
+      // nothing wrong with an empty-delta noop — advanced previousManifest
+      // to the truncated manifest anyway, poisoning every later diff. The
+      // fix refuses to send at all once the shrink is detected, so this
+      // must never reach chatSync, never advance the baseline, and must not
+      // silently paint `synced` — a client-side detected stall is exactly
+      // as actionable as the server-side one covered by the sibling test
+      // above, so it paints `attention`, not `offline` (nothing was actually
+      // sent to fail) and not `synced` (nothing was actually confirmed).
+      setGeminiLocation('auto-sync-tail-truncation');
       loadFixture(
         createGeminiConversationDOM([
           { role: 'user', content: 'Hello Gemini' },
@@ -1245,20 +1261,33 @@ describe('content/bootstrap', () => {
           { role: 'assistant', content: '<p>Hi there!</p>' },
         ])
       );
-      mockMessaging({
-        settings: { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] },
-        chatSync: { ...okChatSync, mode: 'noop' },
-      });
       vi.mocked(paintFor).mockClear();
 
       await runAutoSync();
 
-      expect(paintFor).not.toHaveBeenCalledWith(
-        location.href,
-        'offline',
-        expect.objectContaining({ error: expect.any(String) })
+      expect(chatSyncCallsOf()).toHaveLength(1); // still just the first, baseline-establishing call
+      expect(paintFor).toHaveBeenLastCalledWith(location.href, 'attention', {
+        blocked: expect.any(String),
+      });
+
+      // The baseline must still be the original 4-message manifest, not the
+      // truncated 2-message one — proven by sending the original 4 messages
+      // again: a poisoned (2-message) baseline would diff this as unchanged
+      // or as only a 2-message tail, not the identical no-op it actually is.
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+          { role: 'user', content: 'Second question' },
+          { role: 'assistant', content: '<p>Second answer</p>' },
+        ])
       );
-      expect(paintFor).toHaveBeenLastCalledWith(location.href, 'synced', expect.anything());
+      vi.mocked(paintFor).mockClear();
+
+      await runAutoSync();
+
+      expect(chatSyncCallsOf()).toHaveLength(1); // unchanged: correctly recognized as the same 4 messages
+      expect(paintFor).toHaveBeenLastCalledWith(location.href, 'synced');
     });
 
     it('records the suggestions from a successful response and paints the icon with their combined count', async () => {

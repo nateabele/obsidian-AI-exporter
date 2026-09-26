@@ -30,6 +30,18 @@
   "syncIcon_fullContentLoop": {
     "message": "同期に失敗しました：サーバーが会話全体の再送を繰り返し要求しました"
   },
+  "syncIcon_attentionDefault": {
+    "message": "この会話を同期できませんでした。ページを確認して再試行してください。"
+  },
+  "syncIcon_notOnConversationPage": {
+    "message": "このページに有効な会話が見つかりませんでした"
+  },
+  "syncIcon_extractionFailed": {
+    "message": "抽出に失敗しました"
+  },
+  "syncIcon_autoSyncDisabled": {
+    "message": "このプラットフォームの自動同期はオフです。「今すぐ同期」で手動同期するか、設定でオンにしてください"
+  },
   "syncIcon_relatedConversations": {
     "message": "関連する会話"
   },
