@@ -190,9 +190,43 @@ export async function openNote(settings: CompanionSettings, path: string): Promi
   }
 }
 
-export async function enqueue(request: ChatSyncRequest): Promise<void> {
+/**
+ * Normalise a raw stored queue, tolerating entries written by an older version.
+ *
+ * Before the attempt-tracking change the queue held bare `ChatSyncRequest`
+ * objects; it now holds `{ request, attempts }`. Anyone who upgrades with a
+ * non-empty queue therefore has old-shape rows in storage, and every reader
+ * here dereferences `q.request.conversationId` — which throws on them.
+ *
+ * The throw would not be visible: `enqueue()` is called from inside a catch in
+ * service-worker.ts, so a TypeError here is logged and the retry is simply
+ * never queued — a failure that leaves no trace, which is the exact defect
+ * class this file's other fixes were about. Normalise on read instead, and let
+ * the next write persist the new shape.
+ */
+function normalizeQueue(raw: unknown): QueuedRequest[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry): QueuedRequest[] => {
+    if (entry && typeof entry === 'object' && 'request' in entry) {
+      return [entry as QueuedRequest];
+    }
+    // Legacy row: a bare ChatSyncRequest. Start it at zero attempts — it has
+    // never been counted, and crediting it with prior failures it may not have
+    // had would retire it early.
+    if (entry && typeof entry === 'object' && 'conversationId' in entry) {
+      return [{ request: entry as ChatSyncRequest, attempts: 0 }];
+    }
+    return [];
+  });
+}
+
+async function readQueue(): Promise<QueuedRequest[]> {
   const stored = await chrome.storage.local.get(QUEUE_KEY);
-  const queue: QueuedRequest[] = stored[QUEUE_KEY] ?? [];
+  return normalizeQueue(stored[QUEUE_KEY]);
+}
+
+export async function enqueue(request: ChatSyncRequest): Promise<void> {
+  const queue = await readQueue();
   const stale = queue.find(q => q.request.conversationId === request.conversationId);
   if (stale) {
     // Intentional and correct, not a bug: the newer delta is a superset of
@@ -231,8 +265,7 @@ export async function enqueue(request: ChatSyncRequest): Promise<void> {
  * conversation, before flushQueue() runs.
  */
 export async function dropQueued(conversationId: string): Promise<void> {
-  const stored = await chrome.storage.local.get(QUEUE_KEY);
-  const queue: QueuedRequest[] = stored[QUEUE_KEY] ?? [];
+  const queue = await readQueue();
   const withoutStale = queue.filter(q => q.request.conversationId !== conversationId);
   if (withoutStale.length !== queue.length) {
     await chrome.storage.local.set({ [QUEUE_KEY]: withoutStale });
@@ -282,8 +315,7 @@ function requeueOrDrop(
 }
 
 export async function flushQueue(settings: CompanionSettings): Promise<FlushQueueResult> {
-  const stored = await chrome.storage.local.get(QUEUE_KEY);
-  const queue: QueuedRequest[] = stored[QUEUE_KEY] ?? [];
+  const queue = await readQueue();
   const result: FlushQueueResult = { sent: 0, refused: 0, failed: 0, exhausted: 0, remaining: 0 };
   const remaining: QueuedRequest[] = [];
 
@@ -337,7 +369,7 @@ export async function recordFlushResult(result: FlushQueueResult): Promise<void>
  */
 export async function getQueueStatus(): Promise<ChatSyncQueueStatus> {
   const stored = await chrome.storage.local.get([QUEUE_KEY, QUEUE_STATS_KEY]);
-  const queue: QueuedRequest[] = stored[QUEUE_KEY] ?? [];
+  const queue = normalizeQueue(stored[QUEUE_KEY]);
   const lastFlush: FlushQueueResult | null = stored[QUEUE_STATS_KEY] ?? null;
   return { queued: queue.length, lastFlush };
 }

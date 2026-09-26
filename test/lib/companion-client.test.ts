@@ -514,3 +514,65 @@ describe('postBackfill', () => {
     }
   });
 });
+
+describe('queue format migration (upgrade safety)', () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  // Before the attempt-tracking change the queue stored bare ChatSyncRequest
+  // objects; it now stores { request, attempts }. Anyone upgrading with a
+  // non-empty queue has old-shape rows in storage, and every reader does
+  // `q.request.conversationId` — which throws on them. It fails SILENTLY:
+  // enqueue() is called inside a catch in service-worker.ts, so the TypeError
+  // is logged and the retry is simply never queued.
+  const legacyRequest = {
+    conversationId: 'legacy-1',
+    platform: 'claude' as const,
+    title: 'Legacy',
+    url: 'https://claude.ai/chat/legacy-1',
+    manifest: ['h1'],
+    newBlocks: [{ role: 'user' as const, markdown: 'hi', hash: 'h1' }],
+  };
+
+  const stubStorageWith = (initial: unknown[]) => {
+    const stored: Record<string, unknown> = { companionQueue: initial };
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: async (key: string) => ({ [key]: stored[key] }),
+          set: async (patch: Record<string, unknown>) => Object.assign(stored, patch),
+        },
+      },
+    });
+    return stored;
+  };
+
+  it('enqueue does not throw on a legacy-shape queue', async () => {
+    stubStorageWith([legacyRequest]);
+    await expect(
+      enqueue({ ...legacyRequest, conversationId: 'new-1' })
+    ).resolves.not.toThrow();
+  });
+
+  it('enqueue normalises a legacy entry and keeps it alongside the new one', async () => {
+    const stored = stubStorageWith([legacyRequest]);
+    await enqueue({ ...legacyRequest, conversationId: 'new-1' });
+    const q = stored.companionQueue as { request: { conversationId: string }; attempts: number }[];
+    expect(q).toHaveLength(2);
+    expect(q[0].request.conversationId).toBe('legacy-1');
+    expect(q[0].attempts).toBe(0);
+  });
+
+  it('enqueue still dedupes against a legacy entry for the same conversation', async () => {
+    const stored = stubStorageWith([legacyRequest]);
+    await enqueue(legacyRequest);
+    const q = stored.companionQueue as { request: { conversationId: string } }[];
+    expect(q).toHaveLength(1);
+    expect(q[0].request.conversationId).toBe('legacy-1');
+  });
+
+  it('dropQueued removes a legacy entry by conversation id', async () => {
+    const stored = stubStorageWith([legacyRequest]);
+    await dropQueued('legacy-1');
+    expect(stored.companionQueue as unknown[]).toHaveLength(0);
+  });
+});
