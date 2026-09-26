@@ -15,6 +15,8 @@ const mockCompanion = {
   enqueue: vi.fn(),
   dropQueued: vi.fn(),
   flushQueue: vi.fn(),
+  recordFlushResult: vi.fn(),
+  getQueueStatus: vi.fn(),
 };
 
 const defaultSettings = {
@@ -87,6 +89,17 @@ describe('background/service-worker chatSync wiring', () => {
     mockCompanion.enqueue.mockReset();
     mockCompanion.dropQueued.mockReset();
     mockCompanion.flushQueue.mockReset();
+    mockCompanion.recordFlushResult.mockReset();
+    mockCompanion.getQueueStatus.mockReset();
+    // Default: nothing notable in the queue. Tests exercising the flush
+    // wiring itself override this with their own implementation/return.
+    mockCompanion.flushQueue.mockResolvedValue({
+      sent: 0,
+      refused: 0,
+      failed: 0,
+      exhausted: 0,
+      remaining: 0,
+    });
     mockGetSettings = vi.fn(() => Promise.resolve(defaultSettings));
 
     vi.mocked(chrome.runtime.onMessage.addListener).mockImplementation(listener => {
@@ -113,9 +126,10 @@ describe('background/service-worker chatSync wiring', () => {
     mockCompanion.dropQueued.mockImplementation(async () => {
       callOrder.push('dropQueued');
     });
+    const flushResult = { sent: 0, refused: 0, failed: 0, exhausted: 0, remaining: 0 };
     mockCompanion.flushQueue.mockImplementation(async () => {
       callOrder.push('flushQueue');
-      return 0;
+      return flushResult;
     });
 
     const sendResponse = vi.fn();
@@ -137,6 +151,10 @@ describe('background/service-worker chatSync wiring', () => {
     });
     expect(callOrder).toEqual(['postSync', 'dropQueued', 'flushQueue']);
     expect(mockCompanion.enqueue).not.toHaveBeenCalled();
+    // The flush result must actually go somewhere (recordFlushResult),
+    // rather than being discarded the way `await flushQueue(companion);`
+    // used to.
+    expect(mockCompanion.recordFlushResult).toHaveBeenCalledWith(flushResult);
     expect(sendResponse).toHaveBeenCalledWith(chatSyncResult);
   });
 
@@ -228,6 +246,89 @@ describe('background/service-worker chatSync wiring', () => {
   });
 });
 
+describe('background/service-worker companion queue draining', () => {
+  let capturedAlarmListener: (alarm: chrome.alarms.Alarm) => void;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockCompanion.postSync.mockReset();
+    mockCompanion.postBackfill.mockReset();
+    mockCompanion.enqueue.mockReset();
+    mockCompanion.dropQueued.mockReset();
+    mockCompanion.flushQueue.mockReset();
+    mockCompanion.recordFlushResult.mockReset();
+    mockCompanion.getQueueStatus.mockReset();
+    mockCompanion.flushQueue.mockResolvedValue({
+      sent: 0,
+      refused: 0,
+      failed: 0,
+      exhausted: 0,
+      remaining: 0,
+    });
+    mockGetSettings = vi.fn(() => Promise.resolve(defaultSettings));
+
+    vi.mocked(chrome.runtime.onMessage.addListener).mockImplementation(listener => {
+      capturedListener = listener;
+    });
+    vi.mocked(chrome.alarms.onAlarm.addListener).mockImplementation(listener => {
+      capturedAlarmListener = listener;
+    });
+
+    vi.resetModules();
+
+    vi.doMock('../../src/lib/companion-client', () => mockCompanion);
+    vi.doMock('../../src/lib/storage', () => ({
+      getSettings: () => mockGetSettings(),
+      migrateSettings: vi.fn(() => Promise.resolve()),
+    }));
+
+    await import('../../src/background/service-worker');
+  });
+
+  // Without this, the queue only ever drains right after a *successful*
+  // live sync (see handleChatSync above) — if the companion stays down,
+  // nothing else would ever trigger a replay.
+  it('registers a recurring alarm to drain the replay queue on its own schedule', () => {
+    expect(chrome.alarms.create).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ periodInMinutes: expect.any(Number) })
+    );
+  });
+
+  it('flushes the queue with current settings when the alarm fires, and records the result', async () => {
+    const [alarmName] = vi.mocked(chrome.alarms.create).mock.calls[0];
+    const result = { sent: 1, refused: 0, failed: 0, exhausted: 0, remaining: 0 };
+    mockCompanion.flushQueue.mockResolvedValue(result);
+
+    capturedAlarmListener({ name: alarmName } as chrome.alarms.Alarm);
+
+    await vi.waitFor(() => expect(mockCompanion.flushQueue).toHaveBeenCalled());
+    expect(mockCompanion.flushQueue).toHaveBeenCalledWith({
+      companionUrl: defaultSettings.companionUrl,
+      companionToken: defaultSettings.companionToken,
+    });
+    await vi.waitFor(() => expect(mockCompanion.recordFlushResult).toHaveBeenCalledWith(result));
+  });
+
+  it('ignores an alarm event for an unrelated alarm', async () => {
+    capturedAlarmListener({ name: 'some-other-alarm' } as chrome.alarms.Alarm);
+    // Give any (incorrect) async handling a chance to run before asserting.
+    await Promise.resolve();
+    expect(mockCompanion.flushQueue).not.toHaveBeenCalled();
+  });
+
+  it('skips the alarm-driven flush when the companion is not configured, rather than churning failures', async () => {
+    const [alarmName] = vi.mocked(chrome.alarms.create).mock.calls[0];
+    mockGetSettings = vi.fn(() => Promise.resolve({ ...defaultSettings, companionToken: '' }));
+
+    capturedAlarmListener({ name: alarmName } as chrome.alarms.Alarm);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockCompanion.flushQueue).not.toHaveBeenCalled();
+  });
+});
+
 describe('background/service-worker chatBackfill wiring', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -236,6 +337,17 @@ describe('background/service-worker chatBackfill wiring', () => {
     mockCompanion.enqueue.mockReset();
     mockCompanion.dropQueued.mockReset();
     mockCompanion.flushQueue.mockReset();
+    mockCompanion.recordFlushResult.mockReset();
+    mockCompanion.getQueueStatus.mockReset();
+    // Default: nothing notable in the queue. Tests exercising the flush
+    // wiring itself override this with their own implementation/return.
+    mockCompanion.flushQueue.mockResolvedValue({
+      sent: 0,
+      refused: 0,
+      failed: 0,
+      exhausted: 0,
+      remaining: 0,
+    });
     mockGetSettings = vi.fn(() => Promise.resolve(defaultSettings));
 
     vi.mocked(chrome.runtime.onMessage.addListener).mockImplementation(listener => {
@@ -330,7 +442,10 @@ describe('background/service-worker chatBackfill wiring', () => {
       await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
       expect(mockCompanion.postBackfill).toHaveBeenCalledTimes(1);
       expect(sendResponse).toHaveBeenCalledWith(
-        expect.objectContaining({ success: false, error: expect.stringContaining('coded conflict') })
+        expect.objectContaining({
+          success: false,
+          error: expect.stringContaining('coded conflict'),
+        })
       );
     });
   });
@@ -345,17 +460,23 @@ describe('background/service-worker chatBackfill wiring', () => {
       ],
       [
         'a message missing hash',
-        { ...backfillRequest, messages: [{ role: 'user', markdown: 'hi', sourceId: 'm1', hash: '' }] },
+        {
+          ...backfillRequest,
+          messages: [{ role: 'user', markdown: 'hi', sourceId: 'm1', hash: '' }],
+        },
       ],
-    ])('rejects a chatBackfill payload with %s instead of reaching postBackfill', async (_label, data) => {
-      const sendResponse = vi.fn();
-      capturedListener({ action: 'chatBackfill', data }, sender, sendResponse);
+    ])(
+      'rejects a chatBackfill payload with %s instead of reaching postBackfill',
+      async (_label, data) => {
+        const sendResponse = vi.fn();
+        capturedListener({ action: 'chatBackfill', data }, sender, sendResponse);
 
-      expect(sendResponse).toHaveBeenCalledWith({
-        success: false,
-        error: 'Invalid message content',
-      });
-      expect(mockCompanion.postBackfill).not.toHaveBeenCalled();
-    });
+        expect(sendResponse).toHaveBeenCalledWith({
+          success: false,
+          error: 'Invalid message content',
+        });
+        expect(mockCompanion.postBackfill).not.toHaveBeenCalled();
+      }
+    );
   });
 });

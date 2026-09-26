@@ -15,6 +15,7 @@ import {
   flushQueue,
   dropQueued,
   openNote,
+  recordFlushResult,
   type CompanionSettings,
 } from '../lib/companion-client';
 import type {
@@ -25,6 +26,7 @@ import type {
   ChatBackfillResponse,
   ChatSyncRequest,
   ChatSyncResponse,
+  FlushQueueResult,
 } from '../lib/types';
 
 // Run settings migration on service worker startup (C-01)
@@ -32,6 +34,69 @@ import type {
 migrateSettings().catch(error => {
   console.error('[G2O Background] Settings migration failed:', error);
 });
+
+/**
+ * Log a flushQueue() cycle's outcome and persist it (see companion-client.ts's
+ * recordFlushResult/getQueueStatus, the latter not yet wired to a message
+ * action — see its doc comment) — the single place both the post-success
+ * flush in handleChatSync and the alarm-driven flush below funnel through,
+ * so neither path can go back to discarding the result the way the pre-fix
+ * `await flushQueue(companion);` used to.
+ */
+async function reportFlushResult(result: FlushQueueResult): Promise<void> {
+  if (result.refused > 0 || result.failed > 0 || result.exhausted > 0) {
+    console.warn(
+      `[G2O Background] Companion queue flush: ${result.sent} sent, ${result.refused} refused, ` +
+        `${result.failed} failed, ${result.exhausted} exhausted, ${result.remaining} still queued`
+    );
+  } else if (result.sent > 0) {
+    console.info(`[G2O Background] Companion queue flush: ${result.sent} queued sync(s) sent`);
+  }
+  await recordFlushResult(result);
+}
+
+/**
+ * Name of the recurring alarm that drains the replay queue independent of
+ * a live sync ever succeeding again. Without this, a companion that stayed
+ * down would mean handleChatSync's post-success flush never runs a second
+ * time, and the queue would sit there indefinitely with nothing to drain
+ * it — no alarm, onStartup, or onInstalled flush existed before this.
+ * `chrome.alarms` (rather than e.g. `setInterval`) is the idiomatic MV3
+ * mechanism: it survives the service worker itself being torn down and
+ * restarted between ticks, which a page-lifetime timer would not.
+ *
+ * Requires the `alarms` permission in manifest.json (added alongside this).
+ */
+const QUEUE_FLUSH_ALARM = 'g2oCompanionQueueFlush';
+const QUEUE_FLUSH_PERIOD_MINUTES = 5;
+
+// chrome.alarms.create with a name that already has a schedule is a no-op
+// (it does not reset the period), so calling this on every service worker
+// wake is safe and just re-asserts the same schedule rather than drifting
+// it forward each time.
+chrome.alarms.create(QUEUE_FLUSH_ALARM, { periodInMinutes: QUEUE_FLUSH_PERIOD_MINUTES });
+
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name !== QUEUE_FLUSH_ALARM) return;
+  flushQueueOnAlarm().catch(error => {
+    console.error('[G2O Background] Alarm-driven companion queue flush failed:', error);
+  });
+});
+
+async function flushQueueOnAlarm(): Promise<void> {
+  const settings = await getSettings();
+  // Nothing to flush against until the companion is configured — every
+  // postSync would just throw "not configured" and inflate `failed`
+  // without ever being able to succeed, until the queued entries exhaust
+  // their attempts and get dropped for a reason that was never really
+  // about *them*.
+  if (!settings.companionToken) return;
+  const result = await flushQueue({
+    companionUrl: settings.companionUrl,
+    companionToken: settings.companionToken,
+  });
+  await reportFlushResult(result);
+}
 
 /**
  * Handle incoming messages from content script and popup
@@ -173,7 +238,7 @@ async function handleChatSync(
     // one has already landed would read as a divergence server-side and
     // demote the blocks we just synced to superseded.
     await dropQueued(data.conversationId);
-    await flushQueue(companion);
+    await reportFlushResult(await flushQueue(companion));
     return result;
   } catch (error) {
     // A 409 with no code is chatSyncService's newBlocks-length mismatch: a

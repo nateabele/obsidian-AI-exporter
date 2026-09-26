@@ -386,6 +386,50 @@ export interface ChatSyncResponse {
 }
 
 /**
+ * Outcome of one `flushQueue()` replay cycle (`src/lib/companion-client.ts`).
+ * Client-side bookkeeping only — never sent to the companion — so this is
+ * free to grow without touching the wire payloads above.
+ */
+export interface FlushQueueResult {
+  /** Requests the companion accepted this cycle; removed from the queue. */
+  sent: number;
+  /**
+   * Requests the companion explicitly refused this cycle: a `noop`
+   * response to a non-empty `newBlocks`, the same signal
+   * `src/content/bootstrap.ts`'s `sendChatSync` treats as a stall rather
+   * than a success (e.g. its Guard 2 rejecting a suspected virtualised
+   * window). Still queued unless this refusal exhausted the entry's
+   * attempts — see `exhausted`.
+   */
+  refused: number;
+  /** Requests that raised (network error, non-OK status, etc.) rather than resolving with a refusal. Still queued unless exhausted. */
+  failed: number;
+  /**
+   * Entries dropped this cycle after repeated failed-or-refused replays
+   * (see `MAX_REPLAY_ATTEMPTS` in `companion-client.ts`). The data those
+   * represented is gone for good — always logged loudly when this is
+   * non-zero, since nothing else surfaces it.
+   */
+  exhausted: number;
+  /** Queue length remaining after this cycle. */
+  remaining: number;
+}
+
+/**
+ * The companion replay queue's current backlog depth plus the last flush
+ * cycle's outcome, for a caller (e.g. the sync icon) that wants to reflect
+ * backlog/exhaustion without reaching into `chrome.storage.local` directly.
+ * `lastFlush` is `null` until the first flush cycle since the service worker
+ * started. Returned by `getQueueStatus()` in `companion-client.ts` — not yet
+ * behind a `chrome.runtime` message action (see that function's doc comment
+ * for why).
+ */
+export interface ChatSyncQueueStatus {
+  queued: number;
+  lastFlush: FlushQueueResult | null;
+}
+
+/**
  * A single message within a {@link ChatBackfillRequest}. Unlike
  * `ChatSyncBlock`, carries `sourceId` (the platform's own message id, used
  * server-side for anchor preservation across producers) and an optional

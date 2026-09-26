@@ -24,6 +24,16 @@ const chromeMock = {
       set: vi.fn(),
     },
   },
+  // For the companion replay queue's periodic drain (service-worker.ts).
+  // create() is a no-op mock (real Chrome dedupes by name), and
+  // onAlarm.addListener just records the listener like runtime.onMessage
+  // above — nothing here fires it; tests that care invoke it directly.
+  alarms: {
+    create: vi.fn(),
+    onAlarm: {
+      addListener: vi.fn(),
+    },
+  },
   i18n: {
     getMessage: vi.fn((key: string) => key),
   },

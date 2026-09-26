@@ -7,6 +7,8 @@ import {
   dropQueued,
   openNote,
   isCompanionApiError,
+  recordFlushResult,
+  getQueueStatus,
 } from '../../src/lib/companion-client';
 import type { ChatBackfillRequest, ChatSyncRequest } from '../../src/lib/types';
 
@@ -68,6 +70,28 @@ describe('postSync', () => {
     await expect(postSync(settings, request)).rejects.toThrow(/401/);
   });
 
+  it('logs, rather than silently yielding an empty detail, when the error body itself fails to read', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: async () => {
+          throw new Error('stream already consumed');
+        },
+      })
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(postSync(settings, request)).rejects.toThrow(/500/);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'Failed to read the response body for a failed companion sync request'
+      ),
+      expect.any(Error)
+    );
+  });
+
   it('throws when the companion token is empty', async () => {
     await expect(postSync({ ...settings, companionToken: '' }, request)).rejects.toThrow(
       /not configured/i
@@ -80,7 +104,10 @@ describe('flushQueue', () => {
 
   it('sends every queued request and empties the queue', async () => {
     const stored: Record<string, unknown> = {
-      companionQueue: [request, { ...request, conversationId: 'def' }],
+      companionQueue: [
+        { request, attempts: 0 },
+        { request: { ...request, conversationId: 'def' }, attempts: 0 },
+      ],
     };
     vi.stubGlobal('chrome', {
       storage: {
@@ -104,12 +131,18 @@ describe('flushQueue', () => {
       })
     );
 
-    expect(await flushQueue(settings)).toBe(2);
+    expect(await flushQueue(settings)).toEqual({
+      sent: 2,
+      refused: 0,
+      failed: 0,
+      exhausted: 0,
+      remaining: 0,
+    });
     expect(stored.companionQueue).toEqual([]);
   });
 
-  it('retains requests that still fail', async () => {
-    const stored: Record<string, unknown> = { companionQueue: [request] };
+  it('retains a request that fails, incrementing its attempt count, and logs it rather than swallowing it', async () => {
+    const stored: Record<string, unknown> = { companionQueue: [{ request, attempts: 0 }] };
     vi.stubGlobal('chrome', {
       storage: {
         local: {
@@ -119,9 +152,170 @@ describe('flushQueue', () => {
       },
     });
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    expect(await flushQueue(settings)).toBe(0);
-    expect(stored.companionQueue).toHaveLength(1);
+    expect(await flushQueue(settings)).toEqual({
+      sent: 0,
+      refused: 0,
+      failed: 1,
+      exhausted: 0,
+      remaining: 1,
+    });
+    expect(stored.companionQueue).toEqual([{ request, attempts: 1 }]);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(`Queued sync for conversation ${request.conversationId}`),
+      expect.any(Error)
+    );
+  });
+
+  it('does not count a server refusal (noop for a non-empty delta) as sent, and keeps it queued', async () => {
+    const stored: Record<string, unknown> = { companionQueue: [{ request, attempts: 0 }] };
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: async (key: string) => ({ [key]: stored[key] }),
+          set: async (patch: Record<string, unknown>) => Object.assign(stored, patch),
+        },
+      },
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          notePath: 'n.md',
+          mode: 'noop',
+          appended: 0,
+          superseded: 0,
+          suggestions: { transcripts: [], pages: [] },
+        }),
+      })
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(await flushQueue(settings)).toEqual({
+      sent: 0,
+      refused: 1,
+      failed: 0,
+      exhausted: 0,
+      remaining: 1,
+    });
+    expect(stored.companionQueue).toEqual([{ request, attempts: 1 }]);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('was refused by the companion'),
+      expect.anything()
+    );
+  });
+
+  it('drops an entry and reports it exhausted after enough failed replay attempts, instead of retrying forever', async () => {
+    const stored: Record<string, unknown> = {
+      companionQueue: [{ request, attempts: 4 }], // one more failure hits MAX_REPLAY_ATTEMPTS (5)
+    };
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: async (key: string) => ({ [key]: stored[key] }),
+          set: async (patch: Record<string, unknown>) => Object.assign(stored, patch),
+        },
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    expect(await flushQueue(settings)).toEqual({
+      sent: 0,
+      refused: 0,
+      failed: 1,
+      exhausted: 1,
+      remaining: 0,
+    });
+    expect(stored.companionQueue).toEqual([]);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        `Giving up on queued sync for conversation ${request.conversationId}`
+      ),
+      expect.any(Error)
+    );
+  });
+});
+
+describe('recordFlushResult / getQueueStatus', () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it('round-trips the last flush result and current queue depth', async () => {
+    const stored: Record<string, unknown> = {};
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: async (keys: string | string[]) => {
+            const list = Array.isArray(keys) ? keys : [keys];
+            return Object.fromEntries(list.map(k => [k, stored[k]]));
+          },
+          set: async (patch: Record<string, unknown>) => Object.assign(stored, patch),
+        },
+      },
+    });
+
+    expect(await getQueueStatus()).toEqual({ queued: 0, lastFlush: null });
+
+    await enqueue(request);
+    const flushResult = { sent: 0, refused: 1, failed: 0, exhausted: 0, remaining: 1 };
+    await recordFlushResult(flushResult);
+
+    expect(await getQueueStatus()).toEqual({ queued: 1, lastFlush: flushResult });
+  });
+});
+
+describe('enqueue', () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it('logs when it drops a stale queued entry for the same conversation (intentional, not a bug)', async () => {
+    const stored: Record<string, unknown> = {};
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: async (key: string) => ({ [key]: stored[key] }),
+          set: async (patch: Record<string, unknown>) => Object.assign(stored, patch),
+        },
+      },
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await enqueue(request);
+    warnSpy.mockClear();
+    const newer = { ...request, manifest: ['h1', 'h2'] };
+    await enqueue(newer);
+
+    expect(stored.companionQueue).toEqual([{ request: newer, attempts: 0 }]);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        `Dropping stale queued sync for conversation ${request.conversationId}`
+      )
+    );
+  });
+
+  it('logs and drops the oldest entries when the queue exceeds its cap', async () => {
+    const stored: Record<string, unknown> = {};
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: async (key: string) => ({ [key]: stored[key] }),
+          set: async (patch: Record<string, unknown>) => Object.assign(stored, patch),
+        },
+      },
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    for (let i = 0; i < 51; i++) {
+      await enqueue({ ...request, conversationId: `conv-${i}` });
+    }
+
+    const queue = stored.companionQueue as { request: ChatSyncRequest }[];
+    expect(queue).toHaveLength(50);
+    expect(queue[0].request.conversationId).toBe('conv-1'); // conv-0 dropped as oldest
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Companion replay queue exceeded 50 entries')
+    );
   });
 });
 
@@ -141,7 +335,7 @@ describe('dropQueued', () => {
       },
     });
     await enqueue(staleRequest);
-    expect(stored.companionQueue).toEqual([staleRequest]);
+    expect(stored.companionQueue).toEqual([{ request: staleRequest, attempts: 0 }]);
 
     // Sync B for the same conversation succeeds directly via postSync with a
     // newer manifest (as service-worker.ts's chatSync handler does).
@@ -165,7 +359,13 @@ describe('dropQueued', () => {
     expect(stored.companionQueue).toEqual([]);
 
     fetchMock.mockClear();
-    expect(await flushQueue(settings)).toBe(0);
+    expect(await flushQueue(settings)).toEqual({
+      sent: 0,
+      refused: 0,
+      failed: 0,
+      exhausted: 0,
+      remaining: 0,
+    });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(stored.companionQueue).toEqual([]);
   });
@@ -268,13 +468,11 @@ describe('postBackfill', () => {
   it('leaves code undefined when the error body is not JSON', async () => {
     vi.stubGlobal(
       'fetch',
-      vi
-        .fn()
-        .mockResolvedValue({
-          ok: false,
-          status: 409,
-          text: async () => 'newBlocks length mismatch',
-        })
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        text: async () => 'newBlocks length mismatch',
+      })
     );
 
     try {
