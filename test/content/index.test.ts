@@ -76,6 +76,7 @@ import { sendMessage } from '../../src/lib/messaging';
 import { fetchConversationForRepair } from '../../src/content/archive/discover';
 import { AUTO_SYNC_DEBOUNCE } from '../../src/lib/constants';
 import type {
+  ChatSyncRequest,
   ChatSyncResponse,
   ChatBackfillRequest,
   ChatBackfillResponse,
@@ -863,6 +864,51 @@ describe('content/bootstrap', () => {
         'offline',
         expect.objectContaining({ error: expect.any(String) })
       );
+    });
+
+    it('advances the baseline after a full-content resend, so the next sync sends nothing', async () => {
+      // A conversation the companion listener already holds from the BACKFILL
+      // producer answers the first live sync with `needsFullContent` — its
+      // stored hashes cannot be compared against this manifest. The resend is
+      // therefore the send that establishes the baseline, and only the
+      // resend's response advances `previousManifest`. If it did not, every
+      // later run would diff against an empty baseline and resend the whole
+      // conversation, forever, behind a green icon.
+      setGeminiLocation('needs-full-content-baseline');
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+
+      const sent: ChatSyncRequest[] = [];
+      vi.mocked(sendMessage).mockImplementation(message => {
+        const action = (message as { action: string }).action;
+        if (action === 'getSettings') {
+          return Promise.resolve({
+            ...baseSettings,
+            isCompanionConfigured: true,
+            autoSyncPlatforms: ['gemini'],
+          });
+        }
+        if (action === 'chatSync') {
+          sent.push((message as { data: ChatSyncRequest }).data);
+          return Promise.resolve(
+            sent.length === 1 ? { ...okChatSync, mode: 'needsFullContent' as const } : okChatSync
+          );
+        }
+        return Promise.reject(new Error('unexpected action'));
+      });
+
+      await runAutoSync(); // sends, is told to resend in full, resends
+      await runAutoSync(); // same DOM: there is nothing left to send
+
+      expect(sent).toHaveLength(2); // exactly one resend, and no third send
+      // The resend is the same conversation, not a re-scoped one: the manifest
+      // it declares must still be the whole manifest it was asked about.
+      expect(sent[1].manifest).toEqual(sent[0].manifest);
+      expect(sent[1].newBlocks.map(b => b.role)).toEqual(['user', 'assistant']);
     });
 
     it('returns without sending when a sync is already in flight', async () => {
