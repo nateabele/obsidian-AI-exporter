@@ -11,13 +11,7 @@ import { getMessage } from '../lib/i18n';
 import type { ChatSyncResponse, ChatSuggestion } from '../lib/types';
 
 export type SyncIconState =
-  | 'unconfigured'
-  | 'offline'
-  | 'syncing'
-  | 'synced'
-  | 'suggestions'
-  | 'disabled'
-  | 'attention';
+  'unconfigured' | 'offline' | 'syncing' | 'synced' | 'suggestions' | 'disabled' | 'attention';
 
 export interface SyncStateInput {
   configured: boolean;

@@ -28,7 +28,9 @@ export function buildManifest(messages: ConversationMessage[]): {
     // actually matches what gets stored and doesn't churn the moment the
     // conversion logic changes.
     const markdown =
-      message.role === 'assistant' ? htmlToMarkdown(message.content) : escapeUserText(message.content);
+      message.role === 'assistant'
+        ? htmlToMarkdown(message.content)
+        : escapeUserText(message.content);
     return {
       role: message.role,
       markdown,

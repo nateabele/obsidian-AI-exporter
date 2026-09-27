@@ -131,12 +131,12 @@ async function fetchOrgConversationList(orgId: string): Promise<ClaudeConversati
   }
 
   const all = [...first];
-  const seen = new Set(all.map((c) => c.uuid));
+  const seen = new Set(all.map(c => c.uuid));
   let page = first;
   let offset = PAGE_SIZE;
   while (page.length === PAGE_SIZE) {
     const next = await fetchJson<ClaudeConversationSummary[]>(conversationListUrl(orgId, offset));
-    const newItems = next.filter((c) => !seen.has(c.uuid));
+    const newItems = next.filter(c => !seen.has(c.uuid));
 
     if (next.length === PAGE_SIZE && newItems.length === 0) {
       const unparameterized = await fetchJson<ClaudeConversationSummary[]>(
@@ -224,7 +224,7 @@ export class ClaudeArchiveAdapter implements ArchiveAdapter {
     if (attempted > 0 && failures.length === attempted) {
       throw new Error(
         `Claude conversation listing failed for every accessible organization (${failures.length}/${orgs.length}): ` +
-          failures.map((f) => f.error).join('; ')
+          failures.map(f => f.error).join('; ')
       );
     }
 
@@ -244,10 +244,12 @@ export class ClaudeArchiveAdapter implements ArchiveAdapter {
     }
     const orgId = entry.accountId;
     const accountName = entry.accountName ?? null;
-    const detail = await fetchJson<ClaudeConversationDetail>(conversationDetailUrl(orgId, entry.conversationId));
+    const detail = await fetchJson<ClaudeConversationDetail>(
+      conversationDetailUrl(orgId, entry.conversationId)
+    );
 
-    const nodes = new Map(detail.chat_messages.map((m) => [m.uuid, m]));
-    const chain = walkFromLeaf(nodes, detail.current_leaf_message_uuid, (m) => m.parent_message_uuid);
+    const nodes = new Map(detail.chat_messages.map(m => [m.uuid, m]));
+    const chain = walkFromLeaf(nodes, detail.current_leaf_message_uuid, m => m.parent_message_uuid);
     const messages: ArchivedMessage[] = chain.flatMap((m): ArchivedMessage[] => {
       const role = m.sender === 'human' ? 'user' : m.sender === 'assistant' ? 'assistant' : null;
       if (!role) {

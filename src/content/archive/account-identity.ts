@@ -41,12 +41,14 @@ function sanitizeAccountName(raw: string): string | null {
   if (!collapsed) {
     return null;
   }
-  return collapsed.length > MAX_ACCOUNT_NAME_LENGTH ? collapsed.slice(0, MAX_ACCOUNT_NAME_LENGTH) : collapsed;
+  return collapsed.length > MAX_ACCOUNT_NAME_LENGTH
+    ? collapsed.slice(0, MAX_ACCOUNT_NAME_LENGTH)
+    : collapsed;
 }
 
 /** Polls for the header to appear, resolving `null` if it never does within the timeout. */
 function waitForHeaderText(): Promise<string | null> {
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     const deadline = Date.now() + HEADER_TIMEOUT_MS;
     const poll = () => {
       const text = readHeaderText();

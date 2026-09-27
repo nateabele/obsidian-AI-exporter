@@ -26,11 +26,7 @@ import {
   setSuggestions,
   suggestionCount,
 } from './sync-icon';
-import {
-  sendMessage,
-  isMultiOutputResponse,
-  describeUnexpectedResponse,
-} from '../lib/messaging';
+import { sendMessage, isMultiOutputResponse, describeUnexpectedResponse } from '../lib/messaging';
 import {
   AUTO_SAVE_CHECK_INTERVAL,
   AUTO_SYNC_DEBOUNCE,

@@ -105,10 +105,13 @@ async function fetchConversationList(token: string): Promise<ChatGptConversation
   let total: number | null = null;
 
   for (;;) {
-    const page = await fetchJson<ChatGptListEnvelope>(conversationListUrl(offset, PAGE_SIZE), token);
+    const page = await fetchJson<ChatGptListEnvelope>(
+      conversationListUrl(offset, PAGE_SIZE),
+      token
+    );
     total = typeof page.total === 'number' ? page.total : total;
 
-    const newItems = page.items.filter((item) => !seen.has(item.id));
+    const newItems = page.items.filter(item => !seen.has(item.id));
     if (newItems.length === 0) {
       break;
     }
@@ -172,8 +175,8 @@ export class ChatGptArchiveAdapter implements ArchiveAdapter {
     const token = await this.getAccessToken();
     const summaries = await fetchConversationList(token);
     return summaries
-      .filter((conv) => !conv.is_temporary_chat)
-      .map((conv) => ({
+      .filter(conv => !conv.is_temporary_chat)
+      .map(conv => ({
         conversationId: conv.id,
         title: conv.title,
         createdAt: new Date(conv.create_time * 1000).toISOString(),
@@ -189,17 +192,25 @@ export class ChatGptArchiveAdapter implements ArchiveAdapter {
 
   async fetchConversation(entry: ArchiveEntry): Promise<ArchivedConversation> {
     const token = await this.getAccessToken();
-    const detail = await fetchJson<ChatGptConversationDetail>(conversationDetailUrl(entry.conversationId), token);
+    const detail = await fetchJson<ChatGptConversationDetail>(
+      conversationDetailUrl(entry.conversationId),
+      token
+    );
 
     const nodes = new Map(Object.entries(detail.mapping));
-    const chain = walkFromLeaf(nodes, detail.current_node, (n) => n.parent);
+    const chain = walkFromLeaf(nodes, detail.current_node, n => n.parent);
     const messages: ArchivedMessage[] = chain.flatMap((node): ArchivedMessage[] => {
       const message = node.message;
       if (!message) {
         // The tree root carries no message.
         return [];
       }
-      const role = message.author.role === 'user' ? 'user' : message.author.role === 'assistant' ? 'assistant' : null;
+      const role =
+        message.author.role === 'user'
+          ? 'user'
+          : message.author.role === 'assistant'
+            ? 'assistant'
+            : null;
       if (!role) {
         return [];
       }

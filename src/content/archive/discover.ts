@@ -108,9 +108,7 @@ export async function fetchConversationForRepair(
   const entries = await adapter.listConversations();
   const entry = entries.find(candidate => candidate.conversationId === conversationId);
   if (!entry) {
-    throw new Error(
-      `Conversation ${conversationId} was not found in ${adapter.platform} history`
-    );
+    throw new Error(`Conversation ${conversationId} was not found in ${adapter.platform} history`);
   }
 
   const conversation = await adapter.fetchConversation(entry);
