@@ -11,6 +11,7 @@ import { ClaudeExtractor } from './extractors/claude';
 import { ChatGPTExtractor } from './extractors/chatgpt';
 import { PerplexityExtractor } from './extractors/perplexity';
 import { NotebookLMExtractor } from './extractors/notebooklm';
+import { CONVERSATION_CONTAINER_SELECTOR } from './extractors/selectors/ready';
 import { extractErrorMessage } from '../lib/error-utils';
 import type { IConversationExtractor } from '../lib/types';
 import { conversationToNote } from './markdown';
@@ -80,10 +81,6 @@ const EXTRACTOR_CONSTRUCTORS: Record<AIPlatform, new () => IConversationExtracto
   perplexity: PerplexityExtractor,
   notebooklm: NotebookLMExtractor,
 };
-
-/** Conversation container selectors to detect when content is ready */
-const CONVERSATION_CONTAINER_SELECTOR =
-  '.conversation-container, [class*="conversation"], section[data-turn-id], article[data-turn-id], div[class*="threadContentWidth"]';
 
 /**
  * Get the optimal observation root for the current platform
@@ -929,9 +926,17 @@ function displaySaveResults(
     showErrorToast(errorMsg || 'Failed to save');
   }
 
-  if (extractionWarnings && extractionWarnings.length > 0 && saveResult.anySuccessful) {
+  // Non-fatal problems reported by a destination that still succeeded — e.g.
+  // images that could not be written (issue #376). Shown alongside extraction
+  // warnings so a successful save never hides a partial failure.
+  const saveWarnings = saveResult.results
+    .map((r: OutputResult) => r.warning)
+    .filter((w): w is string => Boolean(w));
+  const warnings = [...saveWarnings, ...(extractionWarnings ?? [])];
+
+  if (warnings.length > 0 && saveResult.anySuccessful) {
     setTimeout(() => {
-      showWarningToast(extractionWarnings.join('. '));
+      showWarningToast(warnings.join('. '));
     }, INFO_TOAST_DURATION);
   }
 }

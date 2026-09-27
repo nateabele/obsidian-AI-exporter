@@ -1533,6 +1533,37 @@ describe('content/bootstrap', () => {
       );
     });
 
+    it('surfaces a save warning after the success toast (issue #376)', async () => {
+      vi.useFakeTimers();
+      try {
+        loadGeminiConversation();
+        mockMessaging({
+          save: {
+            results: [
+              {
+                destination: 'obsidian',
+                success: true,
+                warning: '1 image could not be saved: img-note-img-1.png',
+              },
+            ],
+            allSuccessful: true,
+            anySuccessful: true,
+          },
+        });
+
+        const pending = handleSync();
+        await vi.advanceTimersByTimeAsync(10_000);
+        await pending;
+
+        expect(showSuccessToast).toHaveBeenCalled();
+        expect(showWarningToast).toHaveBeenCalledWith(
+          '1 image could not be saved: img-note-img-1.png'
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('shows an error when every output fails', async () => {
       loadGeminiConversation();
       mockMessaging({
@@ -1654,5 +1685,64 @@ describe('content/bootstrap', () => {
         expect(call[0]).not.toBe(hrefB);
       }
     });
+  });
+});
+
+describe('save response validation (issue #467)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    stopAutoSync();
+    clearFixture();
+    resetLocation();
+  });
+
+  /** What the background actually sends when it rejects a message (service-worker.ts). */
+  const rejection = { success: false, error: 'Invalid message content' };
+
+  it('reports the rejection instead of crashing on the missing results array', async () => {
+    // A 1,077-message note tripped the body-size check in the background, which
+    // answered {success:false,error}. That envelope used to be handed to the
+    // toast code as a save result: "Cannot read properties of undefined
+    // (reading 'map')" — the exact text in the report.
+    mockMessaging({ save: rejection as unknown as MultiOutputResponse });
+    loadGeminiConversation();
+
+    await handleSync();
+
+    expect(showErrorToast).toHaveBeenCalledWith('Invalid message content');
+    expect(vi.mocked(showErrorToast).mock.calls[0][0]).not.toContain('reading');
+    // Upstream asserted this on showSyncBadge; the sync icon is this fork's
+    // equivalent surface, so the rejection must reach it the same way.
+    expect(paintFor).toHaveBeenLastCalledWith(location.href, 'offline', {
+      error: 'Invalid message content',
+    });
+  });
+
+  it('names the problem when the response is not a save result at all', async () => {
+    mockMessaging({ save: {} as MultiOutputResponse });
+    loadGeminiConversation();
+
+    await handleSync();
+
+    const [message] = vi.mocked(showErrorToast).mock.calls[0];
+    expect(message).toMatch(/unexpected response/i);
+    expect(message).not.toContain('reading');
+  });
+
+  it('leaves the icon settled, not stuck syncing, after a rejected save', async () => {
+    // Upstream's setButtonLoading(false) assertion: a rejected save must still
+    // settle the affordance. Here the icon is the affordance, so "settled"
+    // means its last paint is the outcome, never the 'syncing' placeholder.
+    mockMessaging({ save: rejection as unknown as MultiOutputResponse });
+    loadGeminiConversation();
+
+    await handleSync();
+
+    const lastCall = vi.mocked(paintFor).mock.lastCall!;
+    expect(lastCall[1]).not.toBe('syncing');
+    expect(lastCall[1]).toBe('offline');
   });
 });
