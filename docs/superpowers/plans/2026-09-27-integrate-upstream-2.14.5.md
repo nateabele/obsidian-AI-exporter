@@ -155,7 +155,7 @@ git add src/lib/constants.ts src/lib/messaging.ts test/background/index.test.ts
 
 - [ ] **Step 7: Resolve the additive-union files**
 
-`src/lib/types.ts`, `src/popup/app.ts`, `src/popup/index.html`, `src/background/validation.ts`, `src/background/service-worker.ts`, `src/manifest.json`, `src/_locales/en/messages.json`, `src/_locales/ja/messages.json`.
+`src/lib/types.ts`, `src/popup/app.ts`, `src/popup/index.html`, `src/background/validation.ts`, `src/background/service-worker.ts`, `src/manifest.json`, `src/_locales/en/messages.json`, `src/_locales/ja/messages.json`, **and `CLAUDE.md`** (upstream changes it +32/-4; it was a 28th collision the survey missed because our change to it was still uncommitted — keep both sides, including the 27123-vs-27124 HTTPS note).
 
 Both sides added different things; keep both sides of every conflict hunk, deleting only the conflict markers. Two specifics that must survive:
 
