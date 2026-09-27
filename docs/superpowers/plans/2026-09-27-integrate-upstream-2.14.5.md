@@ -636,6 +636,20 @@ npx vitest run test/content/sync-icon-watermark.test.ts 2>&1 | tail -10
 
 Call `attachWatermarkWatcher` where the icon is painted `synced`, passing the watermark **taken from the extraction result, never re-read from the DOM**. Upstream's #465 note explains why: the auto-scroll pass ends pinned at the top of the conversation, where the newest turn is unmounted and its ordinal is gone. Stop the previous watcher before starting a new one.
 
+- [ ] **Step 5b: Verify a real caller exists — knip cannot tell you**
+
+`message-watcher.ts` and `conversation-watcher.ts` are reachable only from their own tests until this task wires them. knip's config exempts test-only exports (every test file is an entry, ADR-015), so **knip will not report them as dead**. A clean fitness function is therefore not evidence that this task succeeded.
+
+Upstream called both from `presentSyncStatus()` (`af49133:src/content/bootstrap.ts:259,264`), the badge function this merge deliberately deleted. So the orphaning is intended, but re-wiring is this task's job and nothing automated will notice if it is skipped.
+
+```bash
+rg -n 'startNewMessageWatcher|startConversationWatcher' src/ --glob '!*watcher.ts'
+```
+
+Must return at least one call site in non-watcher source. If it returns nothing, this task is not done regardless of what the tests and knip say.
+
+Note for whoever wires it: the peer session is starting `startConversationWatcher` itself for the repair worker's `isStillCurrent`. Two independent pollers for the same signal is waste — check what exists before adding a second.
+
 - [ ] **Step 6: Full suite, then commit**
 
 ```bash
