@@ -117,6 +117,16 @@ Background Service Worker
 Obsidian Local REST API (127.0.0.1:27123)
 ```
 
+`27123` above is the extension's shipped default (`DEFAULT_OBSIDIAN_URL`,
+`src/lib/constants.ts:68`) and the plaintext port of the Obsidian plugin. **It is not
+necessarily where this machine's vault answers.** The plugin can be configured to serve HTTPS
+only, in which case nothing listens on 27123 at all and the vault is reachable at
+`https://127.0.0.1:27124` with a **self-signed** certificate (so `curl` needs `-k`). Verify
+before assuming — `lsof -nP -iTCP:27123 -iTCP:27124 -sTCP:LISTEN` settles it in one command.
+Do not "fix" the default in `constants.ts`, the popup, or `_locales` to match a local setup:
+the plaintext port is correct as the shipped default, and the README documents the HTTPS
+opt-in.
+
 ### Key Components
 
 | Path                               | Purpose                                                   |
