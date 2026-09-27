@@ -718,7 +718,13 @@ Then count the callouts in the saved note. Scrolling the page to the top first a
 
 4. **All turns, not the rendered window.** The first turn of the conversation must appear in the note. If the note begins partway in, auto-scroll did not run or the scroller was not found — and note upstream's ADR-042: the thread is `column-reverse`, so `scrollTop` is 0 at the bottom and negative upward.
 
-Why this is load-bearing beyond this merge: the peer session's repair worker queues a repair, calls the archive adapter, and records a `/backfill` 200 as success. The server's evidence rule catches "changed nothing"; it cannot catch "changed to the wrong thing." If upstream's extractor decomposes these conversations wrongly, the worker records successful repairs of wrong content and reports success. This step is the only verification under that path — report the counts to the peer session either way.
+Why this is load-bearing: **live sync** is what this check underwrites, and live sync is most of what the extension does. Upstream's extractor is now the only thing standing between the page and the note, and the suite cannot see whether it matches reality.
+
+**It does NOT underwrite the repair path, contrary to an earlier claim in this plan.** `src/content/archive/chatgpt.ts` contains no `document.`, `querySelector` or `innerHTML` — verified. It reads `/backend-api/conversation/<id>`, walks the JSON `mapping` from `current_node` via `walkFromLeaf`, and filters `content.parts`. The DOM extractor and the archive adapter are two different contracts with two different failure modes, and a DOM overhaul cannot silently corrupt a repair. Do not weaken this step, but do not claim more for it than live sync.
+
+The repair path's own unverified ground is separate and belongs to the peer session: `test/content/archive/chatgpt.test.ts` simulates `/backend-api/` responses with fixtures we authored to match our belief about the shape, and nobody has compared the adapter's output against a live ChatGPT API response. Same defect class — a fix verified against the state it was measured in — relocated to a different state. The cheap check needs no export: repair one of the four existing ChatGPT conversations through the archive path and compare against what DOM sync stored, since agreement between two independently-built sources is real evidence and disagreement localises itself.
+
+Report the counts to the peer session either way.
 
 - [ ] **Step 5: Verify a real Claude conversation, and the watermark guarantee**
 
