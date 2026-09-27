@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { getSettings, saveSettings, migrateSettings } from '../../src/lib/storage';
+import { DEFAULT_SYNC_SETTINGS } from '../../src/lib/settings-schema';
+import {
+  DEFAULT_COMPANION_URL,
+  DEFAULT_NOTE_SIZE_MIB,
+  DEFAULT_SCROLL_IDLE_TIMEOUT_SEC,
+  DEFAULT_SCROLL_MAX_TIMEOUT_SEC,
+} from '../../src/lib/constants';
+import type { SyncSettings } from '../../src/lib/types';
 
 describe('storage', () => {
   beforeEach(() => {
@@ -181,6 +189,73 @@ describe('storage', () => {
       const settings = await getSettings();
       expect(settings.obsidianApiKey).toBe('');
       expect(settings.obsidianUrl).toBe('http://127.0.0.1:27123');
+    });
+  });
+
+  /**
+   * Settings written before either side of the 2.14.5 merge added its keys.
+   *
+   * `normalizeSyncSettings()` is already pinned as total in
+   * settings-schema.test.ts (`normalizeSyncSettings({})` equals
+   * DEFAULT_SYNC_SETTINGS); what is pinned here is the COMPOSITION in
+   * `getSettings()` — that the normaliser is actually applied to the stored sync
+   * record, and that `companionToken` gets the same treatment on the separate
+   * storage.local path. An undefined reaching the popup from here lands in an
+   * <input>, and the next save persists the blank.
+   */
+  describe('getSettings — keys added after a record was stored', () => {
+    /** The shape of a sync record predating both sides' newest keys. */
+    const PRE_MERGE_SYNC_RECORD = {
+      obsidianUrl: 'http://127.0.0.1:27123',
+      vaultPath: 'Vault/Conversations',
+    };
+
+    it('fills in both sides new sync keys without dropping what was stored', async () => {
+      vi.mocked(chrome.storage.sync.get).mockResolvedValue({
+        settings: { ...PRE_MERGE_SYNC_RECORD },
+      });
+
+      const settings = await getSettings();
+
+      // Feature-line keys.
+      expect(settings.companionUrl).toBe(DEFAULT_COMPANION_URL);
+      expect(settings.autoSyncPlatforms).toEqual(DEFAULT_SYNC_SETTINGS.autoSyncPlatforms);
+      // Upstream keys.
+      expect(settings.maxNoteSizeMiB).toBe(DEFAULT_NOTE_SIZE_MIB);
+      expect(settings.scrollIdleTimeoutSec).toBe(DEFAULT_SCROLL_IDLE_TIMEOUT_SEC);
+      expect(settings.scrollMaxTimeoutSec).toBe(DEFAULT_SCROLL_MAX_TIMEOUT_SEC);
+      // Gap-filling must not overwrite what the user had actually saved.
+      expect(settings.vaultPath).toBe(PRE_MERGE_SYNC_RECORD.vaultPath);
+    });
+
+    it('leaves no sync key undefined, whichever side added it', async () => {
+      vi.mocked(chrome.storage.sync.get).mockResolvedValue({
+        settings: { ...PRE_MERGE_SYNC_RECORD },
+      });
+
+      const settings = await getSettings();
+
+      // Keyed off the defaults rather than a hand-written list, so a key added
+      // by a future merge is covered without this test being edited.
+      for (const key of Object.keys(DEFAULT_SYNC_SETTINGS) as (keyof SyncSettings)[]) {
+        expect(settings[key], `no default reached ExtensionSettings.${key}`).toBeDefined();
+      }
+    });
+
+    it('defaults companionToken for a secure record written before it existed', async () => {
+      // companionToken is the third key the feature line added and the only one
+      // on the storage.local path, so it cannot ride along with the sync
+      // normaliser. A pre-companion record holds an API key and nothing else.
+      vi.mocked(chrome.storage.local.get).mockResolvedValue({
+        secureSettings: { obsidianApiKey: 'legacy-key' },
+      });
+
+      const settings = await getSettings();
+
+      expect(settings.obsidianApiKey).toBe('legacy-key');
+      // DEFAULT_SECURE_SETTINGS.companionToken (src/lib/storage.ts) — module-
+      // private, so its value is restated rather than imported.
+      expect(settings.companionToken).toBe('');
     });
   });
 
