@@ -4,6 +4,18 @@ data/
 .serena/
 .claude/settings.local.json
 
+# Git worktrees that concurrent Claude Code sessions check out inside the repo.
+# Tracking them makes knip (ADR-037) report every file in them as dead code and
+# fills `git status` with another session's work in progress.
+#
+# HAZARD, read before running any cleanup: ignoring this path does NOT hide the
+# worktrees from git itself — `git worktree list/remove` keep working, because a
+# worktree is registered in `.git/worktrees` metadata rather than by being
+# tracked. What it DOES change is that `git clean -fdx` will now delete a live
+# worktree, and any uncommitted work in it, WITHOUT the "would remove" warning
+# an untracked path used to give you. Check `git worktree list` before cleaning.
+.claude/worktrees/
+
 # Claude Code session files
 tasks/
 
