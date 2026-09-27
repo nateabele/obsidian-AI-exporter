@@ -686,7 +686,25 @@ Ask the user to load `dist/` at `chrome://extensions` → Load unpacked. **Do no
 
 - [ ] **Step 4: Verify a real ChatGPT conversation extracts**
 
-Open a ChatGPT conversation with more turns than fit one screen, and one containing a reasoning block if available (Review Focus 4). Sync it. Confirm: turn count matches the page; user and assistant text are both present and correctly attributed; **the hidden "ChatGPT said:" marker text does not appear anywhere in the note**; a long conversation yields all turns, not just the rendered window.
+**The conversation must be genuinely long enough to require scrolling — many screens, not one-and-a-bit.** This is the check that tests the thing that actually bit this fork: our own repair extracted four turns correctly from a single mounted window and that was written down as verification. A check exercising only one window reproduces the original mistake with more ceremony.
+
+Pick a conversation with reasoning blocks too if one exists (Review Focus 4). Record **numbers, not a verdict**:
+
+1. **Turn count.** Count turns on the page before syncing, from the console, so the number is measured rather than eyeballed:
+
+```javascript
+document.querySelectorAll('div[data-turn-key]').length
+```
+
+Then count the callouts in the saved note. Scrolling the page to the top first and re-running the count is worth doing: if the two counts differ, virtualization is evicting turns and that is the windowed-manifest failure.
+
+2. **Role attribution.** User and assistant text both present, attributed to the right speaker, in conversation order — not interleaved wrongly, which is the specific risk of upstream's one-turn-holds-both-roles model.
+
+3. **No marker leakage.** `rg -n 'ChatGPT said' <note path>` must return nothing. Upstream warns `[data-conversation-role="assistant"]` is a visually hidden marker whose text must never be exported.
+
+4. **All turns, not the rendered window.** The first turn of the conversation must appear in the note. If the note begins partway in, auto-scroll did not run or the scroller was not found — and note upstream's ADR-042: the thread is `column-reverse`, so `scrollTop` is 0 at the bottom and negative upward.
+
+Why this is load-bearing beyond this merge: the peer session's repair worker queues a repair, calls the archive adapter, and records a `/backfill` 200 as success. The server's evidence rule catches "changed nothing"; it cannot catch "changed to the wrong thing." If upstream's extractor decomposes these conversations wrongly, the worker records successful repairs of wrong content and reports success. This step is the only verification under that path — report the counts to the peer session either way.
 
 - [ ] **Step 5: Verify a real Claude conversation, and the watermark guarantee**
 
