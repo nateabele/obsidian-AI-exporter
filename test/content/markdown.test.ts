@@ -9,6 +9,7 @@ import {
   convertDeepResearchContent,
 } from '../../src/content/markdown';
 import { sanitizeHtml } from '../../src/lib/sanitize';
+import { MAX_MATH_LENGTH } from '../../src/lib/constants';
 import type { ConversationData, TemplateOptions, DeepResearchLinks } from '../../src/lib/types';
 
 describe('escapeUserText — math dollar escaping (Obsidian hang fix)', () => {
@@ -114,6 +115,49 @@ describe('htmlToMarkdown', () => {
 
     it('converts inline code', () => {
       expect(htmlToMarkdown('Use <code>npm install</code>')).toBe('Use `npm install`');
+    });
+
+    // Issue #433: a conversation *about* Markdown closed its own code block at
+    // the first inner fence, because the fence was hardcoded to three
+    // backticks. CommonMark §4.5 / Obsidian "Nesting code blocks": the outer
+    // fence must be longer than any fence the content holds (ADR-029).
+    describe('nested code blocks (issue #433)', () => {
+      const F3 = '`'.repeat(3);
+      const F4 = '`'.repeat(4);
+
+      it('wraps a pre>code block containing an inner fence in a longer fence', () => {
+        const code = `# Title\n\n${F3}python\nprint(1)\n${F3}`;
+        const html = `<pre><code class="language-markdown">${code}</code></pre>`;
+        const result = htmlToMarkdown(html);
+
+        expect(result).toContain(`${F4}markdown\n`);
+        expect(result.trim().endsWith(F4)).toBe(true);
+        // The inner block survives verbatim, fence lines included.
+        expect(result).toContain(`${F3}python\nprint(1)\n${F3}`);
+      });
+
+      it('wraps a CodeMirror block containing an inner fence in a longer fence', () => {
+        const html = `<pre><div><div><div class="flex items-center text-sm font-medium">Markdown</div>
+          <div><button aria-label="Copy"></button></div></div>
+          <div><div class="cm-editor"><div class="cm-scroller"><div class="cm-content">
+          <span># Title</span><br><span>${F3}python</span><br><span>print(1)</span><br><span>${F3}</span>
+          </div></div></div></div></div></pre>`;
+        const result = htmlToMarkdown(html);
+
+        expect(result).toContain(`${F4}markdown\n`);
+        expect(result).toContain(`${F3}python\nprint(1)\n${F3}`);
+      });
+
+      it('grows the fence past the longest inner run, not just the first', () => {
+        const code = `${F3}\ntext\n${'`'.repeat(5)}\n${F3}`;
+        const html = `<pre><code class="language-md">${code}</code></pre>`;
+        expect(htmlToMarkdown(html)).toContain(`${'`'.repeat(6)}md\n`);
+      });
+
+      it('leaves ordinary code blocks on the minimum fence', () => {
+        const html = '<pre><code class="language-python">x = 1</code></pre>';
+        expect(htmlToMarkdown(html)).toBe(`${F3}python\nx = 1\n${F3}`);
+      });
     });
 
     // ChatGPT CodeMirror code blocks (2026-03 DOM change)
@@ -275,6 +319,52 @@ describe('htmlToMarkdown', () => {
       expect(result).toContain('$$\nE = mc^2\n$$');
       expect(result).toContain('After');
     });
+
+    describe('size limit & fallback (M-2)', () => {
+      it('keeps a formula exactly at the length limit as math', () => {
+        const latex = 'a'.repeat(MAX_MATH_LENGTH);
+        const result = htmlToMarkdown(`<span data-math="${latex}">x</span>`);
+        expect(result).toBe(`$${latex}$`);
+      });
+
+      it('falls back to plain text for an oversized inline formula', () => {
+        const latex = 'a'.repeat(MAX_MATH_LENGTH + 1);
+        const result = htmlToMarkdown(`<span data-math="${latex}">x</span>`);
+        expect(result).not.toContain('$');
+        expect(result).toContain(latex);
+      });
+
+      it('falls back to plain text for an oversized display formula', () => {
+        const latex = 'b'.repeat(MAX_MATH_LENGTH + 1);
+        const result = htmlToMarkdown(`<div data-math="${latex}">x</div>`);
+        expect(result).not.toContain('$$');
+        expect(result).toContain(latex);
+      });
+
+      it('escapes a literal $ in an inline value instead of emitting math', () => {
+        const result = htmlToMarkdown('<span data-math="a$b">x</span>');
+        expect(result).toBe('a\\$b');
+      });
+
+      it('escapes literal $ in a display value instead of emitting a math block', () => {
+        const result = htmlToMarkdown('<div data-math="a$$b">x</div>');
+        expect(result).not.toContain('$$\na');
+        expect(result).toContain('a\\$\\$b');
+      });
+
+      it('keeps multi-line inline LaTeX as math (real KaTeX matrices span lines)', () => {
+        const latex = '\\det\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}';
+        const result = htmlToMarkdown(`<span data-math="${latex}">x</span>`);
+        expect(result).toBe(`$${latex}$`);
+      });
+
+      it('escapes backslashes before $ so a preceding \\ cannot re-open math', () => {
+        // data-math value is `\a$b`: the backslash must be escaped first, else the
+        // inserted `\` before `$` pairs with it and leaves the $ unescaped.
+        const result = htmlToMarkdown('<span data-math="\\a$b">x</span>');
+        expect(result).toBe('\\\\a\\$b');
+      });
+    });
   });
 
   describe('standard KaTeX math (REQ-085)', () => {
@@ -381,6 +471,37 @@ describe('escapeAngleBrackets', () => {
     it('preserves fenced code blocks inside blockquotes', () => {
       const input = '> ```\n> <code>\n> ```';
       expect(escapeAngleBrackets(input)).toBe(input);
+    });
+
+    // Issue #433, second order: the length-blind fence toggle thought the
+    // inner fence had closed the block, so it escaped angle brackets *inside*
+    // the code and left the ones after it alone (ADR-029).
+    describe('blocks holding an inner fence', () => {
+      const F3 = '`'.repeat(3);
+      const F4 = '`'.repeat(4);
+
+      it('preserves angle brackets across an inner fence', () => {
+        const input = [`${F4}markdown`, `${F3}html`, '<div>a</div>', F3, F4].join('\n');
+        expect(escapeAngleBrackets(input)).toBe(input);
+      });
+
+      it('still escapes text that follows the closing fence', () => {
+        const input = [`${F4}md`, `${F3}html`, '<div>a</div>', F3, F4, 'after <span>'].join('\n');
+        const expected = [`${F4}md`, `${F3}html`, '<div>a</div>', F3, F4, 'after \\<span\\>'].join(
+          '\n'
+        );
+        expect(escapeAngleBrackets(input)).toBe(expected);
+      });
+
+      it('does not let an inner fence with an info string close the block', () => {
+        const input = [F3, `${F3}html`, '<div>a</div>'].join('\n');
+        expect(escapeAngleBrackets(input)).toBe(input);
+      });
+
+      it('preserves a tilde block a user pasted', () => {
+        const input = ['~~~md', '<div>a</div>', '~~~'].join('\n');
+        expect(escapeAngleBrackets(input)).toBe(input);
+      });
     });
   });
 
@@ -1287,5 +1408,144 @@ describe('conversationToNote with toolContent', () => {
     expect(note.body).not.toContain('[!ABSTRACT]');
     expect(note.body).toContain('[!NOTE] Claude');
     expect(note.body).toContain('Hi there!');
+  });
+});
+
+/**
+ * The truncation flag rides on the note but never on the note's content
+ * (issue #449, ADR-033).
+ */
+describe('conversationToNote — truncated capture', () => {
+  const options: TemplateOptions = {
+    includeId: true,
+    includeTitle: true,
+    includeTags: true,
+    includeSource: true,
+    includeDates: true,
+    includeMessageCount: true,
+    messageFormat: 'callout',
+    userCalloutType: 'QUESTION',
+    assistantCalloutType: 'NOTE',
+    timezone: 'UTC',
+  };
+
+  function data(truncated?: boolean): ConversationData {
+    return {
+      id: 'c1',
+      title: 'T',
+      url: 'https://claude.ai/chat/c1',
+      source: 'claude',
+      messages: [{ role: 'user', content: 'q', id: 'm1', index: 0 }],
+      extractedAt: new Date('2026-08-16T00:00:00Z'),
+      metadata: { messageCount: 1, userMessageCount: 1, assistantMessageCount: 0 },
+      ...(truncated === undefined ? {} : { truncated }),
+    } as ConversationData;
+  }
+
+  it('carries the flag to the note so the background can act on it', () => {
+    expect(conversationToNote(data(true), options).truncated).toBe(true);
+  });
+
+  it('omits the flag entirely for a complete capture', () => {
+    expect('truncated' in conversationToNote(data(), options)).toBe(false);
+    expect('truncated' in conversationToNote(data(false), options)).toBe(false);
+  });
+
+  it('never leaks the flag into the note frontmatter', () => {
+    const note = conversationToNote(data(true), options);
+
+    expect(JSON.stringify(note.frontmatter)).not.toContain('truncated');
+  });
+});
+
+describe('conversationToNote — configurable frontmatter tags (issue #493)', () => {
+  const baseOptions: TemplateOptions = {
+    includeId: true,
+    includeTitle: true,
+    includeTags: true,
+    includeSource: true,
+    includeDates: true,
+    includeMessageCount: true,
+    messageFormat: 'callout',
+    userCalloutType: 'QUESTION',
+    assistantCalloutType: 'NOTE',
+  };
+
+  const conversation = (source: ConversationData['source']): ConversationData => ({
+    id: 'conv1',
+    title: 'T',
+    source,
+    url: `https://example.com/${source}`,
+    messages: [
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'a' },
+    ],
+    extractedAt: new Date('2024-01-01'),
+    metadata: {
+      messageCount: 2,
+      userMessageCount: 1,
+      assistantMessageCount: 1,
+      hasCodeBlocks: false,
+    },
+  });
+
+  const research = (source: ConversationData['source']): ConversationData => ({
+    ...conversation(source),
+    type: 'deep-research',
+    messages: [{ role: 'assistant', content: 'report' }],
+  });
+
+  it('writes the historical defaults when the options carry no tag lists (pre-#493 settings)', () => {
+    expect(conversationToNote(conversation('claude'), baseOptions).frontmatter.tags).toEqual([
+      'ai-conversation',
+      'claude',
+    ]);
+    expect(conversationToNote(research('gemini'), baseOptions).frontmatter.tags).toEqual([
+      'ai-research',
+      'deep-research',
+      'gemini',
+    ]);
+  });
+
+  it('expands {platform} inside a custom conversation list', () => {
+    const options = { ...baseOptions, conversationTags: ['ai/chat', '{platform}'] };
+    expect(conversationToNote(conversation('claude'), options).frontmatter.tags).toEqual([
+      'ai/chat',
+      'claude',
+    ]);
+  });
+
+  it('omits the platform tag when the token is not in the list', () => {
+    const options = { ...baseOptions, conversationTags: ['notes'] };
+    expect(conversationToNote(conversation('gemini'), options).frontmatter.tags).toEqual(['notes']);
+  });
+
+  it('uses the Deep Research list for research notes and the conversation list otherwise', () => {
+    const options = {
+      ...baseOptions,
+      conversationTags: ['chat'],
+      deepResearchTags: ['research', '{platform}'],
+    };
+    expect(conversationToNote(research('perplexity'), options).frontmatter.tags).toEqual([
+      'research',
+      'perplexity',
+    ]);
+    expect(conversationToNote(conversation('perplexity'), options).frontmatter.tags).toEqual([
+      'chat',
+    ]);
+  });
+
+  it('drops a duplicate produced by expansion', () => {
+    const options = { ...baseOptions, conversationTags: ['claude', '{platform}'] };
+    expect(conversationToNote(conversation('claude'), options).frontmatter.tags).toEqual([
+      'claude',
+    ]);
+  });
+
+  it('does not let the note share the array stored in the options', () => {
+    const conversationTags = ['a', '{platform}'];
+    const note = conversationToNote(conversation('chatgpt'), { ...baseOptions, conversationTags });
+    expect(note.frontmatter.tags).not.toBe(conversationTags);
+    expect(conversationTags).toEqual(['a', '{platform}']);
   });
 });

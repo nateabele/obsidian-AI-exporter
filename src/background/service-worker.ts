@@ -18,6 +18,7 @@ import {
   recordFlushResult,
   type CompanionSettings,
 } from '../lib/companion-client';
+import { handleFetchImage } from './image-fetch';
 import type {
   ExtensionMessage,
   ContentScriptSettings,
@@ -279,6 +280,10 @@ async function handleMessage(
 
     case 'testConnection':
       return handleTestConnection(settings);
+
+    case 'fetchImage':
+      // Remote images the content script cannot fetch itself (CORS, issue #376).
+      return handleFetchImage(message.url);
 
     case 'getSettings':
       // Security: Redact API key for content scripts (they run on third-party pages)

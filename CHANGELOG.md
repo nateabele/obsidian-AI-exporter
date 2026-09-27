@@ -5,6 +5,529 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.5](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.14.4...v2.14.5) (2026-09-26)
+
+
+### Bug Fixes
+
+* **chatgpt:** follow the 2026-09 layout of pair turns and a column-reverse thread ([#524](https://github.com/sho7650/obsidian-AI-exporter/issues/524)) ([b60e88c](https://github.com/sho7650/obsidian-AI-exporter/commit/b60e88c84c82418a819bbe37f2f348d8e3e97edc))
+
+## [2.14.4](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.14.3...v2.14.4) (2026-09-25)
+
+
+### Miscellaneous
+
+* flake.lock nixpkgs (nixpkgs-26.05-darwin) 8029b6c -&gt; bd495b8. ([c2bf579](https://github.com/sho7650/obsidian-AI-exporter/commit/c2bf579ccedc73809b5805d6290a19473ecd79b8))
+* sync image-source privacy wording for ChatGPT and bump nixpkgs ([#522](https://github.com/sho7650/obsidian-AI-exporter/issues/522)) ([c2bf579](https://github.com/sho7650/obsidian-AI-exporter/commit/c2bf579ccedc73809b5805d6290a19473ecd79b8))
+
+## [2.14.3](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.14.2...v2.14.3) (2026-09-25)
+
+
+### Bug Fixes
+
+* **perplexity:** follow the 2026-09 user bubble that dropped the select-text span ([#518](https://github.com/sho7650/obsidian-AI-exporter/issues/518)) ([2fe0609](https://github.com/sho7650/obsidian-AI-exporter/commit/2fe0609d22dbca5c3241ac245a52b14ea1f8fb6d))
+
+## [2.14.2](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.14.1...v2.14.2) (2026-09-25)
+
+
+### Bug Fixes
+
+* **e2e:** drop the useless initial assignment in the settle loop ([#517](https://github.com/sho7650/obsidian-AI-exporter/issues/517)) ([3c210f1](https://github.com/sho7650/obsidian-AI-exporter/commit/3c210f138c585a9f7f08cd736babe2944c764228))
+
+## [2.14.1](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.14.0...v2.14.1) (2026-09-25)
+
+
+### Documentation
+
+* record the 2026-09 E2E coverage audit and the ChatGPT image measurements ([#516](https://github.com/sho7650/obsidian-AI-exporter/issues/516)) ([3d30891](https://github.com/sho7650/obsidian-AI-exporter/commit/3d308918148fe512168a44e1d839fc00bf9a59d4))
+
+## [2.14.0](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.13.1...v2.14.0) (2026-09-23)
+
+
+### Features
+
+* **chatgpt:** export generated images alongside the conversation ([#511](https://github.com/sho7650/obsidian-AI-exporter/issues/511)) ([9e46862](https://github.com/sho7650/obsidian-AI-exporter/commit/9e46862d3e8a5ce477f8e5a3d94d0e234abfae8e))
+
+## [2.13.1](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.13.0...v2.13.1) (2026-09-23)
+
+
+### Code Refactoring
+
+* derive the readiness selector from the selector modules and drop inline contract copies ([#510](https://github.com/sho7650/obsidian-AI-exporter/issues/510)) ([6ca9fe7](https://github.com/sho7650/obsidian-AI-exporter/commit/6ca9fe733c8c3d99db85fee0bc8582cc0488f541))
+
+## [2.13.0](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.12.5...v2.13.0) (2026-09-23)
+
+
+### Features
+
+* **e2e:** guard baseline updates, accept Gem/custom-GPT URLs, report unsettled targets ([#509](https://github.com/sho7650/obsidian-AI-exporter/issues/509)) ([238a87b](https://github.com/sho7650/obsidian-AI-exporter/commit/238a87ba84aa53cb9caa75d6b9032c408174494b))
+
+## [2.12.5](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.12.4...v2.12.5) (2026-09-18)
+
+
+### Miscellaneous
+
+* bump nixpkgs in flake.lock ([#507](https://github.com/sho7650/obsidian-AI-exporter/issues/507)) ([de6fa67](https://github.com/sho7650/obsidian-AI-exporter/commit/de6fa677a1abd8908d9450274e115fc291cf766b))
+
+## [2.12.4](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.12.3...v2.12.4) (2026-09-14)
+
+
+### Bug Fixes
+
+* **gemini:** prefer document.title over the first query for the note title ([#505](https://github.com/sho7650/obsidian-AI-exporter/issues/505)) ([2c06dbe](https://github.com/sho7650/obsidian-AI-exporter/commit/2c06dbe774d230bcc51c18af9c01a8172297be03)), closes [#504](https://github.com/sho7650/obsidian-AI-exporter/issues/504)
+
+## [2.12.3](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.12.2...v2.12.3) (2026-09-12)
+
+
+### Miscellaneous
+
+* bump nixpkgs in flake.lock ([#502](https://github.com/sho7650/obsidian-AI-exporter/issues/502)) ([1444db8](https://github.com/sho7650/obsidian-AI-exporter/commit/1444db8230aca9fac1214dd8df24ab5034cd09ae))
+
+## [2.12.2](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.12.1...v2.12.2) (2026-09-11)
+
+
+### Bug Fixes
+
+* **claude:** anchor auto-scroll on the thread scroller, not the sidebar ([#500](https://github.com/sho7650/obsidian-AI-exporter/issues/500)) ([af7b475](https://github.com/sho7650/obsidian-AI-exporter/commit/af7b4759c59c500a1fa41dec2e99166e89244854)), closes [#499](https://github.com/sho7650/obsidian-AI-exporter/issues/499)
+
+## [2.12.1](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.12.0...v2.12.1) (2026-09-08)
+
+
+### Miscellaneous
+
+* refresh package-lock and apply prettier 3.9.6 formatting ([#496](https://github.com/sho7650/obsidian-AI-exporter/issues/496)) ([0b6197d](https://github.com/sho7650/obsidian-AI-exporter/commit/0b6197de76652b56f96d0e4b764ecca1c0112031))
+
+## [2.12.0](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.11.1...v2.12.0) (2026-09-08)
+
+
+### Features
+
+* make frontmatter tags a user setting with a {platform} token ([#494](https://github.com/sho7650/obsidian-AI-exporter/issues/494)) ([5005fe8](https://github.com/sho7650/obsidian-AI-exporter/commit/5005fe8392c617d69353c4d14876d3e82b0e4179)), closes [#493](https://github.com/sho7650/obsidian-AI-exporter/issues/493)
+
+## [2.11.1](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.11.0...v2.11.1) (2026-09-03)
+
+
+### Documentation
+
+* sync READMEs and store descriptions with the shipped badge and Perplexity behaviour ([#491](https://github.com/sho7650/obsidian-AI-exporter/issues/491)) ([5665765](https://github.com/sho7650/obsidian-AI-exporter/commit/5665765ac9566dc86b2b733fec327246f2945537))
+
+## [2.11.0](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.10.11...v2.11.0) (2026-09-03)
+
+
+### Features
+
+* make the note size cap a user setting, enforced where settings are readable ([#488](https://github.com/sho7650/obsidian-AI-exporter/issues/488)) ([edb1942](https://github.com/sho7650/obsidian-AI-exporter/commit/edb19421a6d4a49fadd626591107f686dddd7aed))
+
+## [2.10.11](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.10.10...v2.10.11) (2026-09-03)
+
+
+### Bug Fixes
+
+* report a rejected save instead of crashing on the missing results ([#487](https://github.com/sho7650/obsidian-AI-exporter/issues/487)) ([a3ee753](https://github.com/sho7650/obsidian-AI-exporter/commit/a3ee7538697fd64b150eb416bc473cdfa8b9a37c)), closes [#467](https://github.com/sho7650/obsidian-AI-exporter/issues/467)
+
+## [2.10.10](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.10.9...v2.10.10) (2026-09-03)
+
+
+### Miscellaneous
+
+* fix npm audit vulnerabilities ([#478](https://github.com/sho7650/obsidian-AI-exporter/issues/478)) ([73e5ace](https://github.com/sho7650/obsidian-AI-exporter/commit/73e5ace7ad1208a0eb3fba1cc79367eff4ff20c9))
+
+## [2.10.9](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.10.8...v2.10.9) (2026-09-03)
+
+
+### Code Refactoring
+
+* close the ADR-012 ratchet and promote the ESLint limits to error ([#477](https://github.com/sho7650/obsidian-AI-exporter/issues/477)) ([87ae412](https://github.com/sho7650/obsidian-AI-exporter/commit/87ae4121087daeaa6e11ba6425e0fc438251c177))
+
+## [2.10.8](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.10.7...v2.10.8) (2026-09-03)
+
+
+### Code Refactoring
+
+* **test:** build every location fixture on one defineLocation helper ([#476](https://github.com/sho7650/obsidian-AI-exporter/issues/476)) ([1715bbf](https://github.com/sho7650/obsidian-AI-exporter/commit/1715bbf6c0a2fde4fa9cea5e6da5915387ea42ee))
+
+## [2.10.7](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.10.6...v2.10.7) (2026-09-03)
+
+
+### Miscellaneous
+
+* adopt knip as a dead-code fitness function and declare playwright ([#475](https://github.com/sho7650/obsidian-AI-exporter/issues/475)) ([2d0818c](https://github.com/sho7650/obsidian-AI-exporter/commit/2d0818c841018178941d18fc636cc4b187572045))
+
+## [2.10.6](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.10.5...v2.10.6) (2026-09-03)
+
+
+### Code Refactoring
+
+* drop export from symbols only used inside their own module ([#474](https://github.com/sho7650/obsidian-AI-exporter/issues/474)) ([08a61d1](https://github.com/sho7650/obsidian-AI-exporter/commit/08a61d1438de337d42066eec0d4d6d1f80b05552))
+
+## [2.10.5](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.10.4...v2.10.5) (2026-09-03)
+
+
+### Miscellaneous
+
+* **nix:** bump nixpkgs flake input ([#473](https://github.com/sho7650/obsidian-AI-exporter/issues/473)) ([12dc64c](https://github.com/sho7650/obsidian-AI-exporter/commit/12dc64ce47a75bdfa90c6ba89d386cf1b42a6729))
+
+## [2.10.4](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.10.3...v2.10.4) (2026-08-30)
+
+
+### Code Refactoring
+
+* **test:** consolidate per-platform HTML escape helpers ([#471](https://github.com/sho7650/obsidian-AI-exporter/issues/471)) ([0b7bf25](https://github.com/sho7650/obsidian-AI-exporter/commit/0b7bf255ef46fd1e2ab3c54213a0ba66c61b8529))
+
+## [2.10.3](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.10.2...v2.10.3) (2026-08-30)
+
+
+### Bug Fixes
+
+* clear the sync-status badge when a newer message appears ([#468](https://github.com/sho7650/obsidian-AI-exporter/issues/468)) ([2ea803e](https://github.com/sho7650/obsidian-AI-exporter/commit/2ea803e724d6795861ac76d5a371e99c9e73f242))
+
+## [2.10.2](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.10.1...v2.10.2) (2026-08-26)
+
+
+### Bug Fixes
+
+* **perplexity:** follow the layout rollout that removed the answer placeholder ([#464](https://github.com/sho7650/obsidian-AI-exporter/issues/464)) ([d35af68](https://github.com/sho7650/obsidian-AI-exporter/commit/d35af68b0933ee0c920e878f803eab5187499f52))
+
+## [2.10.1](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.10.0...v2.10.1) (2026-08-23)
+
+
+### Miscellaneous
+
+* update nixpkgs flake lock ([#461](https://github.com/sho7650/obsidian-AI-exporter/issues/461)) ([5ca6445](https://github.com/sho7650/obsidian-AI-exporter/commit/5ca6445502235374e3a55f80c44bd095306236b9))
+
+## [2.10.0](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.9.1...v2.10.0) (2026-08-23)
+
+
+### Features
+
+* **ui:** keep a sync-status badge on screen after the sync ends ([#459](https://github.com/sho7650/obsidian-AI-exporter/issues/459)) ([8e5c624](https://github.com/sho7650/obsidian-AI-exporter/commit/8e5c624b81ca26e8da6d3b48162ad5740faabc1f)), closes [#458](https://github.com/sho7650/obsidian-AI-exporter/issues/458)
+
+## [2.9.1](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.9.0...v2.9.1) (2026-08-16)
+
+
+### Documentation
+
+* document the auto-scroll timeouts where users actually look ([#456](https://github.com/sho7650/obsidian-AI-exporter/issues/456)) ([8405ef3](https://github.com/sho7650/obsidian-AI-exporter/commit/8405ef396c7250a28aae8d9ca3f7adbeccd7cec3))
+
+## [2.9.0](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.8.2...v2.9.0) (2026-08-16)
+
+
+### Features
+
+* **scroll:** make the auto-scroll deadlines configurable and name the stop reason ([#453](https://github.com/sho7650/obsidian-AI-exporter/issues/453)) ([7b9532c](https://github.com/sho7650/obsidian-AI-exporter/commit/7b9532cb0cee29fe5a6f858f3838cbe33706f5dd))
+
+## [2.8.2](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.8.1...v2.8.2) (2026-08-16)
+
+
+### Bug Fixes
+
+* **claude:** keep a turn whose long message is collapsed behind inert ([#452](https://github.com/sho7650/obsidian-AI-exporter/issues/452)) ([472ec7d](https://github.com/sho7650/obsidian-AI-exporter/commit/472ec7d395e139eeaa470cfb84d44cd0aed41da0))
+
+## [2.8.1](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.8.0...v2.8.1) (2026-08-16)
+
+
+### Bug Fixes
+
+* **perplexity:** extract answers rendered outside the markdown-content placeholder ([#450](https://github.com/sho7650/obsidian-AI-exporter/issues/450)) ([1f2e07f](https://github.com/sho7650/obsidian-AI-exporter/commit/1f2e07fedace30efb38ecf89626f5fe65cf08e68))
+
+## [2.8.0](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.18...v2.8.0) (2026-08-15)
+
+
+### Features
+
+* **e2e:** record how many selector matches carry content ([#447](https://github.com/sho7650/obsidian-AI-exporter/issues/447)) ([f177c76](https://github.com/sho7650/obsidian-AI-exporter/commit/f177c7663b54da1ecaa824c390fc0d4a063bee81))
+
+## [2.7.18](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.17...v2.7.18) (2026-08-13)
+
+
+### Miscellaneous
+
+* **nix:** track the nixpkgs 26.05 darwin channel ([#442](https://github.com/sho7650/obsidian-AI-exporter/issues/442)) ([23a1707](https://github.com/sho7650/obsidian-AI-exporter/commit/23a1707dcc99faf9fa0c764745071b00e3e87b8b))
+
+## [2.7.17](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.16...v2.7.17) (2026-08-13)
+
+
+### Miscellaneous
+
+* **build:** stop emitting modulepreload links for extension pages ([#440](https://github.com/sho7650/obsidian-AI-exporter/issues/440)) ([1661344](https://github.com/sho7650/obsidian-AI-exporter/commit/1661344f6264c9cc032779fbeea8cd4ff572f92a))
+
+## [2.7.16](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.15...v2.7.16) (2026-08-13)
+
+
+### Bug Fixes
+
+* **csp:** allow the image CDN redirect target lh3.google.com ([#438](https://github.com/sho7650/obsidian-AI-exporter/issues/438)) ([a049f06](https://github.com/sho7650/obsidian-AI-exporter/commit/a049f06e13e06a51c9e8360bc290d27f8f22d923))
+
+## [2.7.15](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.14...v2.7.15) (2026-08-13)
+
+
+### Documentation
+
+* document nested code block fencing in README and store listings ([#436](https://github.com/sho7650/obsidian-AI-exporter/issues/436)) ([08000cc](https://github.com/sho7650/obsidian-AI-exporter/commit/08000cc52d02fab784ea506335acf70a938d6d3c))
+
+## [2.7.14](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.13...v2.7.14) (2026-08-13)
+
+
+### Bug Fixes
+
+* size code fences to survive nested fences ([#433](https://github.com/sho7650/obsidian-AI-exporter/issues/433)) ([#434](https://github.com/sho7650/obsidian-AI-exporter/issues/434)) ([c2d4371](https://github.com/sho7650/obsidian-AI-exporter/commit/c2d43719281968137e17c21aa46ea040d754c05a))
+
+## [2.7.13](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.12...v2.7.13) (2026-08-09)
+
+
+### Documentation
+
+* document the ChatGPT Deep Research limitation ([#430](https://github.com/sho7650/obsidian-AI-exporter/issues/430)) ([77fdc64](https://github.com/sho7650/obsidian-AI-exporter/commit/77fdc64ac792631eaffdd5c31e498a14582d3189))
+
+## [2.7.12](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.11...v2.7.12) (2026-08-09)
+
+
+### Documentation
+
+* correct the ADR-026 CRLF audit and record the ordering constraint ([#428](https://github.com/sho7650/obsidian-AI-exporter/issues/428)) ([432dc62](https://github.com/sho7650/obsidian-AI-exporter/commit/432dc6271f02ad6dde2e28bcff5d7ab1cf444d7e))
+
+## [2.7.11](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.10...v2.7.11) (2026-08-09)
+
+
+### Bug Fixes
+
+* report unreadable ChatGPT Deep Research reports ([#283](https://github.com/sho7650/obsidian-AI-exporter/issues/283)) ([#425](https://github.com/sho7650/obsidian-AI-exporter/issues/425)) ([07d71b2](https://github.com/sho7650/obsidian-AI-exporter/commit/07d71b222ded87f936e31cfce9d954cd8c20545a))
+
+## [2.7.10](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.9...v2.7.10) (2026-08-09)
+
+
+### Bug Fixes
+
+* count flattened callouts when appending ([#406](https://github.com/sho7650/obsidian-AI-exporter/issues/406)) ([#421](https://github.com/sho7650/obsidian-AI-exporter/issues/421)) ([e9eed60](https://github.com/sho7650/obsidian-AI-exporter/commit/e9eed60a6a1775768a3d4d4ac1852c5d66b44d1a))
+
+## [2.7.9](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.8...v2.7.9) (2026-08-08)
+
+
+### Miscellaneous
+
+* **deps:** Bump dompurify from 3.4.12 to 3.4.13 ([#419](https://github.com/sho7650/obsidian-AI-exporter/issues/419)) ([e085494](https://github.com/sho7650/obsidian-AI-exporter/commit/e0854943b772e578570716152c382eb063241b88))
+
+## [2.7.8](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.7...v2.7.8) (2026-08-08)
+
+
+### Bug Fixes
+
+* sample selector counts only after the page has settled ([#417](https://github.com/sho7650/obsidian-AI-exporter/issues/417)) ([05a48af](https://github.com/sho7650/obsidian-AI-exporter/commit/05a48af845c7ef60819fdc22809088a1b166cca0))
+
+## [2.7.7](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.6...v2.7.7) (2026-08-07)
+
+
+### Miscellaneous
+
+* unblock the Gemini e2e baseline ([#414](https://github.com/sho7650/obsidian-AI-exporter/issues/414)) ([2f3c4b0](https://github.com/sho7650/obsidian-AI-exporter/commit/2f3c4b09249b99ae04196a58de5b93f4022a6743)), closes [#402](https://github.com/sho7650/obsidian-AI-exporter/issues/402)
+
+## [2.7.6](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.5...v2.7.6) (2026-08-07)
+
+
+### Miscellaneous
+
+* **deps-dev:** Bump js-yaml from 4.3.0 to 4.3.1 ([#409](https://github.com/sho7650/obsidian-AI-exporter/issues/409)) ([950e3c7](https://github.com/sho7650/obsidian-AI-exporter/commit/950e3c76fa6cb74ab971f5a1594b86c648311fbd))
+
+## [2.7.5](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.4...v2.7.5) (2026-08-07)
+
+
+### Documentation
+
+* document the message format and callout type settings ([#412](https://github.com/sho7650/obsidian-AI-exporter/issues/412)) ([6e96d0c](https://github.com/sho7650/obsidian-AI-exporter/commit/6e96d0c5049d8eb05b2021be5db484ad2472729e))
+
+## [2.7.4](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.3...v2.7.4) (2026-08-07)
+
+
+### Bug Fixes
+
+* let the service worker connect to the image CDN ([#410](https://github.com/sho7650/obsidian-AI-exporter/issues/410)) ([50ccdd3](https://github.com/sho7650/obsidian-AI-exporter/commit/50ccdd3b0072de294922a1f22d96b7dce8821a93))
+
+## [2.7.3](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.2...v2.7.3) (2026-08-06)
+
+
+### Bug Fixes
+
+* read and write notes that use CRLF line endings ([#407](https://github.com/sho7650/obsidian-AI-exporter/issues/407)) ([8411a45](https://github.com/sho7650/obsidian-AI-exporter/commit/8411a4568dbd31e3eea124b8adc5b20f67891b9e)), closes [#365](https://github.com/sho7650/obsidian-AI-exporter/issues/365)
+
+## [2.7.2](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.1...v2.7.2) (2026-08-05)
+
+
+### Miscellaneous
+
+* **deps-dev:** bump undici, fast-uri and brace-expansion for security fixes ([#404](https://github.com/sho7650/obsidian-AI-exporter/issues/404)) ([8df0542](https://github.com/sho7650/obsidian-AI-exporter/commit/8df054262200e08cef287870079e9d35cf1672ea))
+
+## [2.7.1](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.7.0...v2.7.1) (2026-08-05)
+
+
+### Miscellaneous
+
+* drop Claude selectors that no code reads ([#401](https://github.com/sho7650/obsidian-AI-exporter/issues/401)) ([403ffe7](https://github.com/sho7650/obsidian-AI-exporter/commit/403ffe749087d23d2e8b382821a7fbe8954e4beb))
+
+## [2.7.0](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.6.1...v2.7.0) (2026-08-04)
+
+
+### Features
+
+* report why a save forks a duplicate note ([#397](https://github.com/sho7650/obsidian-AI-exporter/issues/397)) ([e10a24a](https://github.com/sho7650/obsidian-AI-exporter/commit/e10a24aaecb813f6162b1b5344c6c71ed30bb241)), closes [#365](https://github.com/sho7650/obsidian-AI-exporter/issues/365)
+
+## [2.6.1](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.6.0...v2.6.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* count upward scroll movement as accumulation progress ([#395](https://github.com/sho7650/obsidian-AI-exporter/issues/395)) ([b47cf6a](https://github.com/sho7650/obsidian-AI-exporter/commit/b47cf6ac878cc284ac3fbacd342f7806b2d6cbfa)), closes [#365](https://github.com/sho7650/obsidian-AI-exporter/issues/365)
+
+## [2.6.0](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.5.1...v2.6.0) (2026-08-02)
+
+
+### Features
+
+* record the remaining privacy declarations and disclose website content ([#392](https://github.com/sho7650/obsidian-AI-exporter/issues/392)) ([7107817](https://github.com/sho7650/obsidian-AI-exporter/commit/710781760f1c709ffc9dc50225f9f3ba94fcee9f))
+
+## [2.5.1](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.5.0...v2.5.1) (2026-08-02)
+
+
+### Miscellaneous
+
+* bring user-facing Markdown under Prettier ([#390](https://github.com/sho7650/obsidian-AI-exporter/issues/390)) ([ccb580d](https://github.com/sho7650/obsidian-AI-exporter/commit/ccb580d8d511339075ec3f6fab36ceb1f698e631))
+
+## [2.5.0](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.4.2...v2.5.0) (2026-07-29)
+
+
+### Features
+
+* version-control the Chrome Web Store dashboard text ([#388](https://github.com/sho7650/obsidian-AI-exporter/issues/388)) ([ba967cd](https://github.com/sho7650/obsidian-AI-exporter/commit/ba967cdea9fdf669f6ce789502438bc5cac6b38c))
+
+## [2.4.2](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.4.1...v2.4.2) (2026-07-29)
+
+
+### Code Refactoring
+
+* resolve every extractor's host through the platform registry ([#386](https://github.com/sho7650/obsidian-AI-exporter/issues/386)) ([9b82f0b](https://github.com/sho7650/obsidian-AI-exporter/commit/9b82f0b5f1973350b917ce328c78402a8416a344))
+
+## [2.4.1](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.4.0...v2.4.1) (2026-07-29)
+
+
+### Bug Fixes
+
+* keep the localized store description within Chrome's 132-character limit ([#384](https://github.com/sho7650/obsidian-AI-exporter/issues/384)) ([d2693ac](https://github.com/sho7650/obsidian-AI-exporter/commit/d2693ac0b8034be629af9bb9fb7cec8c852704a5))
+
+## [2.4.0](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.3.1...v2.4.0) (2026-07-29)
+
+
+### Features
+
+* support notebook.google.com after the NotebookLM to Gemini Notebook rebrand ([#382](https://github.com/sho7650/obsidian-AI-exporter/issues/382)) ([d017524](https://github.com/sho7650/obsidian-AI-exporter/commit/d017524510224c73fd31477b9e66b6a5872f6fa5))
+
+## [2.3.1](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.3.0...v2.3.1) (2026-07-28)
+
+
+### Bug Fixes
+
+* restore ChatGPT turn order by merging scroll windows at their anchor ([#380](https://github.com/sho7650/obsidian-AI-exporter/issues/380)) ([07bb4a4](https://github.com/sho7650/obsidian-AI-exporter/commit/07bb4a4670eb2b4361940ec386c6f479fb53d120))
+
+## [2.3.0](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.2.12...v2.3.0) (2026-07-27)
+
+
+### Features
+
+* adapt to Local REST API path rules and Gemini CDN-hosted images ([#378](https://github.com/sho7650/obsidian-AI-exporter/issues/378)) ([9c97915](https://github.com/sho7650/obsidian-AI-exporter/commit/9c97915b15f67a0b5c7d65fb0f299e6b7e9d17d3)), closes [#377](https://github.com/sho7650/obsidian-AI-exporter/issues/377) [#376](https://github.com/sho7650/obsidian-AI-exporter/issues/376)
+
+## [2.2.12](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.2.11...v2.2.12) (2026-07-25)
+
+
+### Documentation
+
+* sync feature docs with shipped settings ([#374](https://github.com/sho7650/obsidian-AI-exporter/issues/374)) ([249155b](https://github.com/sho7650/obsidian-AI-exporter/commit/249155b10bbce663eea7096d830e2c9044b6ed70))
+
+## [2.2.11](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.2.10...v2.2.11) (2026-07-25)
+
+
+### Bug Fixes
+
+* recover Claude answer text and per-step tool content ([#372](https://github.com/sho7650/obsidian-AI-exporter/issues/372)) ([d38ed4e](https://github.com/sho7650/obsidian-AI-exporter/commit/d38ed4e75d7a09cbdc1dd3993e0ce2d16d74790c))
+
+
+### Miscellaneous
+
+* **deps-dev:** Bump postcss from 8.5.15 to 8.5.23 ([#371](https://github.com/sho7650/obsidian-AI-exporter/issues/371)) ([497e43b](https://github.com/sho7650/obsidian-AI-exporter/commit/497e43bdd30d7883be815946dd4c93ed01c3c8b8))
+
+## [2.2.10](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.2.9...v2.2.10) (2026-07-25)
+
+
+### Bug Fixes
+
+* correct append-mode lookup, coverage scope, and vault path validation ([#369](https://github.com/sho7650/obsidian-AI-exporter/issues/369)) ([f7300a4](https://github.com/sho7650/obsidian-AI-exporter/commit/f7300a441663214b07fdb3db0c7b27d2e137ec8b))
+
+## [2.2.9](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.2.8...v2.2.9) (2026-07-22)
+
+
+### Miscellaneous
+
+* **deps-dev:** Bump fast-uri from 3.1.2 to 3.1.4 ([#363](https://github.com/sho7650/obsidian-AI-exporter/issues/363)) ([ff753ad](https://github.com/sho7650/obsidian-AI-exporter/commit/ff753adfa45c94ca07168ba70bd6aa0a8d7cde64))
+* **deps:** Bump dompurify from 3.4.11 to 3.4.12 ([#364](https://github.com/sho7650/obsidian-AI-exporter/issues/364)) ([f2e1618](https://github.com/sho7650/obsidian-AI-exporter/commit/f2e1618a6d7f720389a5c62916a2e453615e57a9))
+
+## [2.2.8](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.2.7...v2.2.8) (2026-07-22)
+
+
+### Bug Fixes
+
+* scale scroll accumulation with a progress-aware deadline ([#360](https://github.com/sho7650/obsidian-AI-exporter/issues/360)) ([#366](https://github.com/sho7650/obsidian-AI-exporter/issues/366)) ([2025039](https://github.com/sho7650/obsidian-AI-exporter/commit/2025039fde6a7181b2fd7e5f7e2a2c5a858ac3d1))
+
+## [2.2.7](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.2.6...v2.2.7) (2026-07-21)
+
+
+### Documentation
+
+* document LaTeX math preservation in READMEs ([#358](https://github.com/sho7650/obsidian-AI-exporter/issues/358)) ([d58cc53](https://github.com/sho7650/obsidian-AI-exporter/commit/d58cc53ddbe68b31f359ed8b125e70a1e1f31bf2))
+
+
+### Miscellaneous
+
+* **deps-dev:** Bump brace-expansion from 5.0.6 to 5.0.7 ([#361](https://github.com/sho7650/obsidian-AI-exporter/issues/361)) ([85a0b0e](https://github.com/sho7650/obsidian-AI-exporter/commit/85a0b0e39132d0472a2489046fc08347d9f80190))
+
+## [2.2.6](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.2.5...v2.2.6) (2026-07-16)
+
+
+### Bug Fixes
+
+* keep the conversation when a closed Claude artifact panel lingers ([#352](https://github.com/sho7650/obsidian-AI-exporter/issues/352) follow-up) ([#355](https://github.com/sho7650/obsidian-AI-exporter/issues/355)) ([b237b7b](https://github.com/sho7650/obsidian-AI-exporter/commit/b237b7b6ff0f4e80fa056fd7eff21b0029bd6efb))
+
+## [2.2.5](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.2.4...v2.2.5) (2026-07-16)
+
+
+### Bug Fixes
+
+* order virtualized Claude turns by data-index to prevent scramble ([#352](https://github.com/sho7650/obsidian-AI-exporter/issues/352)) ([#354](https://github.com/sho7650/obsidian-AI-exporter/issues/354)) ([6df6d82](https://github.com/sho7650/obsidian-AI-exporter/commit/6df6d820d79345bb185cf34ed4c08cb0bcc29e82))
+
+## [2.2.4](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.2.3...v2.2.4) (2026-07-14)
+
+
+### Bug Fixes
+
+* seed virtualized accumulation at the bottom so the newest turn is captured ([#349](https://github.com/sho7650/obsidian-AI-exporter/issues/349)) ([e64ec70](https://github.com/sho7650/obsidian-AI-exporter/commit/e64ec70e2e7104754224202b87679b4971c58449))
+
+## [2.2.3](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.2.2...v2.2.3) (2026-07-12)
+
+
+### Bug Fixes
+
+* harden image, math, settings, and migration input handling ([#346](https://github.com/sho7650/obsidian-AI-exporter/issues/346)) ([a42a592](https://github.com/sho7650/obsidian-AI-exporter/commit/a42a59248cb2d25f8ce3c0d48f2ea4d80dcc2d37))
+
+## [2.2.2](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.2.1...v2.2.2) (2026-07-12)
+
+
+### Documentation
+
+* sync store descriptions and sync-docs skill to v2.2.1 features ([#344](https://github.com/sho7650/obsidian-AI-exporter/issues/344)) ([31e6112](https://github.com/sho7650/obsidian-AI-exporter/commit/31e611274d1a634d28883676564ca902391a45ae))
+
+## [2.2.1](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.2.0...v2.2.1) (2026-07-08)
+
+
+### Documentation
+
+* refresh READMEs for v2 features and add sync-docs skill ([#342](https://github.com/sho7650/obsidian-AI-exporter/issues/342)) ([8d98f98](https://github.com/sho7650/obsidian-AI-exporter/commit/8d98f986fd0f0b40bb121be0fd27600bd3d96016))
+
 ## [2.2.0](https://github.com/sho7650/obsidian-AI-exporter/compare/v2.1.0...v2.2.0) (2026-07-07)
 
 

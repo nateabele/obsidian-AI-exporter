@@ -31,7 +31,10 @@ export const SELECTORS = {
   // NOTE: the former conversationTitle group was removed 2026-07. No
   // conversation-title element has existed in Gemini's DOM since at least
   // 2026-03 (the v1 baseline recorded 0 matches from day one); titles come
-  // from the first user query (see GeminiExtractor.getTitle).
+  // from document.title ("<name> - Google Gemini", issue #504 / ADR-040) with
+  // the first user query as the fallback (see GeminiExtractor.getTitle).
+  // The sidebar's `span.title-text` holds the name too, but it renders
+  // lazily, so it is deliberately not a selector here (baseline coupling).
 
   // AI-generated images inside a model response. Gemini wraps each generated
   // image in a <generated-image>/<single-image> component; the <img> carries a
@@ -78,8 +81,13 @@ export const DEEP_RESEARCH_LINK_SELECTORS = {
     'source-footnote sup.superscript[data-turn-source-index]',
     'sup.superscript[data-turn-source-index]',
   ],
-  // Source list container
-  sourceListContainer: ['deep-research-source-lists', '#used-sources-list'],
+  // Source list container.
+  // 2026-08: the `#used-sources-list` fallback was dropped — measured at zero on
+  // the live Deep Research page while `deep-research-source-lists` still matches.
+  // A zero-match entry is per-entry fatal to `npm run e2e:baseline:update`
+  // (baseline.ts refuses to record a selector that cannot be found, ADR-016), so
+  // a dead fallback blocks the whole platform's baseline (issue #402).
+  sourceListContainer: ['deep-research-source-lists'],
   // Source list items
   sourceListItem: ['a[data-test-id="browse-web-item-link"]', 'a[data-test-id="browse-chip-link"]'],
   // Source title

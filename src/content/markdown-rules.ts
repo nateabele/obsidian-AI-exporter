@@ -6,7 +6,8 @@
  */
 
 import TurndownService from 'turndown';
-import { MAX_LANG_HINT_LENGTH } from '../lib/constants';
+import { MAX_LANG_HINT_LENGTH, MAX_MATH_LENGTH } from '../lib/constants';
+import { fenceCodeBlock, nextFenceState, type OpenFence } from '../lib/code-fence';
 
 /** Leading blockquote prefix (one or more `> ` markers) to preserve as-is. */
 const BLOCKQUOTE_PREFIX_PATTERN = /^(\s*>\s*)+/;
@@ -57,20 +58,25 @@ function escapeSpecialCharsInLine(line: string, pattern: RegExp): string {
 /**
  * Escape target characters across Markdown text, skipping fenced code blocks
  * (where the characters are already literal in Obsidian).
+ *
+ * Fence state comes from {@link nextFenceState}, which is length- and
+ * character-aware: an inner fence inside a longer block is content, not a
+ * delimiter. A length-blind toggle used to lose track there and write escaped
+ * `\<div\>` into the middle of a code block (issue #433, ADR-029).
+ *
+ * Both fence characters open a block here — a user may paste a tilde-fenced
+ * block, and its contents deserve the same protection.
  */
 function escapeByLine(text: string, pattern: RegExp): string {
   const lines = text.split('\n');
-  let inFencedBlock = false;
+  // Delimiters may sit inside a blockquote (`> ```), so markers are stripped
+  // before matching.
+  let fence: OpenFence = null;
 
   const result = lines.map(line => {
-    // Detect fenced code delimiter (may be inside a blockquote)
-    const stripped = line.replace(/^(\s*>\s*)*/, '');
-    if (/^`{3,}/.test(stripped)) {
-      inFencedBlock = !inFencedBlock;
-      return line;
-    }
-
-    if (inFencedBlock) return line;
+    const step = nextFenceState(fence, line, { stripBlockquote: true });
+    fence = step.state;
+    if (step.isDelimiter || fence !== null) return line;
 
     return escapeSpecialCharsInLine(line, pattern);
   });
@@ -126,7 +132,7 @@ turndown.addRule('codeBlocks', {
     const lang = langMatch ? langMatch[1] : '';
 
     const code = codeElement.textContent || '';
-    return `\n\`\`\`${lang}\n${code.trim()}\n\`\`\`\n`;
+    return fenceCodeBlock(code, lang);
   },
 });
 
@@ -180,7 +186,7 @@ turndown.addRule('codemirrorCodeBlocks', {
       }
     }
 
-    return `\n\`\`\`${lang}\n${code.trim()}\n\`\`\`\n`;
+    return fenceCodeBlock(code, lang);
   },
 });
 
@@ -238,6 +244,27 @@ turndown.addRule('footnoteDef', {
   },
 });
 
+/**
+ * Render a page-derived LaTeX value as Markdown math, or fall back to plain
+ * text when the value would degrade or break Obsidian's math rendering:
+ * - longer than {@link MAX_MATH_LENGTH} (malformed/abusive input), or
+ * - contains a literal `$` (breaks the `$…$` / `$$…$$` delimiters).
+ *
+ * Multi-line LaTeX is left intact — real KaTeX inline formulas (e.g. matrices
+ * with `\\` row breaks) legitimately span lines.
+ *
+ * On fallback, backslashes are escaped first, then `$` → `\$`, so the plain
+ * text is not re-parsed as math (escaping the escape character prevents a
+ * preceding `\` from pairing with the inserted one and re-opening a delimiter).
+ */
+function formatMath(latex: string, display: boolean): string {
+  if (latex.length > MAX_MATH_LENGTH || latex.includes('$')) {
+    const plain = latex.replace(/\\/g, '\\\\').replace(/\$/g, '\\$');
+    return display ? `\n${plain}\n` : plain;
+  }
+  return display ? `\n$$\n${latex}\n$$\n` : `$${latex}$`;
+}
+
 // Custom rule for display math blocks (Gemini KaTeX: <div data-math="...">)
 turndown.addRule('mathBlock', {
   filter: node => {
@@ -246,7 +273,7 @@ turndown.addRule('mathBlock', {
   replacement: (_content, node) => {
     const latex = (node as HTMLElement).getAttribute('data-math');
     if (!latex) return _content;
-    return `\n$$\n${latex}\n$$\n`;
+    return formatMath(latex, true);
   },
 });
 
@@ -262,7 +289,7 @@ turndown.addRule('mathInline', {
   replacement: (_content, node) => {
     const latex = (node as HTMLElement).getAttribute('data-math');
     if (!latex) return _content;
-    return `$${latex}$`;
+    return formatMath(latex, false);
   },
 });
 

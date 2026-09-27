@@ -8,7 +8,7 @@ import {
   resetLocation,
   createPerplexityConversationDOM,
   setPerplexityLocation,
-  setNonPerplexityLocation,
+  defineLocation,
   createPerplexityInlineCitation,
   createPerplexityPillCitation,
   createPerplexityLegacyPillCitation,
@@ -45,17 +45,17 @@ describe('PerplexityExtractor', () => {
       });
 
       it('returns false for perplexity.ai (no www)', () => {
-        setNonPerplexityLocation('perplexity.ai');
+        defineLocation('perplexity.ai');
         expect(extractor.canExtract()).toBe(false);
       });
 
       it('returns false for evil.www.perplexity.ai.attacker.com', () => {
-        setNonPerplexityLocation('evil.www.perplexity.ai.attacker.com');
+        defineLocation('evil.www.perplexity.ai.attacker.com');
         expect(extractor.canExtract()).toBe(false);
       });
 
       it('returns false for other domains', () => {
-        setNonPerplexityLocation('chatgpt.com');
+        defineLocation('chatgpt.com');
         expect(extractor.canExtract()).toBe(false);
       });
     });
@@ -76,12 +76,12 @@ describe('PerplexityExtractor', () => {
     });
 
     it('returns null for non-search paths', () => {
-      setNonPerplexityLocation('www.perplexity.ai', '/hub');
+      defineLocation('www.perplexity.ai', '/hub');
       expect(extractor.getConversationId()).toBeNull();
     });
 
     it('returns null for root path', () => {
-      setNonPerplexityLocation('www.perplexity.ai', '/');
+      defineLocation('www.perplexity.ai', '/');
       expect(extractor.getConversationId()).toBeNull();
     });
   });
@@ -511,15 +511,7 @@ describe('PerplexityExtractor', () => {
     });
 
     it('generates fallback ID when URL parsing fails', async () => {
-      Object.defineProperty(window, 'location', {
-        value: {
-          hostname: 'www.perplexity.ai',
-          pathname: '/pro',
-          href: 'https://www.perplexity.ai/pro',
-        },
-        writable: true,
-        configurable: true,
-      });
+      defineLocation('www.perplexity.ai', '/pro');
       loadFixture(
         createPerplexityConversationDOM([
           { role: 'user', content: 'Hello' },
@@ -982,6 +974,377 @@ describe('PerplexityExtractor', () => {
       expect(messages[3].content).toContain('Detailed Report');
       expect(messages[4].role).toBe('assistant');
       expect(messages[4].content).toContain('Summary of the report');
+    });
+  });
+
+  /**
+   * Issue #444. Perplexity rolled out a layout that keeps
+   * `div[id^="markdown-content-"]` as an EMPTY placeholder and renders the
+   * answer beside it. Both layouts are served concurrently, so the extractor
+   * has to read either one without double-counting the other.
+   *
+   * The fixtures below mirror the class lists measured on live threads:
+   *
+   * - answer prose (BOTH layouts): `prose dark:prose-invert inline leading-relaxed …`
+   * - Deep Research card prose:    `… prose dark:prose-invert max-w-none text-sm`,
+   *   plus an `inline` prose nested INSIDE the card — which is why "collect
+   *   every .prose" is wrong and the card has to be excluded explicitly.
+   */
+  describe('Answers rendered outside the markdown-content placeholder (issue #444)', () => {
+    const ANSWER_PROSE_CLASS =
+      'prose dark:prose-invert inline leading-relaxed break-words min-w-0 [word-break:break-word]';
+
+    beforeEach(() => {
+      setPerplexityLocation('conv-444');
+    });
+
+    it('extracts the answer when the placeholder is empty', () => {
+      loadFixture(`
+        <div class="group/query"><span class="select-text">What is a modern email signature?</span></div>
+        <div class="relative font-sans text-base">
+          <div id="markdown-content-0" class="gap-y-4 after:clear-both after:block"></div>
+        </div>
+        <div class="flex flex-col flex-1 min-w-0 gap-4">
+          <div class="contents">
+            <div class="break-words min-w-0 flex-1">
+              <div>
+                <div class="${ANSWER_PROSE_CLASS}">
+                  <p>Use a hosted PNG under 240px wide.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      `);
+
+      const messages = extractor.extractMessages();
+
+      expect(messages.map(m => m.role)).toEqual(['user', 'assistant']);
+      expect(messages[1].content).toContain('Use a hosted PNG');
+    });
+
+    it('keeps every answer of a multi-turn thread, in order', () => {
+      const turn = (q: string, a: string, i: number): string => `
+        <div class="group/query"><span class="select-text">${q}</span></div>
+        <div class="relative font-sans text-base">
+          <div id="markdown-content-${i}" class="gap-y-4"></div>
+        </div>
+        <div class="contents"><div class="break-words min-w-0 flex-1"><div>
+          <div class="${ANSWER_PROSE_CLASS}"><p>${a}</p></div>
+        </div></div></div>
+      `;
+      loadFixture(turn('q1', 'answer one', 0) + turn('q2', 'answer two', 1));
+
+      const messages = extractor.extractMessages();
+
+      expect(messages.map(m => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+      expect(messages[1].content).toContain('answer one');
+      expect(messages[3].content).toContain('answer two');
+    });
+
+    it('does not double-count when the prose IS inside the placeholder (old layout)', () => {
+      loadFixture(`
+        <div class="group/query"><span class="select-text">q</span></div>
+        <div class="relative font-sans text-base">
+          <div id="markdown-content-0" class="gap-y-4">
+            <div class="has-inline-images my-2">
+              <div><div class="${ANSWER_PROSE_CLASS}"><p>only answer</p></div></div>
+            </div>
+          </div>
+        </div>
+      `);
+
+      const messages = extractor.extractMessages();
+
+      expect(messages.map(m => m.role)).toEqual(['user', 'assistant']);
+      expect(messages.filter(m => m.role === 'assistant')).toHaveLength(1);
+    });
+
+    it('does not mistake a Deep Research card for a second answer', () => {
+      // The card carries an `inline` prose of its own; the extractor already
+      // routes the card through the report path, so it must not be collected
+      // again by the placeholder fallback.
+      loadFixture(`
+        <div class="group/query"><span class="select-text">q</span></div>
+        <div class="relative font-sans text-base">
+          <div id="markdown-content-0" class="gap-y-4"></div>
+        </div>
+        <div class="bg-raised rounded-lg">
+          <div class="overflow-hidden px-4 py-3 prose dark:prose-invert max-w-none text-sm">
+            <div class="${ANSWER_PROSE_CLASS}"><p>report body</p></div>
+          </div>
+        </div>
+        <div class="contents"><div class="break-words min-w-0 flex-1"><div>
+          <div class="${ANSWER_PROSE_CLASS}"><p>the actual answer</p></div>
+        </div></div></div>
+      `);
+
+      const messages = extractor.extractMessages();
+      const assistant = messages.filter(m => m.role === 'assistant');
+
+      expect(assistant).toHaveLength(2);
+      expect(assistant.filter(m => m.content.includes('report body'))).toHaveLength(1);
+      expect(assistant.filter(m => m.content.includes('the actual answer'))).toHaveLength(1);
+    });
+
+    it('reports success without the missing-assistant warning', async () => {
+      loadFixture(`
+        <div class="group/query"><span class="select-text">q</span></div>
+        <div class="relative font-sans text-base">
+          <div id="markdown-content-0" class="gap-y-4"></div>
+        </div>
+        <div class="contents"><div class="break-words min-w-0 flex-1"><div>
+          <div class="${ANSWER_PROSE_CLASS}"><p>an answer</p></div>
+        </div></div></div>
+      `);
+
+      const result = await extractor.extract();
+
+      expect(result.success).toBe(true);
+      expect(result.warnings ?? []).not.toContain('No assistant messages found');
+      expect(result.data?.metadata.assistantMessageCount).toBe(1);
+    });
+  });
+  // ========================================================================
+  // 2026-08 layout rollout (live-verified via CDP on www.perplexity.ai)
+  //
+  // Three changes landed together after the 2026-08-16 selector baseline:
+  //   1. `#markdown-content-N` is gone id and all — the answer renders as a
+  //      bare `.prose.inline` carrying the new `data-renderer="lm"` hook.
+  //   2. The user bubble lost its `group/query` wrapper; the bubble itself is
+  //      `.bg-subtle.rounded-2xl`.
+  //   3. A Deep Research report is no longer inline prose in a raised card.
+  //      It collapses to an attachment card (`rounded-xl`, title + "Deep
+  //      research report" label, NO body in the DOM) and the report only
+  //      mounts — into a `?preview=1` side panel — once the card is clicked.
+  //
+  // The old layout is still exercised by the blocks above: this rollout is a
+  // migration, not a replacement, so both must extract.
+  // ========================================================================
+  describe('2026-08 layout: placeholder removed, Deep Research collapsed', () => {
+    const ANSWER_PROSE_CLASS =
+      'prose dark:prose-invert inline leading-relaxed break-words min-w-0 [word-break:break-word]';
+
+    /** User bubble as rendered since 2026-08 (no `group/query` ancestor). */
+    const userBubble = (text: string): string => `
+      <div class="group flex items-start justify-end gap-2">
+        <div class="flex flex-col items-end gap-1 max-w-[600px]">
+          <div class="relative inline-flex flex-col items-end">
+            <div class="min-w-[48px] select-none p-3 bg-subtle rounded-2xl flex items-center justify-center">
+              <span class="min-w-0 font-sans text-base select-text break-words">${text}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    /** Assistant answer as rendered since 2026-08 (no placeholder anywhere). */
+    const answer = (html: string): string => `
+      <div class="flex flex-col flex-1 min-w-0 gap-4">
+        <div class="contents">
+          <div class="break-words min-w-0 flex-1">
+            <div>
+              <div class="${ANSWER_PROSE_CLASS}" data-renderer="lm">${html}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    /** Collapsed Deep Research attachment card — carries no report body. */
+    const collapsedReportCard = (title: string): string => `
+      <div class="flex w-full flex-col divide-y divide-subtlest overflow-hidden rounded-xl border border-subtlest bg-raised">
+        <div class="group relative w-full gap-2.5 overflow-hidden p-2 flex items-center">
+          <button class="absolute inset-0 z-0 cursor-pointer appearance-none"></button>
+          <div class="pointer-events-none relative z-[1] flex min-w-0 flex-1 flex-col">
+            <div class="font-sans text-primary font-bold text-sm truncate"><span>${title}</span></div>
+            <div class="flex min-w-0 items-center gap-1">
+              <div class="min-w-0 font-sans text-secondary text-sm truncate">Deep research report</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    /** The `?preview=1` side panel mounted after the card is clicked. */
+    const openedReportPanel = (html: string): string => `
+      <div class="relative flex h-full min-h-0">
+        <div class="relative min-w-0 flex-1">
+          <div class="scrollbar-subtle h-full min-h-0 overflow-auto">
+            <div class="relative prose dark:prose-invert max-w-none p-6">
+              <div class="@container/artifact-comment relative">
+                <div>
+                  <div class="${ANSWER_PROSE_CLASS}" data-renderer="lm">${html}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    beforeEach(() => {
+      setPerplexityLocation('conv-2026-08');
+    });
+
+    it('extracts a multi-turn thread that has no markdown-content placeholder', () => {
+      loadFixture(
+        userBubble('first question') +
+          answer('<p>first answer</p>') +
+          userBubble('second question') +
+          answer('<p>second answer</p>')
+      );
+
+      const messages = extractor.extractMessages();
+
+      expect(messages.map(m => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+      expect(messages[0].content).toBe('first question');
+      expect(messages[1].content).toContain('first answer');
+      expect(messages[2].content).toBe('second question');
+      expect(messages[3].content).toContain('second answer');
+    });
+
+    it('titles the conversation from the query in the new bubble', () => {
+      loadFixture(userBubble('what changed in the layout') + answer('<p>a</p>'));
+
+      expect(extractor.getTitle()).toBe('what changed in the layout');
+    });
+
+    it('keeps the inline summary and adds nothing for a collapsed report card', () => {
+      loadFixture(
+        userBubble('research this') +
+          collapsedReportCard('A Deep Research Report') +
+          answer('<p>summary of the report</p>')
+      );
+
+      const messages = extractor.extractMessages();
+
+      expect(messages.map(m => m.role)).toEqual(['user', 'assistant']);
+      expect(messages[1].content).toContain('summary of the report');
+    });
+
+    it('extracts the opened preview panel as a report message', () => {
+      loadFixture(
+        userBubble('research this') +
+          collapsedReportCard('A Deep Research Report') +
+          answer('<p>summary of the report</p>') +
+          openedReportPanel('<h1>Executive summary</h1><p>the full report body</p>')
+      );
+
+      const messages = extractor.extractMessages();
+      const report = messages.filter(m => m.content.includes('the full report body'));
+
+      expect(report).toHaveLength(1);
+      expect(report[0].id).toMatch(/^report-/);
+      expect(report[0].role).toBe('assistant');
+      expect(report[0].content).toContain('Executive summary');
+    });
+
+    it('does not also count the opened panel as a plain answer', () => {
+      loadFixture(
+        userBubble('research this') +
+          collapsedReportCard('A Deep Research Report') +
+          answer('<p>summary of the report</p>') +
+          openedReportPanel('<p>the full report body</p>')
+      );
+
+      const messages = extractor.extractMessages();
+
+      expect(messages.map(m => m.id)).toEqual(['user-0', 'assistant-0', 'report-0']);
+    });
+  });
+
+  describe('2026-09 layout: user query rendered by the markdown renderer', () => {
+    const ANSWER_PROSE_CLASS =
+      'prose dark:prose-invert inline leading-relaxed break-words min-w-0 [word-break:break-word]';
+
+    /**
+     * User bubble as measured live on 2026-09-25: the `select-text` span is
+     * gone from the whole page; the query is markdown-rendered inside the
+     * bubble under a `data-renderer="lm"` node, and the bubble's ancestor now
+     * carries `group/user-bubble`. Long queries are visually clipped by
+     * `max-h-[144px] overflow-hidden` but the DOM holds the full text.
+     */
+    const userBubble = (html: string): string => `
+      <div class="flex flex-col flex-1 min-w-0 gap-1">
+        <div>
+          <div class="contents">
+            <div class="group/user-bubble flex min-w-0 items-center justify-end gap-2">
+              <div class="min-w-0 max-w-[600px] bg-subtle px-4 py-3 whitespace-pre-wrap break-words font-sans text-base text-primary rounded-2xl">
+                <div class="flex min-w-0 max-w-full flex-col items-start">
+                  <div class="min-w-0 max-w-full max-h-[144px] overflow-hidden">
+                    <div><div data-renderer="lm">${html}</div></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const answer = (html: string): string => `
+      <div class="flex flex-col flex-1 min-w-0 gap-4">
+        <div class="contents">
+          <div class="break-words min-w-0 flex-1">
+            <div><div class="${ANSWER_PROSE_CLASS}" data-renderer="lm">${html}</div></div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    beforeEach(() => {
+      setPerplexityLocation('conv-2026-09');
+    });
+
+    it('extracts the user query from the renderer-backed bubble', () => {
+      loadFixture(
+        userBubble('<p class="my-2">first question</p>') +
+          answer('<p>first answer</p>') +
+          userBubble('<p class="my-2">second question</p>') +
+          answer('<p>second answer</p>')
+      );
+
+      const messages = extractor.extractMessages();
+
+      expect(messages.map(m => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+      expect(messages[0].content).toBe('first question');
+      expect(messages[2].content).toBe('second question');
+    });
+
+    it('titles the conversation from the renderer-backed bubble', () => {
+      loadFixture(
+        userBubble('<p class="my-2">what changed on 2026-09-25</p>') + answer('<p>a</p>')
+      );
+
+      expect(extractor.getTitle()).toBe('what changed on 2026-09-25');
+    });
+
+    it('extracts the full text of a long query that the bubble clips visually', () => {
+      const paragraphs = Array.from(
+        { length: 12 },
+        (_, i) => `<p class="my-2">line ${i + 1} of a long prompt</p>`
+      ).join('');
+      loadFixture(userBubble(paragraphs) + answer('<p>a</p>'));
+
+      const [user] = extractor.extractMessages();
+
+      expect(user.role).toBe('user');
+      expect(user.content).toContain('line 1 of a long prompt');
+      expect(user.content).toContain('line 12 of a long prompt');
+    });
+
+    it('does not count a legacy span twice when it sits inside a renderer-backed bubble', () => {
+      // Belt and braces for a transitional markup that carries both forms.
+      loadFixture(
+        userBubble('<p class="my-2"><span class="select-text">both forms</span></p>') +
+          answer('<p>a</p>')
+      );
+
+      const messages = extractor.extractMessages();
+
+      expect(messages.filter(m => m.role === 'user')).toHaveLength(1);
+      expect(messages[0].content).toBe('both forms');
     });
   });
 });

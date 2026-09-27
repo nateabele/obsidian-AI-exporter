@@ -13,6 +13,7 @@ import {
   MAX_TAG_LENGTH,
   MAX_IMAGES_PER_NOTE,
   MAX_IMAGE_DATA_LENGTH,
+  MAX_TOTAL_IMAGE_DATA_LENGTH,
   ALLOWED_ORIGINS,
   VALID_MESSAGE_ACTIONS,
   VALID_OUTPUT_DESTINATIONS,
@@ -27,6 +28,7 @@ import type {
 } from '../lib/types';
 import { containsPathTraversal } from '../lib/path-utils';
 import { isHttpUrl } from '../lib/validation';
+import { isAllowedImageMime, isLikelyBase64, isAllowedImageSourceUrl } from '../lib/image-utils';
 
 /**
  * Validate message sender (M-02)
@@ -97,6 +99,15 @@ export function validateMessageContent(message: ExtensionMessage): boolean {
   // Detailed validation for openInObsidian action
   if (message.action === 'openInObsidian' && !validateOpenInObsidianData(message.data)) {
     return false;
+  }
+
+  // The worker can reach hosts the page cannot, so a fetchImage URL is only
+  // accepted for the image CDN allow-list (issue #376). Re-checked in the
+  // handler; rejecting here keeps a bad URL from ever reaching it.
+  if (message.action === 'fetchImage') {
+    if (typeof message.url !== 'string' || !isAllowedImageSourceUrl(message.url)) {
+      return false;
+    }
   }
 
   return true;
@@ -170,7 +181,18 @@ function validateOpenInObsidianData(data: { path: string } | undefined): boolean
 /**
  * Validate note data structure
  */
+/**
+ * The truncation flag is the one optional field the content script may add to
+ * a note (issue #449); anything else in its place is a malformed message.
+ */
+function hasValidTruncatedFlag(note: unknown): boolean {
+  if (typeof note !== 'object' || note === null) return true;
+  const flag = (note as { truncated?: unknown }).truncated;
+  return flag === undefined || typeof flag === 'boolean';
+}
+
 function validateNoteData(note: ObsidianNote | undefined): boolean {
+  if (!hasValidTruncatedFlag(note)) return false;
   // Messages arrive as unvalidated JSON: data may be absent despite the type
   if (!note || typeof note !== 'object') {
     return false;
@@ -191,10 +213,8 @@ function validateNoteData(note: ObsidianNote | undefined): boolean {
     return false;
   }
 
-  // Content size limit (DoS prevention)
-  if (note.body.length > MAX_CONTENT_SIZE) {
-    return false;
-  }
+  // The body size cap is a user setting and is applied in handleMultiOutput(),
+  // the only place that can read settings (issue #467, ADR-038).
 
   // Frontmatter validation (DES-014 M-8: fail hard when missing)
   if (!validateFrontmatter(note.frontmatter)) {
@@ -247,22 +267,33 @@ function validateFrontmatter(frontmatter: ObsidianNote['frontmatter'] | undefine
 
 /**
  * Validate attached image data (DoS guard). Content scripts are semi-trusted,
- * so bound the image count and per-image base64 size, and require well-formed
- * string fields on each entry.
+ * so bound the image count, per-image base64 size, and combined base64 size,
+ * restrict MIME types to a shared allow-list, and require each entry to carry
+ * well-formed base64 data.
  */
 function validateImages(images: unknown): boolean {
   if (!Array.isArray(images) || images.length > MAX_IMAGES_PER_NOTE) {
     return false;
   }
-  return images.every((image: Partial<ExtractedImage> | null | undefined) => {
-    return (
+  let totalDataLength = 0;
+  for (const image of images as Array<Partial<ExtractedImage> | null | undefined>) {
+    const wellFormed =
       !!image &&
       typeof image === 'object' &&
       typeof image.id === 'string' &&
       typeof image.mimeType === 'string' &&
       typeof image.alt === 'string' &&
       typeof image.data === 'string' &&
-      image.data.length <= MAX_IMAGE_DATA_LENGTH
-    );
-  });
+      image.data.length <= MAX_IMAGE_DATA_LENGTH &&
+      isAllowedImageMime(image.mimeType) &&
+      isLikelyBase64(image.data);
+    if (!wellFormed) {
+      return false;
+    }
+    totalDataLength += image.data.length;
+    if (totalDataLength > MAX_TOTAL_IMAGE_DATA_LENGTH) {
+      return false;
+    }
+  }
+  return true;
 }

@@ -23,11 +23,26 @@ import {
   validateObsidianUrl,
 } from '../lib/validation';
 import {
+  DEFAULT_CONVERSATION_TAGS,
+  DEFAULT_DEEP_RESEARCH_TAGS,
+  formatTagList,
+  parseTagList,
+} from '../lib/tag-template';
+import {
   DEFAULT_OBSIDIAN_URL,
   DEFAULT_MAX_CALLOUT_LINES,
   DEFAULT_COMPANION_URL,
   VALID_MESSAGE_FORMATS,
   ARCHIVE_SUPPORTED_PLATFORMS,
+  DEFAULT_SCROLL_IDLE_TIMEOUT_SEC,
+  DEFAULT_SCROLL_MAX_TIMEOUT_SEC,
+  DEFAULT_NOTE_SIZE_MIB,
+  MIN_NOTE_SIZE_MIB,
+  MAX_NOTE_SIZE_MIB,
+  MIN_SCROLL_IDLE_TIMEOUT_SEC,
+  MAX_SCROLL_IDLE_TIMEOUT_SEC,
+  MIN_SCROLL_MAX_TIMEOUT_SEC,
+  MAX_SCROLL_MAX_TIMEOUT_SEC,
 } from '../lib/constants';
 import { getMessage } from '../lib/i18n';
 import { sendMessage } from '../lib/messaging';
@@ -116,6 +131,8 @@ function queryElements() {
     includeId: getElement<HTMLInputElement>('includeId'),
     includeTitle: getElement<HTMLInputElement>('includeTitle'),
     includeTags: getElement<HTMLInputElement>('includeTags'),
+    conversationTags: getElement<HTMLInputElement>('conversationTags'),
+    deepResearchTags: getElement<HTMLInputElement>('deepResearchTags'),
     includeSource: getElement<HTMLInputElement>('includeSource'),
     includeDates: getElement<HTMLInputElement>('includeDates'),
     includeMessageCount: getElement<HTMLInputElement>('includeMessageCount'),
@@ -134,6 +151,11 @@ function queryElements() {
         getElement<HTMLInputElement>(AUTO_SYNC_CHECKBOX_IDS[platform]),
       ])
     ) as Record<AIPlatform, HTMLInputElement>,
+    scrollIdleTimeoutSec: getElement<HTMLInputElement>('scrollIdleTimeoutSec'),
+    scrollMaxTimeoutSec: getElement<HTMLInputElement>('scrollMaxTimeoutSec'),
+    scrollTimeoutGroup: getElement<HTMLElement>('scrollTimeoutGroup'),
+    maxNoteSizeMiB: getElement<HTMLInputElement>('maxNoteSizeMiB'),
+    maxNoteSizeMiBValue: getElement<HTMLOutputElement>('maxNoteSizeMiBValue'),
     timezone: getElement<HTMLSelectElement>('timezone'),
     timezoneGroup: getElement<HTMLElement>('timezoneGroup'),
     testBtn: getElement<HTMLButtonElement>('testBtn'),
@@ -173,16 +195,39 @@ export async function initPopup(): Promise<void> {
 }
 
 /**
- * Populate form with current settings
+ * Populate form with current settings.
+ *
+ * One section per helper: each holds a handful of defaults, which keeps every
+ * function under the complexity limit (the flat version scored 29 — every
+ * `??` / `||` counts as a branch).
  */
 function populateForm(settings: ExtensionSettings): void {
-  // Output destinations
+  populateOutputOptions(settings);
+  populateExtractionOptions(settings);
+
+  // Update Obsidian settings section visibility
+  updateObsidianSettingsVisibility();
+
+  populateObsidianSettings(settings);
+  populateCompanionSettings(settings);
+  populateTemplateOptions(settings.templateOptions);
+  populateFrontmatterOptions(settings.templateOptions);
+  populateTimezone(settings.templateOptions);
+
+  // Sync aria-checked for toggle switches after setting checked state
+  syncAllAriaChecked();
+}
+
+/** Output destinations */
+function populateOutputOptions(settings: ExtensionSettings): void {
   const { outputOptions } = settings;
   elements.outputObsidian.checked = outputOptions?.obsidian ?? true;
   elements.outputFile.checked = outputOptions?.file ?? false;
   elements.outputClipboard.checked = outputOptions?.clipboard ?? false;
+}
 
-  // Extraction options
+/** Extraction options */
+function populateExtractionOptions(settings: ExtensionSettings): void {
   elements.enableAutoScroll.checked = settings.enableAutoScroll ?? false;
   elements.enableAppendMode.checked = settings.enableAppendMode ?? false;
   elements.enableToolContent.checked = settings.enableToolContent ?? false;
@@ -190,43 +235,59 @@ function populateForm(settings: ExtensionSettings): void {
   elements.imageVaultPath.value = settings.imageVaultPath || '';
   elements.flattenLargeCallouts.checked = settings.flattenLargeCallouts ?? true;
   elements.maxCalloutLines.value = String(settings.maxCalloutLines ?? DEFAULT_MAX_CALLOUT_LINES);
+  populateScrollTimeouts(settings);
+  elements.maxNoteSizeMiB.value = String(settings.maxNoteSizeMiB ?? DEFAULT_NOTE_SIZE_MIB);
+  updateNoteSizeLabel();
+}
 
-  // Update Obsidian settings section visibility
-  updateObsidianSettingsVisibility();
-
-  // Obsidian API settings
+/** Obsidian API settings */
+function populateObsidianSettings(settings: ExtensionSettings): void {
   elements.apiKey.value = settings.obsidianApiKey || '';
   elements.obsidianUrl.value = settings.obsidianUrl || DEFAULT_OBSIDIAN_URL;
   elements.vaultPath.value = settings.vaultPath || '';
+}
+
+/** Companion listener credentials and the per-platform continuous-sync toggles */
+function populateCompanionSettings(settings: ExtensionSettings): void {
   elements.companionToken.value = settings.companionToken || '';
   elements.companionUrl.value = settings.companionUrl || DEFAULT_COMPANION_URL;
   const enabledPlatforms = new Set(settings.autoSyncPlatforms ?? []);
   for (const platform of ALL_PLATFORMS) {
     elements.autoSyncPlatforms[platform].checked = enabledPlatforms.has(platform);
   }
+}
 
-  const { templateOptions } = settings;
+/** Message format, filename scheme and callout types */
+function populateTemplateOptions(templateOptions: ExtensionSettings['templateOptions']): void {
   elements.messageFormat.value = templateOptions.messageFormat || 'callout';
   elements.filenameScheme.value = templateOptions.filenameScheme || 'title-id';
   elements.userCallout.value = templateOptions.userCalloutType || 'QUESTION';
   elements.assistantCallout.value = templateOptions.assistantCalloutType || 'NOTE';
   updateCalloutSettingsVisibility();
   elements.includeQuestionHeaders.checked = templateOptions.includeQuestionHeaders ?? false;
+}
 
+/** Frontmatter field toggles */
+function populateFrontmatterOptions(templateOptions: ExtensionSettings['templateOptions']): void {
   elements.includeId.checked = templateOptions.includeId ?? true;
   elements.includeTitle.checked = templateOptions.includeTitle ?? true;
   elements.includeTags.checked = templateOptions.includeTags ?? true;
+  elements.conversationTags.value = formatTagList(
+    templateOptions.conversationTags ?? DEFAULT_CONVERSATION_TAGS
+  );
+  elements.deepResearchTags.value = formatTagList(
+    templateOptions.deepResearchTags ?? DEFAULT_DEEP_RESEARCH_TAGS
+  );
   elements.includeSource.checked = templateOptions.includeSource ?? true;
   elements.includeDates.checked = templateOptions.includeDates ?? true;
   elements.includeMessageCount.checked = templateOptions.includeMessageCount ?? true;
+}
 
-  // Populate timezone dropdown and set value
+/** Populate timezone dropdown and set value */
+function populateTimezone(templateOptions: ExtensionSettings['templateOptions']): void {
   populateTimezoneOptions();
   elements.timezone.value = templateOptions.timezone ?? 'UTC';
   updateTimezoneVisibility();
-
-  // Sync aria-checked for toggle switches after setting checked state
-  syncAllAriaChecked();
 }
 
 /**
@@ -248,6 +309,7 @@ function updateObsidianSettingsVisibility(): void {
  */
 function setupEventListeners(): void {
   elements.saveBtn.addEventListener('click', handleSave);
+  elements.maxNoteSizeMiB.addEventListener('input', updateNoteSizeLabel);
   elements.testBtn.addEventListener('click', handleTest);
 
   // Output destination checkbox listeners
@@ -255,6 +317,7 @@ function setupEventListeners(): void {
 
   // Show/hide timezone when includeDates changes
   elements.includeDates.addEventListener('change', updateTimezoneVisibility);
+  elements.enableAutoScroll.addEventListener('change', updateScrollTimeoutVisibility);
 
   // Show/hide callout settings based on message format
   elements.messageFormat.addEventListener('change', updateCalloutSettingsVisibility);
@@ -362,6 +425,30 @@ function updateTimezoneVisibility(): void {
   setGroupVisible(elements.timezoneGroup, elements.includeDates.checked);
 }
 
+/** Fill the auto-scroll deadline inputs and match their visibility to the toggle. */
+/** The slider has no readout of its own; mirror its value beside it. */
+function updateNoteSizeLabel(): void {
+  elements.maxNoteSizeMiBValue.textContent = `${elements.maxNoteSizeMiB.value} MiB`;
+}
+
+function populateScrollTimeouts(settings: ExtensionSettings): void {
+  elements.scrollIdleTimeoutSec.value = String(
+    settings.scrollIdleTimeoutSec ?? DEFAULT_SCROLL_IDLE_TIMEOUT_SEC
+  );
+  elements.scrollMaxTimeoutSec.value = String(
+    settings.scrollMaxTimeoutSec ?? DEFAULT_SCROLL_MAX_TIMEOUT_SEC
+  );
+  updateScrollTimeoutVisibility();
+}
+
+/**
+ * The deadlines only govern auto-scroll, so showing them while it is off would
+ * offer a control that does nothing (issue #449).
+ */
+function updateScrollTimeoutVisibility(): void {
+  setGroupVisible(elements.scrollTimeoutGroup, elements.enableAutoScroll.checked);
+}
+
 function updateCalloutSettingsVisibility(): void {
   setGroupVisible(elements.calloutSettingsGroup, elements.messageFormat.value === 'callout');
 }
@@ -404,6 +491,8 @@ function collectSettings(): ExtensionSettings {
     includeId: elements.includeId.checked,
     includeTitle: elements.includeTitle.checked,
     includeTags: elements.includeTags.checked,
+    conversationTags: parseTagList(elements.conversationTags.value, DEFAULT_CONVERSATION_TAGS),
+    deepResearchTags: parseTagList(elements.deepResearchTags.value, DEFAULT_DEEP_RESEARCH_TAGS),
     includeSource: elements.includeSource.checked,
     includeDates: elements.includeDates.checked,
     includeMessageCount: elements.includeMessageCount.checked,
@@ -431,10 +520,49 @@ function collectSettings(): ExtensionSettings {
     autoSyncPlatforms: ALL_PLATFORMS.filter(
       platform => elements.autoSyncPlatforms[platform].checked
     ),
+    ...collectLimits(),
+  };
+}
+
+/** The bounded numeric settings, each clamped to its own range. */
+function collectLimits(): Pick<
+  ExtensionSettings,
+  'scrollIdleTimeoutSec' | 'scrollMaxTimeoutSec' | 'maxNoteSizeMiB'
+> {
+  return {
+    scrollIdleTimeoutSec: parseIntInRange(
+      elements.scrollIdleTimeoutSec.value,
+      MIN_SCROLL_IDLE_TIMEOUT_SEC,
+      MAX_SCROLL_IDLE_TIMEOUT_SEC,
+      DEFAULT_SCROLL_IDLE_TIMEOUT_SEC
+    ),
+    scrollMaxTimeoutSec: parseIntInRange(
+      elements.scrollMaxTimeoutSec.value,
+      MIN_SCROLL_MAX_TIMEOUT_SEC,
+      MAX_SCROLL_MAX_TIMEOUT_SEC,
+      DEFAULT_SCROLL_MAX_TIMEOUT_SEC
+    ),
+    maxNoteSizeMiB: parseIntInRange(
+      elements.maxNoteSizeMiB.value,
+      MIN_NOTE_SIZE_MIB,
+      MAX_NOTE_SIZE_MIB,
+      DEFAULT_NOTE_SIZE_MIB
+    ),
   };
 }
 
 /** Parse the max-callout-lines input, clamping to a sane positive range. */
+/**
+ * Seconds from a number input: empty or unparseable falls back to the default,
+ * out of range is clamped rather than rejected, so Save is never blocked by a
+ * value the user can see and correct (ADR-032).
+ */
+function parseIntInRange(raw: string, min: number, max: number, fallback: number): number {
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(Math.max(n, min), max);
+}
+
 function parseCalloutLines(raw: string): number {
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n < 1) return DEFAULT_MAX_CALLOUT_LINES;

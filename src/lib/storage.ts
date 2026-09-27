@@ -6,58 +6,17 @@
  * - storage.sync: Non-sensitive settings - synced across devices
  */
 
-import type {
-  ExtensionSettings,
-  SecureSettings,
-  SyncSettings,
-  TemplateOptions,
-  OutputOptions,
-} from './types';
+import type { ExtensionSettings, SecureSettings, SyncSettings } from './types';
 import {
-  DEFAULT_OBSIDIAN_URL,
-  DEFAULT_MAX_CALLOUT_LINES,
-  DEFAULT_COMPANION_URL,
-} from './constants';
-
-const DEFAULT_TEMPLATE_OPTIONS: TemplateOptions = {
-  includeId: true,
-  includeTitle: true,
-  includeTags: true,
-  includeSource: true,
-  includeDates: true,
-  includeMessageCount: true,
-  messageFormat: 'callout',
-  userCalloutType: 'QUESTION',
-  assistantCalloutType: 'NOTE',
-  includeQuestionHeaders: false,
-  filenameScheme: 'title-id',
-};
-
-const DEFAULT_OUTPUT_OPTIONS: OutputOptions = {
-  obsidian: true, // Default true for backward compatibility
-  file: false,
-  clipboard: false,
-};
+  DEFAULT_TEMPLATE_OPTIONS,
+  DEFAULT_OUTPUT_OPTIONS,
+  DEFAULT_SYNC_SETTINGS,
+  normalizeSyncSettings,
+} from './settings-schema';
 
 const DEFAULT_SECURE_SETTINGS: SecureSettings = {
   obsidianApiKey: '',
   companionToken: '',
-};
-
-const DEFAULT_SYNC_SETTINGS: SyncSettings = {
-  obsidianUrl: DEFAULT_OBSIDIAN_URL,
-  vaultPath: 'AI/{platform}',
-  templateOptions: DEFAULT_TEMPLATE_OPTIONS,
-  outputOptions: DEFAULT_OUTPUT_OPTIONS,
-  enableAutoScroll: false,
-  enableAppendMode: false,
-  enableToolContent: false,
-  enableImageExport: true,
-  imageVaultPath: 'AI/{platform}/images',
-  flattenLargeCallouts: true,
-  maxCalloutLines: DEFAULT_MAX_CALLOUT_LINES,
-  companionUrl: DEFAULT_COMPANION_URL,
-  autoSyncPlatforms: ['claude', 'chatgpt'],
 };
 
 const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -80,39 +39,26 @@ export async function getSettings(): Promise<ExtensionSettings> {
 
     const stored = syncResult.settings ?? {};
 
-    // Migrate legacy obsidianPort → obsidianUrl
-    const obsidianUrl =
-      stored.obsidianUrl ??
-      (stored.obsidianPort
-        ? `http://127.0.0.1:${stored.obsidianPort}`
-        : DEFAULT_SYNC_SETTINGS.obsidianUrl);
+    // Schema-validate/normalize untrusted sync values (L-1): corrupted fields
+    // fall back to defaults; valid fields are preserved. Also resolves the
+    // legacy obsidianPort → obsidianUrl migration.
+    const sync = normalizeSyncSettings(stored);
 
-    // Scalar fields fall back to their defaults when absent.
-    const scalarKeys = [
-      'vaultPath',
-      'imageVaultPath',
-      'enableAutoScroll',
-      'enableAppendMode',
-      'enableToolContent',
-      'enableImageExport',
-      'flattenLargeCallouts',
-      'maxCalloutLines',
-      'companionUrl',
-      'autoSyncPlatforms',
-    ] as const;
-    const scalars = Object.fromEntries(
-      scalarKeys.map(key => [key, stored[key] ?? DEFAULT_SYNC_SETTINGS[key]])
-    ) as Pick<SyncSettings, (typeof scalarKeys)[number]>;
+    // API key lives in local storage after migration. Before migration
+    // completes (fire-and-forget on worker startup), fall back to the legacy
+    // sync location so an early request is not misread as "key not set" (L-2).
+    const obsidianApiKey =
+      localResult.secureSettings?.obsidianApiKey ||
+      (typeof stored.obsidianApiKey === 'string' ? stored.obsidianApiKey : '') ||
+      DEFAULT_SECURE_SETTINGS.obsidianApiKey;
+
+    const companionToken =
+      localResult.secureSettings?.companionToken ?? DEFAULT_SECURE_SETTINGS.companionToken;
 
     return {
-      obsidianApiKey:
-        localResult.secureSettings?.obsidianApiKey ?? DEFAULT_SECURE_SETTINGS.obsidianApiKey,
-      companionToken:
-        localResult.secureSettings?.companionToken ?? DEFAULT_SECURE_SETTINGS.companionToken,
-      obsidianUrl,
-      templateOptions: { ...DEFAULT_TEMPLATE_OPTIONS, ...stored.templateOptions },
-      outputOptions: { ...DEFAULT_OUTPUT_OPTIONS, ...stored.outputOptions },
-      ...scalars,
+      obsidianApiKey,
+      companionToken,
+      ...sync,
     };
   } catch (error) {
     console.error('[G2O] Failed to get settings:', error);
@@ -126,6 +72,24 @@ export async function getSettings(): Promise<ExtensionSettings> {
  * Separates secure settings (API Key) to local storage
  * and non-sensitive settings to sync storage.
  */
+/** Scalar settings copied to sync storage verbatim (the structured ones merge). */
+const PASS_THROUGH_KEYS = [
+  'obsidianUrl',
+  'vaultPath',
+  'imageVaultPath',
+  'enableAutoScroll',
+  'enableAppendMode',
+  'enableToolContent',
+  'enableImageExport',
+  'flattenLargeCallouts',
+  'scrollIdleTimeoutSec',
+  'scrollMaxTimeoutSec',
+  'maxCalloutLines',
+  'maxNoteSizeMiB',
+  'companionUrl',
+  'autoSyncPlatforms',
+] as const;
+
 export async function saveSettings(settings: Partial<ExtensionSettings>): Promise<void> {
   try {
     // Read sync storage once upfront (replaces separate getSettings() + sync.get calls)
@@ -154,19 +118,6 @@ export async function saveSettings(settings: Partial<ExtensionSettings>): Promis
     // Save non-sensitive data to sync storage. Simple scalar fields pass
     // through directly; templateOptions/outputOptions merge with defaults.
     const syncData: Partial<SyncSettings> = {};
-    const PASS_THROUGH_KEYS = [
-      'obsidianUrl',
-      'vaultPath',
-      'imageVaultPath',
-      'enableAutoScroll',
-      'enableAppendMode',
-      'enableToolContent',
-      'enableImageExport',
-      'flattenLargeCallouts',
-      'maxCalloutLines',
-      'companionUrl',
-      'autoSyncPlatforms',
-    ] as const;
     for (const key of PASS_THROUGH_KEYS) {
       if (settings[key] !== undefined) {
         (syncData[key] as SyncSettings[typeof key]) = settings[key] as SyncSettings[typeof key];

@@ -5,6 +5,8 @@ import {
   buildAppendContent,
 } from '../../src/lib/append-utils';
 import type { ObsidianNote, ExtensionSettings, NoteFrontmatter } from '../../src/lib/types';
+import { SCAN_MAX_REQUESTS } from '../../src/lib/constants';
+import { applyLineEnding } from '../../src/lib/frontmatter-parser';
 
 // ========== extractIdSuffix ==========
 
@@ -190,7 +192,7 @@ describe('lookupExistingFile', () => {
       'AI/claude/2026/06/my-chat-abc12345.md', // resolvedPath = full path with date
       'AI/claude/2026/06', // resolvedPath dir
       testNote,
-      'AI/claude' // searchBasePath = template stripped of date variables
+      { searchBasePath: 'AI/claude' } // template stripped of date variables
     );
 
     expect(result.found).toBe(true);
@@ -211,7 +213,7 @@ describe('lookupExistingFile', () => {
       'AI/claude/my-chat-abc12345.md',
       'AI/claude',
       testNote,
-      'AI/claude' // identical to resolvedPath
+      { searchBasePath: 'AI/claude' } // identical to resolvedPath
     );
 
     expect(result.found).toBe(true);
@@ -230,7 +232,7 @@ describe('lookupExistingFile', () => {
       'AI/claude/2026/06/my-chat-abc12345.md',
       'AI/claude/2026/06',
       testNote,
-      'AI/claude'
+      { searchBasePath: 'AI/claude' }
     );
 
     expect(result.found).toBe(false);
@@ -250,12 +252,235 @@ describe('lookupExistingFile', () => {
       'AI/claude/2026/06/my-chat-abc12345.md',
       'AI/claude/2026/06',
       testNote,
-      'AI/claude'
+      { searchBasePath: 'AI/claude' }
     );
 
     // getFile must have been called exactly once (the direct check at step 1).
     expect(mockClient.getFile).toHaveBeenCalledTimes(1);
     expect(result.found).toBe(false);
+  });
+
+  // ----- filenameScheme: 'title-date' -----
+  // The file name embeds the SAVE date, not the conversation id, so a note
+  // re-saved on a later day has neither a matching direct path nor a usable
+  // id suffix. Without a scheme-aware scan every day produces a duplicate note.
+
+  it('finds a file saved on an earlier day when the scheme is title-date', async () => {
+    const existingContent = '---\nid: claude_abc-def-123\n---\nBody';
+    const dateNote = createTestNote({
+      fileName: 'my-chat-2026-07-10.md',
+      frontmatter: createTestFrontmatter({ id: 'claude_abc-def-123' }),
+    });
+
+    mockClient.getFile.mockResolvedValueOnce(null); // direct miss: today's name
+    mockClient.listFiles.mockResolvedValue(['my-chat-2026-07-03.md', 'unrelated-2026-07-05.md']);
+    mockClient.getFile.mockResolvedValueOnce(existingContent);
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/my-chat-2026-07-10.md',
+      'AI/claude',
+      dateNote,
+      { filenameScheme: 'title-date' }
+    );
+
+    expect(result.found).toBe(true);
+    expect(result.matchType).toBe('id-scan');
+    expect(result.path).toBe('AI/claude/my-chat-2026-07-03.md');
+  });
+
+  it('does not match a foreign conversation when the scheme is title-date', async () => {
+    const dateNote = createTestNote({
+      fileName: 'my-chat-2026-07-10.md',
+      frontmatter: createTestFrontmatter({ id: 'claude_abc-def-123' }),
+    });
+
+    mockClient.getFile.mockResolvedValueOnce(null); // direct miss
+    mockClient.listFiles.mockResolvedValue(['someone-elses-2026-07-03.md']);
+    mockClient.getFile.mockResolvedValueOnce('---\nid: claude_other-id\n---\nBody');
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/my-chat-2026-07-10.md',
+      'AI/claude',
+      dateNote,
+      { filenameScheme: 'title-date' }
+    );
+
+    expect(result.found).toBe(false);
+    expect(result.matchType).toBe('none');
+  });
+
+  it('finds a title-date file in a previous month folder (recursive scan)', async () => {
+    const existingContent = '---\nid: claude_abc-def-123\n---\nBody';
+    const dateNote = createTestNote({
+      fileName: 'my-chat-2026-07-10.md',
+      frontmatter: createTestFrontmatter({ id: 'claude_abc-def-123' }),
+    });
+
+    mockClient.getFile.mockResolvedValueOnce(null); // direct miss
+    mockClient.listEntries.mockResolvedValueOnce(['2026/']);
+    mockClient.listEntries.mockResolvedValueOnce(['06/', '07/']);
+    mockClient.listEntries.mockResolvedValueOnce(['my-chat-2026-06-28.md']); // June
+    mockClient.listEntries.mockResolvedValueOnce([]); // July, still empty
+    mockClient.getFile.mockResolvedValueOnce(existingContent);
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/2026/07/my-chat-2026-07-10.md',
+      'AI/claude/2026/07',
+      dateNote,
+      { searchBasePath: 'AI/claude', filenameScheme: 'title-date' }
+    );
+
+    expect(result.found).toBe(true);
+    expect(result.path).toBe('AI/claude/2026/06/my-chat-2026-06-28.md');
+  });
+
+  // ----- Request budget -----
+
+  // ===== miss diagnostics (issue #365) =====
+  //
+  // When append mode finds nothing, the save path forks a new note. Three
+  // rounds of correspondence on #365 failed to pin down which negative had
+  // occurred, because every one of them produced the same silent `found:
+  // false`. These pin the reason down without changing any behaviour.
+
+  it('reports missReason no-candidate-suffix when the file name carries no id suffix', async () => {
+    const noSuffix = createTestNote({
+      fileName: 'conversation.md',
+      frontmatter: createTestFrontmatter({ id: 'claude_abc-def-123' }),
+    });
+    mockClient.getFile.mockResolvedValue(null);
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/conversation.md',
+      'AI/claude',
+      noSuffix
+    );
+
+    expect(result.found).toBe(false);
+    expect(result.missReason).toBe('no-candidate-suffix');
+    expect(mockClient.listFiles).not.toHaveBeenCalled();
+  });
+
+  it('reports missReason empty-directory when the listing comes back empty', async () => {
+    // listEntries maps a 404 to [] (obsidian-api.ts), so "the folder is gone",
+    // "the folder is empty" and "the request failed" are indistinguishable to
+    // the scan — worth separating from "the folder had files, none matched".
+    mockClient.getFile.mockResolvedValue(null);
+    mockClient.listFiles.mockResolvedValue([]);
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/my-chat-abc12345.md',
+      'AI/claude',
+      testNote
+    );
+
+    expect(result.found).toBe(false);
+    expect(result.missReason).toBe('empty-directory');
+  });
+
+  it('reports missReason no-candidate-file when the folder holds no same-suffix file', async () => {
+    mockClient.getFile.mockResolvedValue(null);
+    mockClient.listFiles.mockResolvedValue(['unrelated-file.md', 'another-note-99999999.md']);
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/my-chat-abc12345.md',
+      'AI/claude',
+      testNote
+    );
+
+    expect(result.found).toBe(false);
+    expect(result.missReason).toBe('no-candidate-file');
+  });
+
+  it('reports missReason candidate-id-mismatch when a same-suffix file holds another conversation', async () => {
+    mockClient.listFiles.mockResolvedValue(['other-chat-abc12345.md']);
+    mockClient.getFile.mockImplementation((path: string) =>
+      Promise.resolve(
+        path === 'AI/claude/other-chat-abc12345.md'
+          ? '---\nid: claude_someone-else\n---\nBody'
+          : null
+      )
+    );
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/my-chat-abc12345.md',
+      'AI/claude',
+      testNote
+    );
+
+    expect(result.found).toBe(false);
+    expect(result.missReason).toBe('candidate-id-mismatch');
+  });
+
+  it('records what the direct-path probe saw when it holds a different conversation', async () => {
+    mockClient.listFiles.mockResolvedValue([]);
+    mockClient.getFile.mockResolvedValue('---\nid: claude_someone-else\n---\nBody');
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/my-chat-abc12345.md',
+      'AI/claude',
+      testNote
+    );
+
+    expect(result.found).toBe(false);
+    expect(result.directProbe).toEqual({
+      state: 'different-id',
+      foundId: 'claude_someone-else',
+    });
+  });
+
+  it('records an empty direct-path file as empty rather than as another conversation', async () => {
+    // A 0-byte note is a legitimate 200 with an empty body, not evidence that
+    // someone else owns the name.
+    mockClient.listFiles.mockResolvedValue([]);
+    mockClient.getFile.mockResolvedValue('');
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/my-chat-abc12345.md',
+      'AI/claude',
+      testNote
+    );
+
+    expect(result.found).toBe(false);
+    expect(result.directProbe).toEqual({ state: 'empty' });
+  });
+
+  it('stops scanning once the request budget is exhausted', async () => {
+    const dateNote = createTestNote({
+      fileName: 'my-chat-2026-07-10.md',
+      frontmatter: createTestFrontmatter({ id: 'claude_abc-def-123' }),
+    });
+
+    // Far more candidates than the budget allows; none of them match.
+    const candidates = Array.from(
+      { length: SCAN_MAX_REQUESTS + 50 },
+      (_, i) => `note-${i}-2026-07-01.md`
+    );
+    mockClient.getFile.mockResolvedValue(null);
+    mockClient.listFiles.mockResolvedValue(candidates);
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/my-chat-2026-07-10.md',
+      'AI/claude',
+      dateNote,
+      { filenameScheme: 'title-date' }
+    );
+
+    expect(result.found).toBe(false);
+    // The direct-path GET plus at most the budgeted scan requests.
+    expect(mockClient.getFile.mock.calls.length).toBeLessThanOrEqual(SCAN_MAX_REQUESTS + 1);
+    // …and it must not have walked the whole candidate list.
+    expect(mockClient.getFile.mock.calls.length).toBeLessThan(candidates.length);
   });
 });
 
@@ -288,6 +513,70 @@ describe('buildAppendContent', () => {
   it('returns null when existing content has no frontmatter', () => {
     const result = buildAppendContent('No frontmatter here', testNote, testSettings);
     expect(result).toBeNull();
+  });
+
+  // ADR-029 / ADR-025 style: a note whose body ends inside a fenced code block
+  // is the one shape that can make the count wrong in a way that produces no
+  // other signal — an overcount returns null here and the caller reports a
+  // successful no-op. Name it, so a field report is actionable.
+  describe('unterminated code fence diagnostic', () => {
+    const F3 = '`'.repeat(3);
+
+    function existingWith(bodyLines: readonly string[]): string {
+      return [
+        '---',
+        'id: claude_test',
+        'message_count: 2',
+        'modified: "2026-01-01"',
+        '---',
+        ...bodyLines,
+      ].join('\n');
+    }
+
+    it('reports the open fence when the body ends inside a code block', () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const existing = existingWith([
+        '> [!QUESTION] User',
+        '> Hello',
+        '',
+        '> [!NOTE] Claude',
+        '> Here:',
+        '',
+        `${F3}markdown`,
+        'unterminated',
+      ]);
+
+      buildAppendContent(existing, testNote, testSettings);
+
+      expect(info).toHaveBeenCalledWith(
+        '[G2O] Existing note body ends inside a fenced code block',
+        expect.objectContaining({
+          id: testNote.frontmatter.id,
+          fence: { char: '`', length: 3 },
+        })
+      );
+      info.mockRestore();
+    });
+
+    it('stays quiet when every fence is closed', () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const existing = existingWith([
+        '> [!QUESTION] User',
+        '> Hello',
+        '',
+        '> [!NOTE] Claude',
+        '> Here:',
+        '',
+        `${F3}markdown`,
+        'closed',
+        F3,
+      ]);
+
+      buildAppendContent(existing, testNote, testSettings);
+
+      expect(info).not.toHaveBeenCalled();
+      info.mockRestore();
+    });
   });
 
   it('returns null when existing body has no detectable messages', () => {
@@ -345,6 +634,68 @@ describe('buildAppendContent', () => {
     // Preserves existing content
     expect(result!.content).toContain('> Hello');
     expect(result!.content).toContain('> Hi there!');
+  });
+
+  // ===== line endings (issue #365) =====
+  //
+  // An append must not rewrite the line endings of a file the user (or their
+  // tooling) maintains as CRLF. Normalising for processing is fine; writing the
+  // normalised form back is not — it would touch every line of a file we were
+  // only asked to add to.
+
+  it('reports the file CRLF ending instead of restoring it early (#406)', () => {
+    // The restore moved to the write site: the caller may still transform the
+    // body (callout flattening), and every such transform is written against
+    // LF (ADR-026). Restoring here handed flattening lines ending in '\r',
+    // whose header pattern then failed to match — dropping the callout label
+    // and, with it, the message's visibility to countExistingMessages().
+    // The end-to-end guarantee (the written file stays CRLF) is asserted in
+    // test/background/index.test.ts, which covers the flatten step too.
+    const existingLines = [
+      '---',
+      'id: claude_test',
+      'message_count: 2',
+      'modified: "2026-01-01T00:00:00.000Z"',
+      '---',
+      '> [!QUESTION] User',
+      '> Hello',
+      '',
+      '> [!NOTE] Claude',
+      '> Hi there!',
+    ];
+    const existing = existingLines.join('\r\n');
+
+    const result = buildAppendContent(existing, testNote, testSettings);
+
+    expect(result).not.toBeNull();
+    expect(result!.messagesAppended).toBe(2);
+    // The file's own ending is reported, not applied.
+    expect(result!.eol).toBe('\r\n');
+    expect(result!.content).not.toContain('\r');
+    expect(result!.content).toContain('New question');
+    // Applying it reproduces the byte-preservation guarantee of #365.
+    const written = applyLineEnding(result!.content, result!.eol);
+    expect(written).not.toMatch(/(?<!\r)\n/);
+    expect(written).toContain(['> [!QUESTION] User', '> Hello'].join('\r\n'));
+  });
+
+  it('keeps an LF file on LF', () => {
+    const existing = [
+      '---',
+      'id: claude_test',
+      'message_count: 2',
+      '---',
+      '> [!QUESTION] User',
+      '> Hello',
+      '',
+      '> [!NOTE] Claude',
+      '> Hi there!',
+    ].join('\n');
+
+    const result = buildAppendContent(existing, testNote, testSettings);
+
+    expect(result).not.toBeNull();
+    expect(result!.content).not.toContain('\r');
   });
 
   it('updates modified timestamp in frontmatter', () => {
@@ -527,3 +878,56 @@ function createTestSettings(): ExtensionSettings {
     enableAppendMode: true,
   };
 }
+
+describe('buildAppendContent — frontmatter tags stay as the user left them (issue #493)', () => {
+  it('appends new messages without touching an existing tags block that differs from the setting', () => {
+    const existing = [
+      '---',
+      'id: claude_test-id',
+      'tags:',
+      '  - my/own-tag',
+      '  - hand-edited',
+      'message_count: 2',
+      'modified: "2026-01-01"',
+      '---',
+      '> [!QUESTION] User',
+      '> Hello',
+      '',
+      '> [!NOTE] Claude',
+      '> Hi there!',
+    ].join('\n');
+
+    const note = createTestNote({
+      frontmatter: createTestFrontmatter({ tags: ['ai/chat', 'claude'], message_count: 4 }),
+      body: [
+        '> [!QUESTION] User',
+        '> Hello',
+        '',
+        '> [!NOTE] Claude',
+        '> Hi there!',
+        '',
+        '> [!QUESTION] User',
+        '> Second question',
+        '',
+        '> [!NOTE] Claude',
+        '> Second answer',
+      ].join('\n'),
+    });
+    const settings = {
+      ...createTestSettings(),
+      templateOptions: {
+        ...createTestSettings().templateOptions,
+        conversationTags: ['ai/chat', '{platform}'],
+      },
+    };
+
+    const result = buildAppendContent(existing, note, settings);
+
+    expect(result).not.toBeNull();
+    expect(result!.messagesAppended).toBe(2);
+    expect(result!.content).toContain('tags:\n  - my/own-tag\n  - hand-edited\n');
+    expect(result!.content).not.toContain('ai/chat');
+    expect(result!.content).toContain('message_count: 4');
+    expect(result!.content).toContain('Second answer');
+  });
+});

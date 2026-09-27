@@ -12,13 +12,12 @@ import type { SelectorGroup, ComputedSelectors } from './types';
  * CSS Selectors for normal chat extraction
  */
 export const SELECTORS = {
-  // Conversation block selectors (each message block)
-  // Stability: HIGH → LOW order for fallback
-  conversationBlock: [
-    '.group[style*="height: auto"]', // Structure-based (HIGH)
-    '[data-test-render-count]', // Test attribute (LOW)
-    '.group', // Generic (MEDIUM)
-  ],
+  // NOTE: a conversationBlock group used to live here. It was removed in
+  // 2026-08 (issue #446): nothing in the extractor ever queried it — messages
+  // are found through userMessage / assistantResponse — while its primary
+  // (`.group[style*="height: auto"]`) became unmatchable when Claude stopped
+  // writing that inline style, which blocked the whole platform baseline. A
+  // selector no code reads is a contract obligation with no payoff.
 
   // User message content selectors
   //
@@ -27,20 +26,27 @@ export const SELECTORS = {
   // in a single extracted message (see issue #200).
   // Legacy selectors remain as fallbacks for older Claude DOM variants
   // that did not expose [data-testid="user-message"].
+  //
+  // 2026-08: two fallbacks dropped, both measured at zero on the live pages.
+  // `.bg-bg-300 p` — Claude removed the bg-bg-300 token outright (the user
+  // bubble is now `.bg-neutral-30 dark:…bg-surface-3 .rounded-xl`).
+  // `[class*="user-message"]` — the turn is identified by the data-testid
+  // attribute, not by a class; the `!font-user-message` class that made this
+  // substring match work disappeared a day after bg-bg-300 did. Chasing either
+  // token would only buy the next rename.
   userMessage: [
     '[data-testid="user-message"]', // Grid container (HIGH)
-    '[class*="user-message"]', // Partial match (MEDIUM)
     '.whitespace-pre-wrap.break-words', // Legacy inner <p> (LOW fallback)
-    '.bg-bg-300 p', // Legacy structural fallback (LOW)
   ],
 
-  // User message wrapper (for date extraction)
-  // 2026-07: py-2.5 became py-[var(--msg-bubble-py,...)] on the live site,
-  // killing the old .pl-2.5.py-2.5 primary (baseline contract caught it)
-  userWrapper: [
-    '.bg-bg-300.rounded-xl', // Style composite (HIGH)
-    '.bg-bg-300', // Tailwind (MEDIUM)
-    '[class*="bg-bg-300"]', // Partial match (MEDIUM)
+  // The virtual-row wrapper of one conversation turn.
+  //
+  // Read by isInDismissedPanel() to tell a real turn from a dismissed Deep
+  // Research / Artifact panel: turns live inside a row, the artifact panel does
+  // not (measured live 2026-08-16). Also the accumulation key for virtualized
+  // scrolling, where its numeric value is the conversation order.
+  conversationRow: [
+    '[data-index]', // Virtual row (HIGH)
   ],
 
   // Assistant response selectors
@@ -58,21 +64,34 @@ export const SELECTORS = {
     '[class*="markdown"]', // Partial match (MEDIUM)
   ],
 
-  // Date selectors
-  messageDate: [
-    'span[data-state="closed"]', // Functional attribute (MEDIUM)
-    '.text-text-500.text-xs', // Tailwind (MEDIUM)
-    '[class*="text-text-500"]', // Partial match (LOW)
-  ],
+  // NOTE (2026-08): `userWrapper` and `messageDate` used to live here. No code
+  // ever read either of them — Claude date extraction was never implemented —
+  // yet the live selector suite validates every declared group, so when Claude
+  // dropped the `bg-bg-300` and `.text-text-500.text-xs` classes the run failed
+  // over selectors nothing consumes. Declare them again only alongside the code
+  // that reads them, measured against the DOM of that day.
 
   // Scroll container for virtualized-conversation auto-scroll (ADR-017).
   // Claude windows/evicts turns; this is the overflow-y-auto element that
-  // scrolls the message list (observed live 2026-07: the div also carries
-  // overflow-x-hidden, flex-1, and [scrollbar-gutter:stable]).
+  // scrolls the message list.
+  //
+  // 2026-09 (issue #499): the container was found by its overflow classes
+  // alone (`.overflow-y-auto.overflow-x-hidden.flex-1`). Claude's redesigned
+  // left sidebar (`dframe-nav-scroll`) now carries the same three classes,
+  // precedes the thread in document order, and is itself scrollable — so the
+  // first match was the sidebar, auto-scroll scrolled the wrong element, and
+  // only the initially mounted tail of the conversation was exported (a
+  // 22-message thread came out as 7). ChatGPT's nav caused the identical
+  // failure in 2026-07, which is why that platform anchors on
+  // `[data-scroll-root]`. The thread scroller is the only element carrying
+  // `data-autoscroll-container` (measured live 2026-09-12: 1 match, holding
+  // every `[data-index]` row), so anchor on that. The class-based fallback
+  // keeps a `:has([data-index])` guard: a fallback that resolves to the
+  // sidebar is worse than none, and the two looser class selectors that used
+  // to sit below it resolved there first, so they are gone.
   scrollContainer: [
-    '.overflow-y-auto.overflow-x-hidden.flex-1', // Composite (HIGH)
-    '.overflow-y-auto.overflow-x-hidden', // Style pair (MEDIUM)
-    'div[class*="overflow-y-auto"]', // Partial match (LOW)
+    '[data-autoscroll-container]', // Semantic scroll root (HIGH)
+    '.overflow-y-auto.overflow-x-hidden.flex-1:has([data-index])', // Classes, thread-only (MEDIUM)
   ],
 } as const satisfies SelectorGroup;
 
@@ -89,10 +108,11 @@ export const DEEP_RESEARCH_SELECTORS = {
   ],
 
   // Report title
+  // 2026-08: `h1.text-text-100` dropped — text-text-100 survives elsewhere in
+  // the DOM but no longer lands on an h1, so the pairing can never match.
   title: [
     '#markdown-artifact h1', // Structure (HIGH)
     '.standard-markdown h1', // Structure (HIGH)
-    'h1.text-text-100', // Tailwind (MEDIUM)
     'h1', // Generic (LOW)
   ],
 
@@ -117,4 +137,6 @@ export const DEEP_RESEARCH_SELECTORS = {
  */
 export const JOINED_SELECTORS = {
   inlineCitation: DEEP_RESEARCH_SELECTORS.inlineCitation.join(', '),
+  // For `closest()`: "is this element inside an assistant response?"
+  assistantResponse: SELECTORS.assistantResponse.join(', '),
 } as const satisfies ComputedSelectors;

@@ -1,7 +1,7 @@
-Save your AI conversations from Gemini, Claude, ChatGPT, Perplexity, and NotebookLM to Obsidian with one click.
+Save your AI conversations from Gemini, Claude, ChatGPT, Perplexity, and Gemini Notebook to Obsidian with one click.
 
 🎯 WHAT IT DOES
-This extension extracts conversations from Google Gemini (gemini.google.com), Claude AI (claude.ai), ChatGPT (chatgpt.com), Perplexity (www.perplexity.ai), and NotebookLM (notebooklm.google.com) and exports them as beautifully formatted Markdown notes.
+This extension extracts conversations from Google Gemini (gemini.google.com), Claude AI (claude.ai), ChatGPT (chatgpt.com), Perplexity (www.perplexity.ai), and Gemini Notebook / formerly NotebookLM (notebook.google.com) and exports them as beautifully formatted Markdown notes.
 
 ☕ THREE EXPORT OPTIONS
 • Obsidian: Send directly to your vault via Local REST API plugin
@@ -9,25 +9,34 @@ This extension extracts conversations from Google Gemini (gemini.google.com), Cl
 • Clipboard: Copy formatted Markdown to paste anywhere
 
 ✨ KEY FEATURES
-• One-click export from Gemini, Claude, ChatGPT, Perplexity, and NotebookLM conversations
+• One-click export from Gemini, Claude, ChatGPT, Perplexity, and Gemini Notebook conversations
+• Sync-status badge - a ✓ / ! / × mark stays on the button after each sync; click it for the file name, per-destination results, and when it ran
 • Clean Markdown formatting with YAML frontmatter
 • Obsidian callout syntax for Q&A blocks (shows correct AI name)
 • Deep Research support (Gemini, Perplexity) and Extended Thinking/Artifacts (Claude)
+• Source citations - Gemini Notebook chat citations exported as footnotes
+• Image export - Gemini and ChatGPT generated images embedded in your vault, downloaded as files, or stripped for clipboard
 • Configurable timezone for frontmatter dates
 • LaTeX math formula preservation ($$...$$ and $...$) across all platforms
+• Nested code blocks - a code block inside a code block exports intact
 • Web search results saved as collapsible callouts (Claude)
 • Append mode - only new messages are added to existing notes
 • Optional `## ` question headers for TOC navigation in long conversations
-• Auto-scroll for long Gemini conversations
+• Auto-scroll for long conversations, including virtualized (windowed) Claude and ChatGPT threads - with configurable timeouts and note size cap
+• Filename schemes - choose title-id (default) or title-date naming, with collision-safe overwrite protection that also refuses to replace a complete note with a partial one
+• Large-callout flattening - very long messages are saved as plain text so Obsidian stays responsive
 • Platform organization with {platform} template variable
+• Configurable frontmatter tags - rename or drop the default tags to match the ones your vault already uses, with a {platform} token
 • HTTPS support for secure connections to Obsidian REST API
 • Customizable API URL, save location, message format, and frontmatter fields
 • English and Japanese UI support
-• Works entirely offline - no external servers
+• No account, no sign-up, no cloud service required
 
 🔒 PRIVACY FIRST
 • All processing happens locally on your device
-• No data is sent to external servers
+• No analytics, no telemetry, no data collection - conversations are processed and saved to your own device only
+• Your conversations go only to your own Obsidian vault
+• Image export downloads pictures only from the host the AI page already loads them from (Google's image CDN for Gemini, chatgpt.com for ChatGPT)
 • API key stored securely in local storage only
 • Open source: https://github.com/sho7650/obsidian-AI-exporter
 
@@ -39,7 +48,8 @@ For Obsidian integration:
 File download and clipboard options work without any setup.
 
 🚀 HOW TO USE
-1. Open any conversation on gemini.google.com, claude.ai, chatgpt.com, www.perplexity.ai, or notebooklm.google.com
+
+1. Open any conversation on gemini.google.com, claude.ai, chatgpt.com, www.perplexity.ai, or notebook.google.com
 2. Click the purple "Sync" button (appears on the page)
 3. Choose your export method: Obsidian, File, or Clipboard
 4. Done! Your conversation is saved as Markdown

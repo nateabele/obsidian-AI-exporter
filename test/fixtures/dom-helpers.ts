@@ -74,59 +74,23 @@ export function createGeminiConversationDOM(messages: ConversationMessage[]): st
 }
 
 /**
- * Set window.location for Gemini URL testing
+ * Point `window.location` at `{protocol}//{hostname}{pathname}`.
+ *
+ * jsdom's location is not assignable, so it is replaced wholesale. Every
+ * `set*Location` helper below and `resetLocation()` build on this one so that
+ * href, origin and host are always derived the same way — each helper used to
+ * hand-write all three, and a slip in one surfaced as an extractor failure.
+ * The fields are the ones the extractors read.
  */
-export function setGeminiLocation(conversationId: string): void {
-  Object.defineProperty(window, 'location', {
-    value: {
-      hostname: 'gemini.google.com',
-      pathname: `/app/${conversationId}`,
-      href: `https://gemini.google.com/app/${conversationId}`,
-      origin: 'https://gemini.google.com',
-      protocol: 'https:',
-      host: 'gemini.google.com',
-      search: '',
-      hash: '',
-    },
-    writable: true,
-    configurable: true,
-  });
-}
-
-/**
- * Set window.location for a Gemini Gem conversation.
- * Gem URLs have TWO path segments: /gem/{gemId}/{conversationId};
- * a freshly opened Gem chat sits at /gem/{gemId} (pass conversationId='').
- */
-export function setGeminiGemLocation(gemId: string, conversationId = ''): void {
-  const pathname = conversationId ? `/gem/${gemId}/${conversationId}` : `/gem/${gemId}`;
-  Object.defineProperty(window, 'location', {
-    value: {
-      hostname: 'gemini.google.com',
-      pathname,
-      href: `https://gemini.google.com${pathname}`,
-      origin: 'https://gemini.google.com',
-      protocol: 'https:',
-      host: 'gemini.google.com',
-      search: '',
-      hash: '',
-    },
-    writable: true,
-    configurable: true,
-  });
-}
-
-/**
- * Set window.location for non-Gemini URL
- */
-export function setNonGeminiLocation(hostname: string, pathname = '/'): void {
+export function defineLocation(hostname: string, pathname = '/', protocol = 'https:'): void {
+  const origin = `${protocol}//${hostname}`;
   Object.defineProperty(window, 'location', {
     value: {
       hostname,
       pathname,
-      href: `https://${hostname}${pathname}`,
-      origin: `https://${hostname}`,
-      protocol: 'https:',
+      href: `${origin}${pathname}`,
+      origin,
+      protocol,
       host: hostname,
       search: '',
       hash: '',
@@ -137,23 +101,38 @@ export function setNonGeminiLocation(hostname: string, pathname = '/'): void {
 }
 
 /**
- * Reset window.location to default
+ * Set window.location for Gemini URL testing
+ */
+export function setGeminiLocation(conversationId: string): void {
+  defineLocation('gemini.google.com', `/app/${conversationId}`);
+}
+
+/**
+ * Set window.location for a Gemini Gem conversation.
+ * Gem URLs have TWO path segments: /gem/{gemId}/{conversationId};
+ * a freshly opened Gem chat sits at /gem/{gemId} (pass conversationId='').
+ */
+export function setGeminiGemLocation(gemId: string, conversationId = ''): void {
+  const pathname = conversationId ? `/gem/${gemId}/${conversationId}` : `/gem/${gemId}`;
+  defineLocation('gemini.google.com', pathname);
+}
+
+/**
+ * Set window.location to a host that is NOT Gemini (security testing).
+ *
+ * A named helper rather than a bare defineLocation() call: the tests using it
+ * assert hostname validation against subdomain attacks, and the name is what
+ * says so at the call site.
+ */
+export function setNonGeminiLocation(hostname: string, pathname = '/'): void {
+  defineLocation(hostname, pathname);
+}
+
+/**
+ * Reset window.location to jsdom's default
  */
 export function resetLocation(): void {
-  Object.defineProperty(window, 'location', {
-    value: {
-      hostname: 'localhost',
-      pathname: '/',
-      href: 'http://localhost/',
-      origin: 'http://localhost',
-      protocol: 'http:',
-      host: 'localhost',
-      search: '',
-      hash: '',
-    },
-    writable: true,
-    configurable: true,
-  });
+  defineLocation('localhost', '/', 'http:');
 }
 
 /**
@@ -428,7 +407,7 @@ export function createClaudeConversationDOM(messages: ClaudeConversationMessage[
         <div data-test-render-count="2" class="group" style="height: auto;">
           <div class="bg-bg-300 rounded-xl pl-2.5 py-2.5">
             <div data-testid="user-message">
-              <p class="whitespace-pre-wrap break-words">${escapeHtmlForClaude(msg.content)}</p>
+              <p class="whitespace-pre-wrap break-words">${escapeHtml(msg.content)}</p>
             </div>
             <span class="text-text-500 text-xs" data-state="closed">Dec 6, 2025</span>
           </div>
@@ -480,7 +459,7 @@ export function createClaudeDeepResearchDOM(
   return `
     <div id="markdown-artifact" class="font-claude-response">
       <div class="standard-markdown">
-        <h1 class="text-text-100">${escapeHtmlForClaude(title)}</h1>
+        <h1 class="text-text-100">${escapeHtml(title)}</h1>
         ${contentWithCitations}
       </div>
     </div>
@@ -489,46 +468,19 @@ export function createClaudeDeepResearchDOM(
 
 /**
  * Set window.location for Claude URL testing
- *
- * @param conversationId UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
  */
 export function setClaudeLocation(conversationId: string): void {
-  Object.defineProperty(window, 'location', {
-    value: {
-      hostname: 'claude.ai',
-      pathname: `/chat/${conversationId}`,
-      href: `https://claude.ai/chat/${conversationId}`,
-      origin: 'https://claude.ai',
-      protocol: 'https:',
-      host: 'claude.ai',
-      search: '',
-      hash: '',
-    },
-    writable: true,
-    configurable: true,
-  });
+  defineLocation('claude.ai', `/chat/${conversationId}`);
 }
 
 /**
- * Set window.location for non-Claude URL (security testing)
+ * Set window.location to a host that is NOT Claude (security testing).
  *
- * Used to test hostname validation against subdomain attacks
+ * Used by the archive tests to assert an adapter refuses a platform it does
+ * not support.
  */
 export function setNonClaudeLocation(hostname: string, pathname = '/'): void {
-  Object.defineProperty(window, 'location', {
-    value: {
-      hostname,
-      pathname,
-      href: `https://${hostname}${pathname}`,
-      origin: `https://${hostname}`,
-      protocol: 'https:',
-      host: hostname,
-      search: '',
-      hash: '',
-    },
-    writable: true,
-    configurable: true,
-  });
+  defineLocation(hostname, pathname);
 }
 
 /**
@@ -542,7 +494,7 @@ export function createClaudeInlineCitation(url: string, title: string): string {
   return `
     <span class="inline-flex">
       <a href="${url}" target="_blank" rel="noopener">
-        <span class="text-text-300">${escapeHtmlForClaude(title)}</span>
+        <span class="text-text-300">${escapeHtml(title)}</span>
       </a>
     </span>
   `;
@@ -591,15 +543,6 @@ export function createEmptyClaudeDeepResearchPanel(): string {
       </div>
     </div>
   `;
-}
-
-/**
- * Escape HTML entities for Claude DOM helpers
- */
-function escapeHtmlForClaude(text: string): string {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
 }
 
 /**
@@ -656,7 +599,7 @@ function createClaudeToolUseBlock(options: ToolUseGridOptions): string {
                     <div class="flex-1 min-w-0">
                       <button class="group/row flex flex-row items-center rounded-lg px-2.5 w-full justify-between text-text-300 !cursor-default">
                         <div class="flex flex-row items-center gap-2 min-w-0 flex-1">
-                          <div class="text-sm text-text-500 text-left truncate w-0 flex-grow">${escapeHtmlForClaude(options.searchQuery)}</div>
+                          <div class="text-sm text-text-500 text-left truncate w-0 flex-grow">${escapeHtml(options.searchQuery)}</div>
                         </div>
                         <div class="flex flex-row items-center gap-1.5 shrink-0">
                           <p class="pl-1 text-text-500 font-small shrink-0 whitespace-nowrap">${options.searchResultCount ?? 0} results</p>
@@ -674,8 +617,8 @@ function createClaudeToolUseBlock(options: ToolUseGridOptions): string {
                             r => `
                           <div class="flex flex-row gap-3 items-center px-2 py-1.5 w-full rounded-md cursor-pointer transition-colors hover:bg-bg-200">
                             <div class="flex-shrink-0"><img alt="favicon" loading="lazy" width="12" height="12" src="" /></div>
-                            <div class="w-0 flex-grow font-small text-text-300 truncate">${escapeHtmlForClaude(r.title)}</div>
-                            <div class="text-xs text-text-400 shrink-0">${escapeHtmlForClaude(r.domain)}</div>
+                            <div class="w-0 flex-grow font-small text-text-300 truncate">${escapeHtml(r.title)}</div>
+                            <div class="text-xs text-text-400 shrink-0">${escapeHtml(r.domain)}</div>
                           </div>`
                           )
                           .join('')}
@@ -695,7 +638,7 @@ function createClaudeToolUseBlock(options: ToolUseGridOptions): string {
         <div><div class="grid grid-rows-[auto_auto] min-w-0">
           <div class="row-start-1 col-start-1 min-w-0">
             <div class="min-w-0 pl-2 py-1.5">
-              <button class="group/status"><span class="truncate text-sm font-base">${escapeHtmlForClaude(options.summaryText)}</span></button>
+              <button class="group/status"><span class="truncate text-sm font-base">${escapeHtml(options.summaryText)}</span></button>
               ${searchQueryHtml}
               ${toolStepsHtml}
             </div>
@@ -733,7 +676,7 @@ export function createClaudePageWithToolUse(
         <div data-test-render-count="2" class="group" style="height: auto;">
           <div class="bg-bg-300 rounded-xl pl-2.5 py-2.5">
             <div data-testid="user-message">
-              <p class="whitespace-pre-wrap break-words">${escapeHtmlForClaude(msg.content)}</p>
+              <p class="whitespace-pre-wrap break-words">${escapeHtml(msg.content)}</p>
             </div>
             <span class="text-text-500 text-xs" data-state="closed">Dec 6, 2025</span>
           </div>
@@ -809,7 +752,7 @@ function createClaudeThinkingStatusResponse(options: ThinkingStatusOptions): str
           <div class="flex items-center gap-2 rounded-lg">
             <button class="group/status flex items-center gap-2 py-1 text-sm" aria-expanded="false">
               <div class="inline-flex items-center gap-1 min-w-0">
-                <span class="truncate text-sm font-base">${escapeHtmlForClaude(options.statusText)}</span>
+                <span class="truncate text-sm font-base">${escapeHtml(options.statusText)}</span>
               </div>
             </button>
           </div>
@@ -850,7 +793,7 @@ export function createClaudePageWithThinkingStatus(
         <div data-test-render-count="2" class="group" style="height: auto;">
           <div class="bg-bg-300 rounded-xl pl-2.5 py-2.5">
             <div data-testid="user-message">
-              <p class="whitespace-pre-wrap break-words">${escapeHtmlForClaude(msg.content)}</p>
+              <p class="whitespace-pre-wrap break-words">${escapeHtml(msg.content)}</p>
             </div>
           </div>
         </div>
@@ -913,7 +856,7 @@ export function createClaudePageWithMultiStatusResponse(
         <div class="row-start-1 col-start-1 min-w-0">
           <div class="min-w-0 pl-2 py-1.5">
             <button class="group/status" aria-expanded="false">
-              <span class="truncate font-base">${escapeHtmlForClaude(step.statusText)}</span>
+              <span class="truncate font-base">${escapeHtml(step.statusText)}</span>
             </button>
           </div>
         </div>
@@ -932,13 +875,120 @@ export function createClaudePageWithMultiStatusResponse(
         <div data-test-render-count="2" class="group" style="height: auto;">
           <div class="bg-bg-300 rounded-xl pl-2.5 py-2.5">
             <div data-testid="user-message">
-              <p class="whitespace-pre-wrap break-words">${escapeHtmlForClaude(userContent)}</p>
+              <p class="whitespace-pre-wrap break-words">${escapeHtml(userContent)}</p>
             </div>
           </div>
         </div>
         <div data-test-render-count="1" class="group" style="height: auto;">
           <div class="font-claude-response" data-is-streaming="false">
             <div>${stepBlocks}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `);
+}
+
+/**
+ * One content block inside a Claude assistant response.
+ *
+ * - `step`   — a `.grid` block with a `.row-start-1` status header and the
+ *              content nested under `.row-start-2`.
+ * - `body`   — a top-level `.standard-markdown` block that is a sibling of the
+ *              grid blocks, i.e. NOT inside any `.row-start-2`.
+ * - `widget` — a non-markdown container (embedded app / iframe) that carries no
+ *              extractable text.
+ */
+export type ClaudeContentBlock =
+  | {
+      kind: 'step';
+      statusText: string;
+      content: string;
+      toolMarkdown?: string;
+      /** Render the header as an Extended Thinking panel (`group/thinking`). */
+      thinking?: boolean;
+    }
+  | { kind: 'body'; content: string }
+  | { kind: 'widget' };
+
+/**
+ * Create a Claude page whose assistant response MIXES grid step blocks with
+ * top-level markdown blocks.
+ *
+ * Structure only — no captured conversation text. Mirrors the shape observed on
+ * the live site when a response interleaves thinking / tool-use steps with the
+ * final answer:
+ *
+ * ```
+ * .font-claude-response
+ *   div > .grid > .row-start-1            <- status header (+ optional tool markdown)
+ *               > .row-start-2
+ *                   > .row-start-1        <- NOTE: the class names are REUSED
+ *                       > … > .standard-markdown   <- step content
+ *   div > .standard-markdown              <- top-level answer, outside any .row-start-2
+ * ```
+ *
+ * The nested `.row-start-1` inside `.row-start-2` is the load-bearing detail:
+ * a rule that simply skips everything under `.row-start-1` would discard the
+ * step content too. {@link createClaudePageWithMultiStatusResponse} models only
+ * the all-content-inside-`.row-start-2` case and cannot express this mix.
+ */
+export function createClaudePageWithMixedContentBlocks(
+  conversationId: string,
+  userContent: string,
+  blocks: ClaudeContentBlock[]
+): void {
+  setClaudeLocation(conversationId);
+
+  const renderStep = (block: Extract<ClaudeContentBlock, { kind: 'step' }>): string => `
+      <div><div class="grid grid-rows-[auto_auto] min-w-0">
+        <div class="row-start-1 col-start-1 min-w-0">
+          <div class="min-w-0 pl-2 py-[var(--msg-pill-py,0.375rem)]">
+            ${block.thinking ? '<div class="group/thinking border rounded">' : ''}
+            <button class="group/status" aria-expanded="false">
+              <span class="truncate font-base">${escapeHtml(block.statusText)}</span>
+            </button>
+            ${block.toolMarkdown ? `<div class="standard-markdown"><p>${block.toolMarkdown}</p></div>` : ''}
+            ${block.thinking ? '</div>' : ''}
+          </div>
+        </div>
+        <div class="row-start-2 col-start-1 relative grid grid-rows-[auto_auto] isolate min-w-0">
+          <div class="row-start-1 col-start-1 relative z-[2] min-w-0">
+            <div><div><div class="standard-markdown grid-cols-1 grid">${block.content}</div></div></div>
+          </div>
+        </div>
+      </div></div>`;
+
+  const renderBody = (block: Extract<ClaudeContentBlock, { kind: 'body' }>): string =>
+    `<div><div class="standard-markdown grid-cols-1 grid">${block.content}</div></div>`;
+
+  const renderWidget = (): string => `
+      <div data-find-omitted="" class="contents"></div>
+      <div id="mcp-app-container-test" class="w-full">
+        <div class="h-full w-full"><iframe title="embedded app"></iframe></div>
+      </div>`;
+
+  const rendered = blocks
+    .map(block => {
+      if (block.kind === 'step') return renderStep(block);
+      if (block.kind === 'body') return renderBody(block);
+      return renderWidget();
+    })
+    .join('\n');
+
+  loadFixture(`
+    <div class="app-container">
+      <div class="conversation-thread">
+        <div data-test-render-count="2" class="group" style="height: auto;">
+          <div class="bg-bg-300 rounded-xl pl-2.5 py-2.5">
+            <div data-testid="user-message">
+              <p class="whitespace-pre-wrap break-words">${escapeHtml(userContent)}</p>
+            </div>
+          </div>
+        </div>
+        <div data-test-render-count="1" class="group" style="height: auto;">
+          <div class="font-claude-response [&_.standard-markdown_:is(p,h1)]:pl-2" data-is-streaming="false">
+            ${rendered}
           </div>
         </div>
       </div>
@@ -980,7 +1030,7 @@ export function createChatGPTConversationDOM(messages: ChatGPTConversationMessag
           <div data-message-author-role="user"
                data-message-id="${messageId}">
             <div class="whitespace-pre-wrap">
-              ${escapeHtmlForChatGPT(msg.content)}
+              ${escapeHtml(msg.content)}
             </div>
           </div>
         </section>
@@ -1014,52 +1064,16 @@ export function createChatGPTConversationDOM(messages: ChatGPTConversationMessag
 /**
  * Set window.location for ChatGPT URL testing
  *
- * @param conversationId UUID format or custom ID
- * @param prefix URL prefix: 'c' for regular chat, 'g' for custom GPT mode
- *
  * URL formats:
  *   prefix='c': https://chatgpt.com/c/{conversationId}
  *   prefix='g': https://chatgpt.com/g/{gptSlug}/c/{conversationId}
  */
 export function setChatGPTLocation(conversationId: string, prefix: 'c' | 'g' = 'c'): void {
   const gptSlug = 'g-abc123-test-gpt';
-  const pathname = prefix === 'g' ? `/g/${gptSlug}/c/${conversationId}` : `/c/${conversationId}`;
-  Object.defineProperty(window, 'location', {
-    value: {
-      hostname: 'chatgpt.com',
-      pathname,
-      href: `https://chatgpt.com${pathname}`,
-      origin: 'https://chatgpt.com',
-      protocol: 'https:',
-      host: 'chatgpt.com',
-      search: '',
-      hash: '',
-    },
-    writable: true,
-    configurable: true,
-  });
-}
-
-/**
- * Set window.location for non-ChatGPT URL (security testing)
- *
- * Used to test hostname validation against subdomain attacks
- */
-export function setNonChatGPTLocation(hostname: string, pathname = '/'): void {
-  Object.defineProperty(window, 'location', {
-    value: {
-      hostname,
-      pathname,
-      href: `https://${hostname}${pathname}`,
-      origin: `https://${hostname}`,
-      protocol: 'https:',
-      host: hostname,
-      search: '',
-      hash: '',
-    },
-    writable: true,
-    configurable: true,
-  });
+  defineLocation(
+    'chatgpt.com',
+    prefix === 'g' ? `/g/${gptSlug}/c/${conversationId}` : `/c/${conversationId}`
+  );
 }
 
 /**
@@ -1078,11 +1092,69 @@ export function createChatGPTInlineCitation(url: string, displayText: string): s
            rel="noopener"
            class="flex h-4.5 overflow-hidden rounded-xl px-2 text-[9px] font-medium">
           <span class="max-w-[15ch] grow truncate overflow-hidden text-center">
-            ${escapeHtmlForChatGPT(displayText)}
+            ${escapeHtml(displayText)}
           </span>
         </a>
       </span>
     </span>
+  `;
+}
+
+/**
+ * An assistant turn carrying a generated-image widget, as measured live on
+ * 2026-09-22 (docs/investigation/chatgpt-image-dom-structure.md): the turn has
+ * `data-turn="assistant"` but NO `.markdown.prose` and NO `[data-message-id]`;
+ * the widget is `div.group/imagegen-image#image-<uuid>` holding three `<img>`
+ * with one src — the visible one (alt "Generated image: …") plus two
+ * `aria-hidden` duplicates (crossfade, blurred backdrop). `prose` adds a
+ * markdown block before the widget for the mixed-turn case.
+ */
+export function createChatGPTImageTurnDOM(options: {
+  turnId: string;
+  ordinal: number;
+  imageUuid: string;
+  src: string;
+  alt?: string;
+  prose?: string;
+}): string {
+  const alt = options.alt ?? 'Generated image: A test picture';
+  const prose = options.prose
+    ? `<div data-message-author-role="assistant" data-message-id="msg-${options.ordinal}">
+         <div class="markdown prose dark:prose-invert w-full break-words">${options.prose}</div>
+       </div>`
+    : '';
+  return `
+    <section data-turn-id="${options.turnId}" data-testid="conversation-turn-${options.ordinal}" data-turn="assistant">
+      <div class="text-base my-auto mx-auto">
+        <div class="mx-auto flex-1 group/turn-messages">
+          <div class="flex max-w-full flex-col gap-4 grow">
+            ${prose}
+            <div class="pb-2"><div class="relative pb-2"><div class="relative">
+              <div class="group/imagegen-image relative w-full overflow-hidden max-w-[30rem] rounded-[36px]"
+                   id="image-${options.imageUuid}" style="aspect-ratio: 1.77683 / 1;">
+                <div role="button" tabindex="0" class="relative z-0 h-full w-full rounded-[inherit]">
+                  <div class="relative z-0 cursor-pointer overflow-hidden rounded-[inherit] max-w-[30rem]">
+                    <div class="absolute start-0 end-0 top-0 z-2 w-full overflow-hidden rounded-[inherit]">
+                      <img id="_r_lt_" loading="lazy" decoding="async" width="1672" height="941"
+                           alt="${escapeHtml(alt)}" class="absolute top-0 z-1 w-full" src="${options.src}">
+                    </div>
+                    <div class="relative z-1 w-full overflow-hidden rounded-[inherit]">
+                      <img width="1672" height="941" alt="" aria-hidden="true" loading="lazy" decoding="async" src="${options.src}">
+                    </div>
+                    <div class="absolute inset-0 z-0 scale-110 overflow-hidden rounded-[inherit] blur-2xl">
+                      <img loading="lazy" decoding="async" alt="" aria-hidden="true" class="absolute top-0 w-full" src="${options.src}">
+                    </div>
+                  </div>
+                </div>
+                <button aria-label="Edit image">Edit</button>
+                <button aria-label="Share this image"></button>
+              </div>
+            </div></div></div>
+          </div>
+          <div class="z-0 flex min-h-[46px] justify-start"></div>
+        </div>
+      </div>
+    </section>
   `;
 }
 
@@ -1100,15 +1172,6 @@ export function createChatGPTPage(
       ${createChatGPTConversationDOM(messages)}
     </div>
   `);
-}
-
-/**
- * Escape HTML entities for ChatGPT DOM helpers
- */
-function escapeHtmlForChatGPT(text: string): string {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
 }
 
 // ========== Perplexity DOM Helpers ==========
@@ -1136,7 +1199,7 @@ export function createPerplexityConversationDOM(messages: PerplexityConversation
       blocks.push(`
         <div class="group/query">
           <div class="bg-offset rounded-2xl">
-            <span class="select-text">${escapeHtmlForPerplexity(msg.content)}</span>
+            <span class="select-text">${escapeHtml(msg.content)}</span>
           </div>
         </div>
       `);
@@ -1165,42 +1228,7 @@ export function createPerplexityConversationDOM(messages: PerplexityConversation
  * @param slug Full URL slug from /search/{slug}
  */
 export function setPerplexityLocation(slug: string): void {
-  Object.defineProperty(window, 'location', {
-    value: {
-      hostname: 'www.perplexity.ai',
-      pathname: `/search/${slug}`,
-      href: `https://www.perplexity.ai/search/${slug}`,
-      origin: 'https://www.perplexity.ai',
-      protocol: 'https:',
-      host: 'www.perplexity.ai',
-      search: '',
-      hash: '',
-    },
-    writable: true,
-    configurable: true,
-  });
-}
-
-/**
- * Set window.location for non-Perplexity URL (security testing)
- *
- * Used to test hostname validation against subdomain attacks
- */
-export function setNonPerplexityLocation(hostname: string, pathname = '/'): void {
-  Object.defineProperty(window, 'location', {
-    value: {
-      hostname,
-      pathname,
-      href: `https://${hostname}${pathname}`,
-      origin: `https://${hostname}`,
-      protocol: 'https:',
-      host: hostname,
-      search: '',
-      hash: '',
-    },
-    writable: true,
-    configurable: true,
-  });
+  defineLocation('www.perplexity.ai', `/search/${slug}`);
 }
 
 /**
@@ -1213,7 +1241,7 @@ function perplexityPillBody(domainText: string, extraCount?: number): string {
     extraCount === undefined
       ? ''
       : `<span class="inline-block ml-xs mr-px"><span class="opacity-50">+${extraCount}</span></span>`;
-  return `<span class="relative -mt-px max-w-full min-w-0 whitespace-nowrap"><span class="text-3xs rounded-badge group min-w-4 max-w-full cursor-pointer align-middle"><span class="inline-block relative overflow-hidden">${escapeHtmlForPerplexity(domainText)}</span>${counter}</span></span>`;
+  return `<span class="relative -mt-px max-w-full min-w-0 whitespace-nowrap"><span class="text-3xs rounded-badge group min-w-4 max-w-full cursor-pointer align-middle"><span class="inline-block relative overflow-hidden">${escapeHtml(domainText)}</span>${counter}</span></span>`;
 }
 
 /** Wrap pill content in the modern data-pplx-citation-url carrier span. */
@@ -1237,7 +1265,7 @@ export function createPerplexityInlineCitation(
   displayText: string,
   title?: string
 ): string {
-  const ariaAttr = title ? ` aria-label="${escapeHtmlForPerplexity(title)}"` : '';
+  const ariaAttr = title ? ` aria-label="${escapeHtml(title)}"` : '';
   const anchor = `<span class="inline-flex"${ariaAttr} data-state="closed"><span class="citation inline"><a rel="noopener" class="inline-flex max-w-full min-w-0" target="_blank" href="${url}">${perplexityPillBody(displayText)}</a></span></span>`;
   return perplexityCitationWrapper(url, anchor);
 }
@@ -1335,7 +1363,7 @@ function createPerplexityDeepResearchDOM(config: PerplexityDeepResearchConfig): 
                 <div class="group/title relative inline-flex flex-col">
                   <div class="group/query relative whitespace-pre-line">
                     <div class="min-w-[48px] select-none p-3 bg-subtle rounded-2xl">
-                      <span class="min-w-0 font-sans text-base text-foreground font-normal select-text break-words">${escapeHtmlForPerplexity(config.query)}</span>
+                      <span class="min-w-0 font-sans text-base text-foreground font-normal select-text break-words">${escapeHtml(config.query)}</span>
                     </div>
                   </div>
                 </div>
@@ -1355,7 +1383,7 @@ function createPerplexityDeepResearchDOM(config: PerplexityDeepResearchConfig): 
             <div class="border-subtlest flex items-center justify-between border-b px-3 py-2">
               <div class="flex items-center gap-1.5 min-w-0">
                 <svg role="img" class="inline-flex fill-current shrink-0 text-super shrink-0" width="16" height="16"><use xlink:href="#pplx-icon-telescope"></use></svg>
-                <span class="text-textMain truncate text-sm font-medium">${escapeHtmlForPerplexity(config.reportTitle)}</span>
+                <span class="text-textMain truncate text-sm font-medium">${escapeHtml(config.reportTitle)}</span>
               </div>
               <div class="flex items-center gap-1 shrink-0 ml-2 -mr-1">
                 <button>Download</button>
@@ -1427,7 +1455,7 @@ export function createPerplexityMultiTurnWithDeepResearch(
                   <div class="group/title relative inline-flex flex-col">
                     <div class="group/query relative whitespace-pre-line">
                       <div class="min-w-[48px] select-none p-3 bg-subtle rounded-2xl">
-                        <span class="min-w-0 font-sans text-base text-foreground font-normal select-text break-words">${escapeHtmlForPerplexity(config.firstQuery)}</span>
+                        <span class="min-w-0 font-sans text-base text-foreground font-normal select-text break-words">${escapeHtml(config.firstQuery)}</span>
                       </div>
                     </div>
                   </div>
@@ -1451,7 +1479,7 @@ export function createPerplexityMultiTurnWithDeepResearch(
                   <div class="group/title relative inline-flex flex-col">
                     <div class="group/query relative whitespace-pre-line">
                       <div class="min-w-[48px] select-none p-3 bg-subtle rounded-2xl">
-                        <span class="min-w-0 font-sans text-base text-foreground font-normal select-text break-words">${escapeHtmlForPerplexity(config.secondQuery)}</span>
+                        <span class="min-w-0 font-sans text-base text-foreground font-normal select-text break-words">${escapeHtml(config.secondQuery)}</span>
                       </div>
                     </div>
                   </div>
@@ -1469,7 +1497,7 @@ export function createPerplexityMultiTurnWithDeepResearch(
               <div class="border-subtlest flex items-center justify-between border-b px-3 py-2">
                 <div class="flex items-center gap-1.5 min-w-0">
                   <svg role="img" class="inline-flex fill-current shrink-0 text-super shrink-0" width="16" height="16"><use xlink:href="#pplx-icon-telescope"></use></svg>
-                  <span class="text-textMain truncate text-sm font-medium">${escapeHtmlForPerplexity(config.reportTitle)}</span>
+                  <span class="text-textMain truncate text-sm font-medium">${escapeHtml(config.reportTitle)}</span>
                 </div>
               </div>
               <div class="relative">
@@ -1492,15 +1520,6 @@ export function createPerplexityMultiTurnWithDeepResearch(
   `);
 }
 
-/**
- * Escape HTML entities for Perplexity DOM helpers
- */
-function escapeHtmlForPerplexity(text: string): string {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
 // ============================================================
 // NotebookLM Helpers
 // ============================================================
@@ -1511,15 +1530,6 @@ function escapeHtmlForPerplexity(text: string): string {
 interface NotebookLMConversationMessage {
   role: 'user' | 'assistant';
   content: string;
-}
-
-/**
- * Escape HTML for NotebookLM fixture safety
- */
-function escapeHtmlForNotebookLM(text: string): string {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
 }
 
 /**
@@ -1549,7 +1559,7 @@ function createNotebookLMConversationDOM(
               <mat-card-content class="mat-mdc-card-content from-user-message-inner-content message-content">
                 <div class="message-text-content mat-body-medium">
                   <div class="is-rich-chat-ui" role="heading" aria-level="3">
-                    <p>${escapeHtmlForNotebookLM(user.content)}</p>
+                    <p>${escapeHtml(user.content)}</p>
                   </div>
                 </div>
               </mat-card-content>
@@ -1591,7 +1601,7 @@ function createNotebookLMConversationDOM(
           <chat-panel-header>
             <div class="cover-image can-customize is-rich-chat-ui">
               <div class="cover-content">
-                <div class="cover-title mat-headline-medium">${escapeHtmlForNotebookLM(notebookTitle)}</div>
+                <div class="cover-title mat-headline-medium">${escapeHtml(notebookTitle)}</div>
               </div>
             </div>
           </chat-panel-header>
@@ -1602,23 +1612,18 @@ function createNotebookLMConversationDOM(
 }
 
 /**
- * Set window.location for NotebookLM URL testing
+ * Set window.location for NotebookLM URL testing.
+ *
+ * Defaults to the post-rebrand host (notebook.google.com); pass
+ * `{ legacyHost: true }` to simulate a client still served the old
+ * notebooklm.google.com host during the rollout (ADR-023).
  */
-export function setNotebookLMLocation(notebookId: string): void {
-  Object.defineProperty(window, 'location', {
-    value: {
-      hostname: 'notebooklm.google.com',
-      pathname: `/notebook/${notebookId}`,
-      href: `https://notebooklm.google.com/notebook/${notebookId}`,
-      origin: 'https://notebooklm.google.com',
-      protocol: 'https:',
-      host: 'notebooklm.google.com',
-      search: '',
-      hash: '',
-    },
-    writable: true,
-    configurable: true,
-  });
+export function setNotebookLMLocation(
+  notebookId: string,
+  options: { legacyHost?: boolean } = {}
+): void {
+  const hostname = options.legacyHost ? 'notebooklm.google.com' : 'notebook.google.com';
+  defineLocation(hostname, `/notebook/${notebookId}`);
 }
 
 /**

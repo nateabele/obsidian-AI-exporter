@@ -61,6 +61,17 @@ export interface ConversationData {
   images?: ExtractedImage[];
   extractedAt: Date;
   metadata: ConversationMetadata;
+  /** Auto-scroll stopped early, so earlier messages may be missing (#449). */
+  truncated?: boolean;
+  /**
+   * Ordinal of the newest turn this extraction covered, on platforms that
+   * expose a conversation-wide monotonic ordinal (Claude's `data-index`,
+   * ChatGPT's `conversation-turn-N`). Undefined elsewhere.
+   *
+   * The sync-status badge compares it against the live DOM to tell "a message
+   * newer than the sync has appeared" from "the user scrolled" (issue #465).
+   */
+  messageWatermark?: number;
 }
 
 /**
@@ -113,6 +124,15 @@ export interface ConversationMetadata {
  */
 export interface ObsidianNote {
   fileName: string;
+  /**
+   * The extraction stopped before reaching the top of the conversation, so
+   * this note may be missing earlier messages (issue #449).
+   *
+   * Structured rather than inferred from `warnings`: a reader that parses the
+   * writer's prose is the seam ADR-028 was written about. Never written to
+   * frontmatter — it describes this capture, not the conversation.
+   */
+  truncated?: boolean;
   frontmatter: NoteFrontmatter;
   body: string;
   contentHash: string;
@@ -171,6 +191,12 @@ export interface OutputResult {
    * DIFFERENT conversation (filename collision safeguard, issue #327).
    */
   savedAs?: string;
+  /**
+   * Non-fatal problem encountered while writing to this destination
+   * (e.g. an image that could not be saved, issue #376). Surfaced to the
+   * user as a follow-up warning toast; the output itself still succeeded.
+   */
+  warning?: string;
 }
 
 /**
@@ -241,6 +267,18 @@ export interface SyncSettings {
   companionUrl: string;
   /** Platforms on which continuous sync is active. */
   autoSyncPlatforms: AIPlatform[];
+  /**
+   * Give up auto-scrolling when nothing has progressed for this many seconds.
+   * Default 15 (issue #449).
+   */
+  scrollIdleTimeoutSec: number;
+  /** Absolute cap on one auto-scroll pass, in seconds. Default 300. */
+  scrollMaxTimeoutSec: number;
+  /**
+   * Largest note body the background will send to any output, in MiB
+   * (issue #467, ADR-038). Clamped to 1–16 by the schema.
+   */
+  maxNoteSizeMiB: number;
 }
 
 /**
@@ -300,6 +338,17 @@ export interface TemplateOptions {
   timezone?: string;
   /** Note filename naming scheme (issue #328). Defaults to `title-id`. */
   filenameScheme?: FilenameScheme;
+  /**
+   * Frontmatter tags for conversation notes (issue #493). Entries are literal
+   * tags or the `{platform}` token; see `lib/tag-template.ts`. Defaults to
+   * `['ai-conversation', '{platform}']`.
+   */
+  conversationTags?: string[];
+  /**
+   * Frontmatter tags for Deep Research notes (issue #493). Defaults to
+   * `['ai-research', 'deep-research', '{platform}']`.
+   */
+  deepResearchTags?: string[];
 }
 
 /**
@@ -311,7 +360,28 @@ export type ExtensionMessage =
   | { action: 'testConnection' }
   | { action: 'chatSync'; data: ChatSyncRequest }
   | { action: 'chatBackfill'; data: ChatBackfillRequest }
-  | { action: 'openInObsidian'; data: { path: string } };
+  | { action: 'openInObsidian'; data: { path: string } }
+  | { action: 'fetchImage'; url: string };
+
+/**
+ * What the background worker answers instead of a real result: an
+ * unauthorized sender, a message that failed validation, an unknown action,
+ * or a handler that threw (see the listener in service-worker.ts). It carries
+ * no `results`, so it must never be read as a {@link MultiOutputResponse}
+ * (issue #467).
+ */
+export interface ErrorResponse {
+  success: false;
+  error: string;
+}
+
+/**
+ * Response to a `fetchImage` message. The background worker fetches remote
+ * images the content script cannot reach (CORS) and returns them as base64.
+ */
+export type ImageFetchResponse =
+  | { success: true; data: string; mimeType: string; error?: undefined }
+  | { success: false; error: string; data?: undefined; mimeType?: undefined };
 
 /**
  * Message sent from the background worker to the offscreen document.
@@ -334,6 +404,11 @@ export interface SaveResponse {
   messagesAppended?: number;
   /** Actual file name when a collision forced an alternative (issue #327) */
   savedAs?: string;
+  /**
+   * Non-fatal problem encountered while saving — the note itself was written.
+   * Currently set when one or more images could not be written (issue #376).
+   */
+  warning?: string;
 }
 
 /**
@@ -563,4 +638,13 @@ export interface IConversationExtractor {
   extractMessages(): ConversationMessage[];
   validate(result: ExtractionResult): ValidationResult;
   applySettings(settings: SyncSettings): void;
+  /**
+   * Highest conversation-wide turn ordinal currently in the DOM, or null when
+   * the platform exposes no such ordinal.
+   *
+   * A *mounted*-window read: on virtualized platforms it drops as turns evict
+   * and rises again as they re-mount, so it is only ever meaningful compared
+   * against {@link ConversationData.messageWatermark} (issue #465).
+   */
+  getMessageWatermark(): number | null;
 }

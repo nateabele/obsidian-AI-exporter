@@ -52,7 +52,8 @@ vi.mock('../../src/content/sync-icon', async () => {
   };
 });
 
-vi.mock('../../src/lib/messaging', () => ({
+vi.mock('../../src/lib/messaging', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../src/lib/messaging')>()),
   sendMessage: vi.fn(),
 }));
 

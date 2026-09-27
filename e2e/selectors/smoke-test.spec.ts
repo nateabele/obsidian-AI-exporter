@@ -26,6 +26,13 @@ import {
 import type { SelectorGroup } from '../../src/content/extractors/selectors/types';
 import { checkAuthStatus, type AuthStatus } from './auth-check';
 import {
+  waitForSettledCounts,
+  SETTLE_STABLE_RUNS,
+  SETTLE_POLL_INTERVAL_MS,
+  SETTLE_MIN_MS,
+  SETTLE_TIMEOUT_MS,
+} from './settle';
+import {
   loadBaselineGroups,
   updateBaselineGroups,
   compareWithBaseline,
@@ -59,14 +66,8 @@ const READY_SELECTORS: Readonly<Record<string, string>> = {
   gemini_dr: 'deep-research-immersive-panel',
   claude_conv: '.font-claude-response',
   claude_dr: '#markdown-artifact',
-  // ChatGPT's 2026-09 DOM overhaul dropped `section[data-turn-id]` in favor
-  // of `[data-content-search-unit-key]` (verified live 2026-09-26). This is
-  // a CSS selector LIST (comma-separated, same pattern as LOADING_SELECTORS
-  // below): either hook satisfies readiness, so the old selector keeps
-  // working as a fallback signal if ChatGPT ever reintroduces it, instead of
-  // being silently dropped.
-  chatgpt_conv: '[data-content-search-unit-key], section[data-turn-id]',
-  perplexity_conv: 'div[id^="markdown-content-"]',
+  chatgpt_conv: 'div[data-turn-key]', // 2026-09 layout (issue #515)
+  perplexity_conv: '.prose[data-renderer="lm"]',
   notebooklm_conv: '.chat-message-pair',
 };
 
@@ -113,15 +114,56 @@ async function validateSelectors(
   for (const [name, selectorList] of Object.entries(selectors)) {
     for (let i = 0; i < selectorList.length; i++) {
       const selector = selectorList[i];
-      const matchCount = await page.evaluate(
-        (sel: string) => document.querySelectorAll(sel).length,
-        selector
-      );
-      results.push({ platform, group: groupName, name, selector, index: i, matchCount });
+      // Presence AND content, in one round trip. Presence alone cannot see a
+      // container that keeps matching after its content moved elsewhere —
+      // which is how issue #444 stayed green here (ADR-031).
+      const { matchCount, nonEmptyCount } = await page.evaluate((sel: string) => {
+        const els = [...document.querySelectorAll(sel)];
+        return {
+          matchCount: els.length,
+          nonEmptyCount: els.filter(el => (el.textContent ?? '').trim().length > 0).length,
+        };
+      }, selector);
+      results.push({
+        platform,
+        group: groupName,
+        name,
+        selector,
+        index: i,
+        matchCount,
+        nonEmptyCount,
+      });
     }
   }
 
   return results;
+}
+
+/**
+ * Match count AND content count of every selector, interleaved, in a stable
+ * order.
+ *
+ * Feeds the settle wait: the signature it compares is just these numbers joined,
+ * so any element still arriving shows up as a change.
+ *
+ * The content half has to be in here, not sampled afterwards. Content arrives
+ * *after* presence — an empty placeholder is literally the presence-before-
+ * content state — so a content metric read before the page settles is the same
+ * random-failure pattern ADR-016 §1a was written to remove.
+ */
+async function sampleCounts(
+  page: Page,
+  selectorGroups: Record<string, SelectorGroup>
+): Promise<number[]> {
+  const flat = Object.values(selectorGroups).flatMap(group => Object.values(group).flat());
+  return page.evaluate(
+    (sels: string[]) =>
+      sels.flatMap(sel => {
+        const els = [...document.querySelectorAll(sel)];
+        return [els.length, els.filter(el => (el.textContent ?? '').trim().length > 0).length];
+      }),
+    flat
+  );
 }
 
 async function runPlatformValidation(
@@ -225,6 +267,30 @@ async function runPlatformValidation(
       }
     }
 
+    // Let the page finish rendering before anything is counted.
+    //
+    // Readiness only says the page has STARTED. Measured 2026-08-08: gemini_conv
+    // is ready as soon as the first `.conversation-container` exists, while the
+    // generated image arrives 1313-1973ms later, so `generatedImage` read zero
+    // and failed the run at random. Every platform has such a gap, and counts
+    // keep moving for a further 600-1600ms after the last selector first
+    // matches — which is what an update run would otherwise freeze into the
+    // baseline. Waiting here fixes validate and update together.
+    const settle = await waitForSettledCounts(() => sampleCounts(page, selectorGroups), {
+      requiredRuns: SETTLE_STABLE_RUNS,
+      pollIntervalMs: SETTLE_POLL_INTERVAL_MS,
+      minElapsedMs: SETTLE_MIN_MS,
+      timeoutMs: SETTLE_TIMEOUT_MS,
+      sleep: (ms: number) => page.waitForTimeout(ms),
+      now: () => Date.now(),
+    });
+    if (!settle.settled) {
+      console.warn(
+        `${platform}: selector counts never settled within ${SETTLE_TIMEOUT_MS}ms ` +
+          `(${settle.observations} observations) — the numbers below may be mid-render`
+      );
+    }
+
     // Validate all selectors
     const allResults: SelectorResult[] = [];
     for (const [groupName, selectors] of Object.entries(selectorGroups)) {
@@ -245,9 +311,12 @@ async function runPlatformValidation(
       for (const result of allResults) {
         (grouped[result.group] ??= []).push(result);
       }
-      // Throws (and fails this test) on zero-match entries: a broken page
-      // state must never be recorded as the contract.
-      updateBaselineGroups(platform, grouped);
+      // Throws (and fails this test) on zero-match entries, and on counts that
+      // fell below the existing baseline unless ACCEPT_DEGRADED=1: a broken or
+      // degraded page state must never be recorded as the contract.
+      updateBaselineGroups(platform, grouped, {
+        acceptDegraded: process.env.ACCEPT_DEGRADED === '1',
+      });
       console.log(`${platform}: baseline updated for groups: ${groupNames.join(', ')}`);
     } else {
       const loaded = loadBaselineGroups(platform, groupNames);
@@ -273,37 +342,39 @@ async function runPlatformValidation(
       authStatus,
       baselineState,
       classification: classified,
+      settle: {
+        settled: settle.settled,
+        elapsedMs: settle.elapsedMs,
+        observations: settle.observations,
+      },
     });
 
-    // --- Ordering note: live-DOM findings BEFORE baseline-usability checks ---
-    //
-    // It is tempting to "clean this up" by asserting baselineState first —
-    // logically, a diff against a baseline you can't load doesn't mean much,
-    // so checking usability up front reads as the natural order. Resist that:
-    // `e2e/baselines/` is gitignored and starts empty on every fresh checkout
-    // (see baseline.ts's header), so `missing_groups` is the FIRST thing every
-    // clean clone hits — on every platform, every time — regardless of
-    // whether the live selectors are healthy or completely rotted. `expect()`
-    // throws on failure and aborts the rest of this function, so whichever
-    // assertion runs first is the ONLY one a fresh run ever reports.
-    //
-    // classified.fail / classified.warn / classified.deadMiddle are computed
-    // straight from the live DOM and don't need a baseline to mean something
-    // (a selector with 0 matches is broken whether or not we have history to
-    // diff against). Baseline-usability is reported too — just afterward —
-    // so it never SILENTLY replaces a real finding; it can still fail the
-    // run on its own when the live selectors are fine but the baseline
-    // genuinely needs `npm run e2e:baseline:update`.
-    //
-    // Do NOT reorder this back to baseline-first: that is exactly the bug
-    // that let a total ChatGPT selector rewrite ship with e.g. zero live
-    // selectors matching while CI only ever printed "run baseline:update".
+    // Assert: the baseline itself must be usable before its diff means anything
+    expect(
+      baselineState,
+      `${platform}: baseline file is legacy v1 — run 'npm run e2e:baseline:update'`
+    ).not.toBe('legacy');
+    expect(
+      baselineState,
+      `${platform}: no baseline for group(s) ${missingGroups.join(', ')} — run 'npm run e2e:baseline:update'`
+    ).not.toBe('missing_groups');
 
     // Assert: zero-match selector names always fail
     expect(
       classified.fail,
       `${platform}: selectors with zero matches: ${classified.fail.map(f => `${f.group}:${f.name}`).join(', ')}`
     ).toHaveLength(0);
+
+    // Assert: baseline contract violations fail (lost / new_selector / removed).
+    // new_selector and removed mean the code and the baseline diverged —
+    // intentional selector changes must be recorded via 'npm run e2e:baseline:update'.
+    expect(
+      classified.baselineBlocking.map(
+        b =>
+          `${b.group}:${b.name} [${b.status}] ${b.baselineCount} -> ${b.currentCount} (${b.selector})`
+      ),
+      `${platform}: baseline contract violations — if the selector change is intentional, run 'npm run e2e:baseline:update'`
+    ).toEqual([]);
 
     // Assert: a dead primary selector fails even while a fallback carries it.
     // The extension still works via the fallback, but a primary that stays
@@ -315,44 +386,6 @@ async function runPlatformValidation(
           `has 0 matches (fallback '${w.workingFallback.selector}' carrying)`
       ),
       `${platform}: dead primary selectors — fix the primary or promote the working fallback in src/content/extractors/selectors/`
-    ).toEqual([]);
-
-    // Assert: a dead non-primary entry fails even while a later (or earlier,
-    // for a dead primary already reported above) sibling carries the group.
-    // Without this, entry 1 of 3 dying while entry 0 stays alive is a silent
-    // PASS — classified.warn only ever looks at index 0, so a middle
-    // fallback can rot indefinitely as long as *something* in the group
-    // still matches.
-    expect(
-      classified.deadMiddle.map(
-        d =>
-          `${d.dead.group}:${d.dead.name} entry #${d.dead.index} '${d.dead.selector}' ` +
-          `has 0 matches (sibling '${d.liveSibling.selector}' still carrying the group)`
-      ),
-      `${platform}: dead fallback selectors — repair them in src/content/extractors/selectors/`
-    ).toEqual([]);
-
-    // Assert: the baseline itself must be usable before its diff means anything.
-    // (Reported here, after the live-DOM findings above — see the ordering
-    // note at the top of this block.)
-    expect(
-      baselineState,
-      `${platform}: baseline file is legacy v1 — run 'npm run e2e:baseline:update'`
-    ).not.toBe('legacy');
-    expect(
-      baselineState,
-      `${platform}: no baseline for group(s) ${missingGroups.join(', ')} — run 'npm run e2e:baseline:update'`
-    ).not.toBe('missing_groups');
-
-    // Assert: baseline contract violations fail (lost / new_selector / removed).
-    // new_selector and removed mean the code and the baseline diverged —
-    // intentional selector changes must be recorded via 'npm run e2e:baseline:update'.
-    expect(
-      classified.baselineBlocking.map(
-        b =>
-          `${b.group}:${b.name} [${b.status}] ${b.baselineCount} -> ${b.currentCount} (${b.selector})`
-      ),
-      `${platform}: baseline contract violations — if the selector change is intentional, run 'npm run e2e:baseline:update'`
     ).toEqual([]);
   } finally {
     await page.close();

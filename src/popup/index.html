@@ -163,6 +163,42 @@
                   </span>
                 </label>
               </div>
+
+              <div id="scrollTimeoutGroup">
+                <div class="form-group">
+                  <label for="scrollIdleTimeoutSec" data-i18n="settings_scrollIdleTimeout"
+                    >Auto-scroll idle timeout (seconds)</label
+                  >
+                  <input
+                    type="number"
+                    id="scrollIdleTimeoutSec"
+                    min="5"
+                    max="600"
+                    step="5"
+                    value="15"
+                  />
+                  <p class="help" data-i18n="settings_scrollIdleTimeoutHelp">
+                    Give up when no new messages load for this long.
+                  </p>
+                </div>
+
+                <div class="form-group">
+                  <label for="scrollMaxTimeoutSec" data-i18n="settings_scrollMaxTimeout"
+                    >Auto-scroll time limit (seconds)</label
+                  >
+                  <input
+                    type="number"
+                    id="scrollMaxTimeoutSec"
+                    min="30"
+                    max="3600"
+                    step="30"
+                    value="300"
+                  />
+                  <p class="help" data-i18n="settings_scrollMaxTimeoutHelp">
+                    Hard limit for one auto-scroll pass.
+                  </p>
+                </div>
+              </div>
             </section>
 
             <!-- Obsidian API Settings -->
@@ -378,6 +414,20 @@
                 </button>
                 <div id="importResults" class="help" role="status" aria-live="polite"></div>
               </div>
+
+              <div class="form-group">
+                <label for="maxNoteSizeMiB" data-i18n="settings_maxNoteSize"
+                  >Maximum note size</label
+                >
+                <div class="range-row">
+                  <input type="range" id="maxNoteSizeMiB" min="1" max="16" step="1" value="8" />
+                  <output id="maxNoteSizeMiBValue" for="maxNoteSizeMiB">8 MiB</output>
+                </div>
+                <p class="help" data-i18n="settings_maxNoteSizeHelp">
+                  Notes larger than this are not sent. Raise it for very long conversations; the 16
+                  MiB ceiling keeps one save inside Chrome's 64 MiB message limit.
+                </p>
+              </div>
             </section>
 
             <!-- Message Format -->
@@ -453,6 +503,29 @@
                   <span data-i18n="settings_includeMessageCount">Message Count</span>
                 </label>
               </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="conversationTags" data-i18n="settings_conversationTags"
+                    >Conversation Tags</label
+                  >
+                  <input type="text" id="conversationTags" value="ai-conversation, {platform}" />
+                </div>
+                <div class="form-group">
+                  <label for="deepResearchTags" data-i18n="settings_deepResearchTags"
+                    >Deep Research Tags</label
+                  >
+                  <input
+                    type="text"
+                    id="deepResearchTags"
+                    value="ai-research, deep-research, {platform}"
+                  />
+                </div>
+              </div>
+              <p class="help" data-i18n="settings_tagsHelp">
+                Comma-separated. {platform} becomes gemini, claude, chatgpt, perplexity or
+                notebooklm. Nested tags like ai/chat are fine. Leave empty to restore the defaults.
+              </p>
 
               <div class="form-group timezone-group" id="timezoneGroup">
                 <label for="timezone" data-i18n="settings_timezone">Timezone</label>

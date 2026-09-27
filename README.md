@@ -1,6 +1,6 @@
 # Obsidian AI Exporter
 
-Chrome Extension that exports AI conversations from Google Gemini, Claude AI, ChatGPT, and Perplexity to Obsidian via the Local REST API.
+Chrome Extension that exports AI conversations from Google Gemini, Claude AI, ChatGPT, Perplexity, and Gemini Notebook (formerly NotebookLM) to Obsidian via the Local REST API.
 
 [日本語版はこちら](README.ja.md)
 
@@ -9,19 +9,27 @@ Chrome Extension that exports AI conversations from Google Gemini, Claude AI, Ch
 
 ## Features
 
-- **Multi-platform support**: Export from Google Gemini, Claude AI, ChatGPT, and Perplexity
+- **Multi-platform support**: Export from Google Gemini, Claude AI, ChatGPT, Perplexity, and Gemini Notebook (formerly NotebookLM)
 - **One-click export**: Floating "Sync" button on supported AI pages
+- **Persistent sync status**: A ✓ / ! / × badge stays on the sync button after a sync finishes — click it for the file name, per-destination results, warnings, and when the sync ran. It clears when you switch conversations, dismiss it, or — on Claude and ChatGPT — when a message newer than the sync appears
 - **Multiple output options**: Save to Obsidian, download as file, or copy to clipboard
 - **Deep Research support**: Export Gemini Deep Research, Claude Extended Thinking, and Perplexity Deep Research reports
 - **Artifact support**: Extract Claude Artifacts with inline citations and sources
-- **Configurable timezone**: Set timezone for frontmatter dates (created/modified)
-- **Tool content support**: Optionally include Claude's web search results and tool activity as collapsible `[!ABSTRACT]` callouts
+- **Image export**: Gemini- and ChatGPT-generated images are saved alongside the conversation — embedded in your vault, downloaded as files, or stripped for clipboard
+- **Source citations**: Gemini Notebook chat citations are exported as footnotes
+- **Auto-scroll**: Automatically loads all messages in long conversations, including virtualized (windowed) Claude and ChatGPT threads — its two timeouts are configurable (idle, default 15s; total, default 300s) for very long threads, and the note size cap (default 8 MiB, up to 16 MiB) can be raised for the longest ones
 - **Append mode**: Only new messages are added to existing notes
+- **Filename schemes**: Choose `title-id` (default) or `title-date` naming for exported notes
+- **Vault path templates**: Organize with `{platform}` and date tokens (`{YYYY}`, `{MM}`, …) for auto-sorting
+- **Filename collision safety**: Never overwrites a note belonging to a different conversation, and never replaces a complete note with a partially-loaded one
+- **Tool content support**: Optionally include Claude's web search results and tool activity as collapsible `[!ABSTRACT]` callouts
 - **Question headers (optional)**: Prepend a `## ` heading (first 60 chars of the question) before each user message for TOC navigation in long conversations
-- **Obsidian callouts**: Formatted output with `[!QUESTION]` and `[!NOTE]` callouts
-- **YAML frontmatter**: Metadata including title, source, URL, dates, and tags
-- **Auto-scroll**: Automatically loads all messages in long Gemini conversations
-- **Platform-based organization**: Use `{platform}` template in vault path for auto-sorting
+- **Large-callout flattening**: Optionally flatten very long messages to plain text when saving to Obsidian, avoiding renderer slowdowns; the line threshold is configurable (default 200)
+- **Configurable timezone**: Set timezone for frontmatter dates (created/modified)
+- **Math formula preservation**: LaTeX math (`$...$` and `$$...$$`) is preserved across all platforms for Obsidian's math renderer
+- **Nested code blocks**: A code block that itself contains a code block is fenced to fit its content, so answers about Markdown export intact
+- **Message format**: Obsidian callouts (default), blockquotes, or plain text — and the `[!QUESTION]` / `[!NOTE]` callout types are configurable per role
+- **YAML frontmatter**: Metadata including title, source, URL, dates, and tags. Tag names are configurable, with a `{platform}` token, so they can match the tags your vault already uses
 - **Configurable**: Customizable vault path, template options, and frontmatter fields
 - **Localized**: English and Japanese UI support
 
@@ -40,17 +48,20 @@ Chrome Extension that exports AI conversations from Google Gemini, Claude AI, Ch
 ### From Source
 
 1. Clone this repository:
+
    ```bash
    git clone https://github.com/sho7650/obsidian-AI-exporter.git
    cd obsidian-AI-exporter
    ```
 
 2. Install dependencies:
+
    ```bash
    npm install
    ```
 
 3. Build the extension:
+
    ```bash
    npm run build
    ```
@@ -81,17 +92,29 @@ Chrome Extension that exports AI conversations from Google Gemini, Claude AI, Ch
    - **File**: Downloaded as a Markdown file
    - **Clipboard**: Copied to clipboard for pasting anywhere
 
+Gemini- and ChatGPT-generated images are captured and exported automatically (see [Image Export](#image-export)).
+
 ### Claude
 
 1. Open a conversation on [claude.ai](https://claude.ai)
 2. Click the purple "Sync" button in the bottom-right corner
 3. The conversation will be exported with the same output options as Gemini
 
+> **Keep Auto-scroll enabled for long conversations.** Claude mounts only a window of turns at a time and discards the rest; with Auto-scroll off, only the turns currently on screen can be exported.
+
+> **Very long conversations may need more time.** Auto-scroll gives up after 15 seconds without progress, or 300 seconds in total. If the export warns that it stopped early, raise **Auto-scroll idle timeout** or **Auto-scroll time limit** in Advanced Settings — the warning names which one it hit — and sync again. The note itself is capped at 8 MiB by default; if the sync fails with "above the … limit", raise **Maximum note size** (up to 16 MiB) in Advanced Settings.
+
 ### ChatGPT
 
-1. Open a conversation on [chatgpt.com](https://chatgpt.com)
+1. Open a conversation on [chatgpt.com](https://chatgpt.com) (regular chats and custom GPTs via `/g/` URLs are both supported)
 2. Click the purple "Sync" button in the bottom-right corner
 3. The conversation will be exported with the same output options as Gemini
+
+> **Keep Auto-scroll enabled for long conversations.** ChatGPT mounts only a window of turns at a time and discards the rest; with Auto-scroll off, only the turns currently on screen can be exported.
+
+> **Very long conversations may need more time.** Auto-scroll gives up after 15 seconds without progress, or 300 seconds in total. If the export warns that it stopped early, raise **Auto-scroll idle timeout** or **Auto-scroll time limit** in Advanced Settings — the warning names which one it hit — and sync again. The note itself is capped at 8 MiB by default; if the sync fails with "above the … limit", raise **Maximum note size** (up to 16 MiB) in Advanced Settings.
+
+> **Deep Research reports cannot be exported from ChatGPT.** See [Deep Research / Extended Thinking Export](#deep-research--extended-thinking-export).
 
 ### Perplexity
 
@@ -99,28 +122,40 @@ Chrome Extension that exports AI conversations from Google Gemini, Claude AI, Ch
 2. Click the purple "Sync" button in the bottom-right corner
 3. The conversation will be exported with the same output options as Gemini
 
-### NotebookLM
+### Gemini Notebook (formerly NotebookLM)
 
-1. Open a notebook on [notebooklm.google.com](https://notebooklm.google.com)
+1. Open a notebook on [notebook.google.com](https://notebook.google.com) (the old `notebooklm.google.com` links still work — Google redirects them)
 2. Click the purple "Sync" button in the bottom-right corner
 3. The chat conversation will be exported with inline source citations as footnotes
 
 ### Deep Research / Extended Thinking Export
 
 **Gemini Deep Research:**
+
 1. Open the Deep Research panel (expanded view)
 2. Click the "Sync" button
 3. The full report will be saved with its original heading structure
 
 **Claude Extended Thinking (Artifacts):**
+
 1. Open a conversation with an Artifact
 2. Click the "Sync" button
 3. The Artifact content with inline citations and sources will be extracted
 
 **Perplexity Deep Research:**
-1. Open a Perplexity conversation containing a Deep Research report
+
+1. Open a Perplexity conversation containing a Deep Research report, then open the report itself (click its card) — Perplexity loads the report body only when it is opened, so a collapsed report cannot be exported
 2. Click the "Sync" button
 3. The report content will be extracted alongside normal conversation messages
+
+**ChatGPT Deep Research: not supported.**
+
+ChatGPT renders Deep Research reports inside a sandboxed iframe served from another origin (`*.oaiusercontent.com`), which a browser extension is not permitted to read. Expanding the report does not help. Rather than saving a note that contains your prompt and no report, the extension tells you what happened:
+
+- A conversation that is _only_ a Deep Research report is not saved, and the reason is shown.
+- A report alongside ordinary messages saves the ordinary messages and warns that the report was skipped.
+
+Normal ChatGPT conversations, including custom GPTs, are unaffected. Progress is tracked in [issue #283](https://github.com/sho7650/obsidian-AI-exporter/issues/283).
 
 ## Output Format
 
@@ -148,6 +183,12 @@ message_count: 4
 > [!NOTE] Gemini
 > To implement JWT authentication, you'll need to...
 ```
+
+**Message Format** in Advanced Settings switches this between callouts (above), plain blockquotes, and plain text. **User Callout Type** and **Assistant Callout Type** change the `QUESTION` / `NOTE` keywords.
+
+**Conversation Tags** and **Deep Research Tags** (Advanced Settings → Frontmatter Fields) set the `tags:` list so it matches the tags your vault already uses. Each field is comma-separated; `{platform}` expands to the source id (`gemini`, `claude`, `chatgpt`, `perplexity`, `notebooklm`), nested tags such as `ai/chat` are allowed, and an empty field restores the defaults (`ai-conversation, {platform}` and `ai-research, deep-research, {platform}`). Entries follow Obsidian's tag rules (letters, digits, `_`, `-`, `/`; no spaces); an invalid entry makes the whole field fall back to its default. Notes already in the vault are never rewritten: append mode leaves their `tags:` block as you left it.
+
+Code blocks are fenced to fit their content. When a block contains another fenced block — common when you ask an AI to write a `README.md` or a prompt — the outer fence grows to four or more backticks so the inner fences stay part of the content, which is the nesting rule Obsidian documents. The original fence character cannot be recovered (the page only exposes the rendered code), so the outer fence is always backticks.
 
 ### Tool Content Format (Claude)
 
@@ -196,28 +237,71 @@ The report content with original headings...
 Detailed analysis sections...
 ```
 
+## Vault Path & Filenames
+
+### Vault Path Templates
+
+The **Vault Path** setting supports template tokens that are resolved at save time, so notes can be auto-organized. The default is `AI/{platform}`.
+
+| Token        | Resolves to                                                             |
+| ------------ | ----------------------------------------------------------------------- |
+| `{platform}` | Source name (`gemini`, `claude`, `chatgpt`, `perplexity`, `notebooklm`) |
+| `{YYYY}`     | 4-digit year, local time (e.g. `2026`)                                  |
+| `{YY}`       | 2-digit year, local time (e.g. `26`)                                    |
+| `{MM}`       | 2-digit month, zero-padded (e.g. `07`)                                  |
+| `{DD}`       | 2-digit day, zero-padded (e.g. `08`)                                    |
+
+Example: `AI/{platform}/{YYYY}/{MM}` sorts notes into per-month folders. Date tokens use your local time zone. In append mode, existing conversations continue updating their original file even after the month rolls over.
+
+Note: Gemini Notebook still resolves `{platform}` to `notebooklm`, unchanged by the rebrand, so notes keep landing in the folder your existing ones already use.
+
+### Filename Schemes
+
+Choose how exported note filenames are built (Advanced Settings → **Filename scheme**):
+
+- **`title-id`** (default): `{title}-{conversationId}.md` — stable across renames of the conversation.
+- **`title-date`**: `{title}-{YYYY}-{MM}-{DD}.md` — uses the local save date.
+
+If the intended filename is already occupied by a _different_ conversation, the extension writes to a safe alternative name instead of overwriting it.
+
+An export whose auto-scroll stopped early is also refused rather than written, when the note already in your vault holds more messages than the export captured. Nothing is overwritten and the message tells you both counts, so a partial capture can never replace a complete note.
+
+## Image Export
+
+Images generated by Gemini and by ChatGPT are exported alongside the conversation (enabled by default; toggle with **Export images** in Advanced Settings). Each image is captured as base64 and then resolved per output destination:
+
+- **Obsidian**: images are written to your vault under **Image Folder** (default `AI/{platform}/images`, supports the same template tokens as the vault path); the note body embeds them with `![[filename]]` wikilinks.
+- **File download**: the Markdown file and each image are downloaded as separate files.
+- **Clipboard**: image placeholders are stripped (no binary is copied).
+
+Gemini serves generated images either from `blob:` URLs, which only the page can read, or from Google's image CDN (`googleusercontent.com`). The extension reads `blob:` URLs in the page and downloads CDN-hosted images in the background worker — the browser blocks the page from fetching them directly. That CDN redirects the download to `lh3.google.com`, so the extension requests access to both hosts; they are used only to download images you asked to export.
+
+ChatGPT serves generated images from `chatgpt.com` itself, so the page fetches them directly with your existing session — no additional host permission is involved. An image turn in ChatGPT has no text of its own; it is exported as a message containing just the image.
+
+Guards: up to 20 images per note and 10 MB per image. Append mode strips image placeholders (image handling in append mode is deferred). If an image cannot be saved, the note is still written and a warning names the images that were skipped.
+
 ## Development
 
 The dev environment is provisioned by Nix (see [ADR-010](docs/adr/010-nix-only-dev-environment.md)). With `direnv` and `nix-direnv` installed, entering the directory loads the environment automatically; otherwise run `nix develop`.
 
 Every workflow has a Nix entry point (canonical) and an `npm run` alias (compatibility). See [ADR-011](docs/adr/011-nix-task-surface.md).
 
-| Workflow | Nix (canonical) | npm (alias) |
-|---|---|---|
-| Dev server (HMR) | `nix run .#dev` | `npm run dev` |
-| Production build | `nix run .#build` | `npm run build` |
-| Build + zip for store | `nix run .#build-zip` | `npm run build:zip` |
-| Lint | `nix run .#lint` | `npm run lint` |
-| Lint platform consistency | `nix run .#lint-platforms` | `npm run lint:platforms` |
-| Format (write) | `nix run .#format` | `npm run format` |
-| Format (check) | `nix run .#format-check` | `npm run format:check` |
-| Test | `nix run .#test` | `npm test` |
-| Test (watch) | `nix run .#test-watch` | `npm run test:watch` |
-| Test with coverage | `nix run .#test-coverage` | `npm run test:coverage` |
-| E2E auth setup | `nix run .#e2e-auth` | `npm run e2e:auth` |
-| E2E selector validation | `nix run .#e2e-selectors` | `npm run e2e:selectors` |
-| E2E selectors (headed) | `nix run .#e2e-selectors-headed` | `npm run e2e:selectors:headed` |
-| CDP daemon | `nix run .#e2e-daemon -- <start\|stop\|status>` | `npm run e2e:daemon:<sub>` |
+| Workflow                  | Nix (canonical)                                 | npm (alias)                    |
+| ------------------------- | ----------------------------------------------- | ------------------------------ |
+| Dev server (HMR)          | `nix run .#dev`                                 | `npm run dev`                  |
+| Production build          | `nix run .#build`                               | `npm run build`                |
+| Build + zip for store     | `nix run .#build-zip`                           | `npm run build:zip`            |
+| Lint                      | `nix run .#lint`                                | `npm run lint`                 |
+| Lint platform consistency | `nix run .#lint-platforms`                      | `npm run lint:platforms`       |
+| Format (write)            | `nix run .#format`                              | `npm run format`               |
+| Format (check)            | `nix run .#format-check`                        | `npm run format:check`         |
+| Test                      | `nix run .#test`                                | `npm test`                     |
+| Test (watch)              | `nix run .#test-watch`                          | `npm run test:watch`           |
+| Test with coverage        | `nix run .#test-coverage`                       | `npm run test:coverage`        |
+| E2E auth setup            | `nix run .#e2e-auth`                            | `npm run e2e:auth`             |
+| E2E selector validation   | `nix run .#e2e-selectors`                       | `npm run e2e:selectors`        |
+| E2E selectors (headed)    | `nix run .#e2e-selectors-headed`                | `npm run e2e:selectors:headed` |
+| CDP daemon                | `nix run .#e2e-daemon -- <start\|stop\|status>` | `npm run e2e:daemon:<sub>`     |
 
 > [!NOTE]
 > Nix attribute names cannot contain `:`, so npm script names like `e2e:auth` map to `e2e-auth`. The CDP daemon takes its subcommand as an argument: `nix run .#e2e-daemon -- start`.
@@ -227,7 +311,7 @@ If `node_modules/` is missing, the Nix wrapper exits with an instruction to run 
 ## Architecture
 
 ```
-Content Script (gemini.google.com, claude.ai, chatgpt.com, www.perplexity.ai, notebooklm.google.com)
+Content Script (gemini.google.com, claude.ai, chatgpt.com, www.perplexity.ai, notebook.google.com + legacy notebooklm.google.com)
     ↓ extracts conversation / Deep Research / Artifacts
 Background Service Worker
     ↓ sends to Obsidian
@@ -236,32 +320,38 @@ Obsidian Local REST API (default: http://127.0.0.1:27123)
 
 ### Key Components
 
-| Component | Description |
-|-----------|-------------|
-| `src/content/` | Content script for DOM extraction and UI |
-| `src/content/extractors/gemini.ts` | Gemini conversation & Deep Research extractor |
-| `src/content/extractors/claude.ts` | Claude conversation & Artifact extractor |
-| `src/content/extractors/chatgpt.ts` | ChatGPT conversation extractor |
-| `src/content/extractors/perplexity.ts` | Perplexity conversation extractor |
-| `src/background/` | Service worker for API communication |
-| `src/popup/` | Settings UI |
-| `src/lib/` | Shared utilities and types |
+| Component                              | Description                                             |
+| -------------------------------------- | ------------------------------------------------------- |
+| `src/content/`                         | Content script for DOM extraction and UI                |
+| `src/content/extractors/gemini.ts`     | Gemini conversation & Deep Research extractor           |
+| `src/content/extractors/claude.ts`     | Claude conversation & Artifact extractor                |
+| `src/content/extractors/chatgpt.ts`    | ChatGPT conversation extractor                          |
+| `src/content/extractors/perplexity.ts` | Perplexity conversation extractor                       |
+| `src/content/extractors/notebooklm.ts` | Gemini Notebook chat & source-citation extractor        |
+| `src/content/image-capture.ts`         | Captures generated images as base64 in the page context |
+| `src/background/`                      | Service worker for API communication                    |
+| `src/lib/image-output.ts`              | Resolves image placeholders per output destination      |
+| `src/popup/`                           | Settings UI                                             |
+| `src/lib/`                             | Shared utilities and types                              |
 
 ## HTTPS Setup (Optional)
 
 The extension supports HTTPS connections to the Obsidian Local REST API. This is useful when:
+
 - The Local REST API is configured with HTTPS (self-signed certificate)
 - You want to connect to an Obsidian instance on your local network (LAN)
 
 ### macOS
 
 1. **Extract the certificate** from the running Obsidian REST API:
+
    ```bash
    openssl s_client -connect 127.0.0.1:27124 -showcerts \
      </dev/null 2>/dev/null | openssl x509 -outform PEM > obsidian-cert.pem
    ```
 
 2. **Import into macOS Keychain** as a trusted root certificate:
+
    ```bash
    sudo security add-trusted-cert -d -r trustRoot \
      -k /Library/Keychains/System.keychain obsidian-cert.pem
@@ -289,8 +379,10 @@ Import the certificate into your OS certificate store and restart Chrome. The ge
 ## Privacy
 
 This extension:
-- Does **not** collect or transmit your data to external servers
-- Only communicates with your Obsidian instance (default: 127.0.0.1, configurable for LAN access)
+
+- Does **not** collect your data, and sends **no** analytics or telemetry anywhere
+- Sends your conversations only to your Obsidian instance (default: 127.0.0.1, configurable for LAN access)
+- Downloads generated images only when image export is enabled, and only for images in the conversation you are exporting: Gemini images from Google's image CDN (`googleusercontent.com`, which redirects to `lh3.google.com`), ChatGPT images from `chatgpt.com` itself — in both cases the same host the AI page already loads them from
 - Stores API key locally in your browser (not synced to cloud)
 
 See our [Privacy Policy](https://sho7650.github.io/obsidian-AI-exporter/privacy.html) for details.
@@ -304,4 +396,3 @@ MIT
 Contributions are welcome! Please read the [CLAUDE.md](CLAUDE.md) for development guidelines.
 
 [![Buy Me a Coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=&slug=sho7650&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff)](https://www.buymeacoffee.com/sho7650)
-

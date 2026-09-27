@@ -7,11 +7,23 @@
 
 import type { ClassificationResult } from './classifier';
 import type { AuthStatus } from './auth-check';
+import type { BaselineComparison } from './baseline';
 
 interface NotificationConfig {
   obsidianUrl: string;
   obsidianApiKey: string;
   vaultPath: string;
+}
+
+/**
+ * Content column for a baseline row: "3 -> 0" plus the verdict.
+ *
+ * Without it a content_lost row reads "match | 3 | 3" — the count axis is
+ * unchanged, which is exactly what made issue #444 invisible (ADR-031).
+ */
+function formatContent(b: BaselineComparison): string {
+  if (b.contentStatus === undefined) return '-';
+  return `${b.baselineNonEmpty} -> ${b.currentNonEmpty} (${b.contentStatus})`;
 }
 
 export interface PlatformReport {
@@ -23,6 +35,12 @@ export interface PlatformReport {
   failedTargets: string[];
   /** Targets skipped on a transient content stall. */
   stallSkips: string[];
+  /**
+   * Targets whose selector counts never settled before they were sampled.
+   * Their numbers were read off a page still rendering, so a diff from such a
+   * run is not evidence of DOM drift.
+   */
+  unsettledTargets: string[];
 }
 
 export interface ValidationReport {
@@ -89,7 +107,7 @@ const AUTH_GUIDANCE: Readonly<Record<Exclude<AuthStatus, 'authenticated'>, strin
 };
 
 /** Short note for a transition back to a clean pass. */
-export function generateRecoveryMarkdown(report: ValidationReport): string {
+function generateRecoveryMarkdown(report: ValidationReport): string {
   const dateStr = report.timestamp.slice(0, 10);
   return [
     '---',
@@ -107,6 +125,7 @@ export function generateRecoveryMarkdown(report: ValidationReport): string {
   ].join('\n');
 }
 
+/** Full health note. Exported for its tests; sending is {@link notifyObsidian}. */
 export function generateMarkdown(report: ValidationReport): string {
   const dateStr = report.timestamp.slice(0, 10);
   const lines: string[] = [
@@ -122,8 +141,8 @@ export function generateMarkdown(report: ValidationReport): string {
     '',
     '## Summary',
     '',
-    '| Platform | Auth | Pass | Dead Primary | Fail | BL Blocking | BL Advisory | Stall Skips |',
-    '|----------|------|------|--------------|------|-------------|-------------|-------------|',
+    '| Platform | Auth | Pass | Dead Primary | Fail | BL Blocking | BL Advisory | Stall Skips | Unsettled |',
+    '|----------|------|------|--------------|------|-------------|-------------|-------------|-----------|',
   ];
 
   for (const p of report.platforms) {
@@ -132,7 +151,8 @@ export function generateMarkdown(report: ValidationReport): string {
     lines.push(
       `| ${p.platform} | ${auth} | ${c?.pass.length ?? '-'} | ${c?.warn.length ?? '-'} | ` +
         `${c?.fail.length ?? '-'} | ${c?.baselineBlocking.length ?? '-'} | ` +
-        `${c?.baselineAdvisory.length ?? '-'} | ${p.stallSkips.length || '-'} |`
+        `${c?.baselineAdvisory.length ?? '-'} | ${p.stallSkips.length || '-'} | ` +
+        `${p.unsettledTargets.length || '-'} |`
     );
   }
 
@@ -150,6 +170,16 @@ export function generateMarkdown(report: ValidationReport): string {
         '### ⏳ Content Stall (skipped)',
         '',
         `Targets: ${p.stallSkips.join(', ')} — escalates to FAIL after 3 consecutive stalls.`,
+        ''
+      );
+    }
+
+    if (p.unsettledTargets.length > 0) {
+      sections.push(
+        '### ⏱️ Unsettled Counts (sampled mid-render)',
+        '',
+        `Targets: ${p.unsettledTargets.join(', ')} — the counts never stopped moving within ` +
+          'the settle timeout, so a diff from this run is not evidence of DOM drift (ADR-016 §1a).',
         ''
       );
     }
@@ -199,12 +229,13 @@ export function generateMarkdown(report: ValidationReport): string {
           '',
           'Intentional selector changes must be recorded via `npm run e2e:baseline:update`.',
           '',
-          '| Selector | Status | Baseline | Current |',
-          '|----------|--------|----------|---------|'
+          '| Selector | Status | Baseline | Current | Content |',
+          '|----------|--------|----------|---------|---------|'
         );
         for (const b of c.baselineBlocking) {
           sections.push(
-            `| ${b.group}:${b.name} \`${b.selector}\` | ${b.status} | ${b.baselineCount} | ${b.currentCount} |`
+            `| ${b.group}:${b.name} \`${b.selector}\` | ${b.contentStatus === 'content_lost' ? b.contentStatus : b.status} | ` +
+              `${b.baselineCount} | ${b.currentCount} | ${formatContent(b)} |`
           );
         }
         sections.push('');
@@ -214,12 +245,12 @@ export function generateMarkdown(report: ValidationReport): string {
         sections.push(
           '### 📉 Baseline Degradation (advisory)',
           '',
-          '| Selector | Baseline | Current |',
-          '|----------|----------|---------|'
+          '| Selector | Baseline | Current | Content |',
+          '|----------|----------|---------|---------|'
         );
         for (const b of c.baselineAdvisory) {
           sections.push(
-            `| ${b.group}:${b.name} \`${b.selector}\` | ${b.baselineCount} | ${b.currentCount} |`
+            `| ${b.group}:${b.name} \`${b.selector}\` | ${b.baselineCount} | ${b.currentCount} | ${formatContent(b)} |`
           );
         }
         sections.push('');

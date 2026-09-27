@@ -4,8 +4,9 @@
  * Tests the message handling, validation, and API integration of the background script.
  */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import type { ObsidianNote } from '../../src/lib/types';
+import type { MultiOutputResponse, ObsidianNote } from '../../src/lib/types';
 import { generateHash } from '../../src/lib/hash';
+import { flattenLargeCallouts } from '../../src/lib/callout-flatten';
 
 // Mock client instance - defined at module level
 const mockClient = {
@@ -382,6 +383,96 @@ describe('background/index', () => {
         });
       });
 
+      it('rejects images whose combined base64 size exceeds the total cap', () => {
+        const sendResponse = vi.fn();
+        // One ~13 MiB base64 string reused across 4 entries: each is under the
+        // per-image cap (14 MiB) but the sum (~52 MiB) exceeds the 48 MiB total.
+        const big = 'A'.repeat(13 * 1024 * 1024); // valid base64 charset, length % 4 === 0
+        const images = Array.from({ length: 4 }, (_, i) => ({
+          id: `img-${i}`,
+          mimeType: 'image/png',
+          data: big,
+          alt: 'a',
+        }));
+        capturedListener(
+          { action: 'saveToOutputs', outputs: ['obsidian'], data: { ...validNote, images } },
+          validSender as chrome.runtime.MessageSender,
+          sendResponse
+        );
+        expect(sendResponse).toHaveBeenCalledWith({
+          success: false,
+          error: 'Invalid message content',
+        });
+      });
+
+      it('rejects an image with a MIME type outside the allow-list', () => {
+        const sendResponse = vi.fn();
+        capturedListener(
+          {
+            action: 'saveToOutputs',
+            outputs: ['obsidian'],
+            data: {
+              ...validNote,
+              images: [{ id: 'img-1', mimeType: 'image/tiff', data: 'UE5H', alt: 'a' }],
+            },
+          },
+          validSender as chrome.runtime.MessageSender,
+          sendResponse
+        );
+        expect(sendResponse).toHaveBeenCalledWith({
+          success: false,
+          error: 'Invalid message content',
+        });
+      });
+
+      it('rejects an image with malformed base64 data', () => {
+        const sendResponse = vi.fn();
+        capturedListener(
+          {
+            action: 'saveToOutputs',
+            outputs: ['obsidian'],
+            // '@@@@' is length % 4 === 0 but contains non-base64 characters.
+            data: {
+              ...validNote,
+              images: [{ id: 'img-1', mimeType: 'image/png', data: '@@@@', alt: 'a' }],
+            },
+          },
+          validSender as chrome.runtime.MessageSender,
+          sendResponse
+        );
+        expect(sendResponse).toHaveBeenCalledWith({
+          success: false,
+          error: 'Invalid message content',
+        });
+      });
+
+      it('accepts multiple valid images within the total cap', () => {
+        const sendResponse = vi.fn();
+        mockClient.getFile.mockResolvedValue(null);
+        mockClient.putFile.mockResolvedValue(undefined);
+        mockClient.putBinaryFile.mockResolvedValue(undefined);
+        capturedListener(
+          {
+            action: 'saveToOutputs',
+            outputs: ['obsidian'],
+            data: {
+              ...validNote,
+              images: [
+                { id: 'img-1', mimeType: 'image/png', data: 'UE5H', alt: 'a' },
+                { id: 'img-2', mimeType: 'image/jpeg', data: 'AAAA', alt: 'b' },
+                { id: 'img-3', mimeType: 'image/webp', data: 'BBBB', alt: 'c' },
+              ],
+            },
+          },
+          validSender as chrome.runtime.MessageSender,
+          sendResponse
+        );
+        expect(sendResponse).not.toHaveBeenCalledWith({
+          success: false,
+          error: 'Invalid message content',
+        });
+      });
+
       it('rejects fileName with path traversal (DES-014 H-1)', () => {
         const sendResponse = vi.fn();
         capturedListener(
@@ -436,7 +527,11 @@ describe('background/index', () => {
         });
       });
 
-      it('rejects body over 1MB', () => {
+      it('no longer rejects a body over the retired 1 MiB constant (issue #467)', async () => {
+        // The size limit is a user setting now and is enforced by
+        // handleMultiOutput, which can read it; message validation cannot.
+        // A 1,077-message note was being answered with "Invalid message
+        // content" here, which the content script then crashed on.
         const sendResponse = vi.fn();
         capturedListener(
           {
@@ -448,7 +543,8 @@ describe('background/index', () => {
           sendResponse
         );
 
-        expect(sendResponse).toHaveBeenCalledWith({
+        await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+        expect(sendResponse).not.toHaveBeenCalledWith({
           success: false,
           error: 'Invalid message content',
         });
@@ -982,6 +1078,114 @@ describe('background/index', () => {
         const result = sendResponse.mock.calls[0][0].results[0];
         expect(result.success).toBe(false);
         expect(result.error).toContain('collision');
+      });
+    });
+
+    // Forking a new file is a decision the save path used to make in complete
+    // silence, which is why three rounds of correspondence on #365 could not
+    // pin down WHICH negative had occurred. Behaviour is unchanged here — only
+    // the reasoning becomes visible.
+    describe('fork diagnostics (issue #365)', () => {
+      const suffix = generateHash('test-id');
+      const send = (sendResponse: ReturnType<typeof vi.fn>) =>
+        capturedListener(
+          { action: 'saveToOutputs', outputs: ['obsidian'], data: validNote },
+          validSender as chrome.runtime.MessageSender,
+          sendResponse
+        );
+
+      it('warns with every probe outcome when it forks an alternative name', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        mockClient.getFile.mockImplementation((path: string) =>
+          Promise.resolve(
+            path === 'AI/Gemini/test.md' ? '---\nid: other_id\n---\nSomeone else' : null
+          )
+        );
+        mockClient.putFile.mockResolvedValue(undefined);
+
+        const sendResponse = vi.fn();
+        send(sendResponse);
+        await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+
+        const call = warn.mock.calls.find(c => String(c[0]).includes('Filename collision'));
+        expect(call).toBeDefined();
+        const detail = call?.[1] as {
+          expectedId: string;
+          savedAs: string;
+          probes: Array<{ attempt: number; fileName: string; state: string; foundId?: string }>;
+        };
+        expect(detail.expectedId).toBe('test-id');
+        expect(detail.savedAs).toBe(`test-${suffix}.md`);
+        expect(detail.probes[0]).toEqual({
+          attempt: 0,
+          fileName: 'test.md',
+          state: 'different-id',
+          foundId: 'other_id',
+        });
+        expect(detail.probes[1]).toMatchObject({ attempt: 1, state: 'absent' });
+        warn.mockRestore();
+      });
+
+      it('reports an empty occupying file as empty, not as another conversation', async () => {
+        // Behaviour is deliberately unchanged (it still forks) — but a 0-byte
+        // note must not be reported as evidence that someone else owns the name.
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        mockClient.getFile.mockImplementation((path: string) =>
+          Promise.resolve(path === 'AI/Gemini/test.md' ? '' : null)
+        );
+        mockClient.putFile.mockResolvedValue(undefined);
+
+        const sendResponse = vi.fn();
+        send(sendResponse);
+        await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+
+        const call = warn.mock.calls.find(c => String(c[0]).includes('Filename collision'));
+        const detail = call?.[1] as { probes: Array<{ attempt: number; state: string }> };
+        expect(detail.probes[0]).toEqual({ attempt: 0, fileName: 'test.md', state: 'empty' });
+        // Unchanged behaviour: the fork still happens.
+        expect(mockClient.putFile).toHaveBeenCalledWith(
+          `AI/Gemini/test-${suffix}.md`,
+          expect.any(String)
+        );
+        warn.mockRestore();
+      });
+
+      it('does not fork when the existing note is CRLF-terminated (issue #365)', async () => {
+        // The reported failure end to end: a note the extension wrote, later
+        // rewritten with Windows line endings by the user's own tooling. It
+        // used to read as `no-id`, so the save forked `…-<hash>.md` beside it.
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const ownNote = ['---', 'id: test-id', 'title: T', '---', '', 'Body'].join('\r\n');
+        mockClient.getFile.mockImplementation((path: string) =>
+          Promise.resolve(path === 'AI/Gemini/test.md' ? ownNote : null)
+        );
+        mockClient.putFile.mockResolvedValue(undefined);
+
+        const sendResponse = vi.fn();
+        send(sendResponse);
+        await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+
+        // Written back to its own name, not to a collision-free alternative.
+        expect(mockClient.putFile).toHaveBeenCalledWith('AI/Gemini/test.md', expect.any(String));
+        expect(warn.mock.calls.filter(c => String(c[0]).includes('Filename collision'))).toEqual(
+          []
+        );
+        warn.mockRestore();
+      });
+
+      it('stays silent when the note lands on its canonical name', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        mockClient.getFile.mockResolvedValue(null);
+        mockClient.putFile.mockResolvedValue(undefined);
+
+        const sendResponse = vi.fn();
+        send(sendResponse);
+        await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+
+        expect(warn.mock.calls.filter(c => String(c[0]).includes('Filename collision'))).toEqual(
+          []
+        );
+        warn.mockRestore();
       });
     });
 
@@ -1591,6 +1795,37 @@ describe('background/index', () => {
       expect(content).not.toContain('![[');
     });
 
+    it('obsidian: reports a warning when an image write fails, without blocking the note (issue #376)', async () => {
+      mockClient.getFile.mockResolvedValue(null); // fresh file
+      mockClient.putFile.mockResolvedValue(undefined);
+      mockClient.putBinaryFile.mockRejectedValue(new Error('boom'));
+
+      const sendResponse = save(['obsidian']);
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+
+      const response = sendResponse.mock.calls[0][0] as MultiOutputResponse;
+      const obsidian = response.results.find(r => r.destination === 'obsidian');
+      // The note itself must still be written (image failures are non-blocking).
+      expect(obsidian?.success).toBe(true);
+      expect(mockClient.putFile).toHaveBeenCalled();
+      // ...but the failure must no longer be silent.
+      expect(obsidian?.warning).toContain('img-note-img-1.png');
+    });
+
+    it('obsidian: reports no warning when every image write succeeds', async () => {
+      mockClient.getFile.mockResolvedValue(null);
+      mockClient.putFile.mockResolvedValue(undefined);
+      mockClient.putBinaryFile.mockResolvedValue(undefined);
+
+      const sendResponse = save(['obsidian']);
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+
+      const response = sendResponse.mock.calls[0][0] as MultiOutputResponse;
+      const obsidian = response.results.find(r => r.destination === 'obsidian');
+      expect(obsidian?.success).toBe(true);
+      expect(obsidian?.warning).toBeUndefined();
+    });
+
     it('obsidian: image export disabled strips placeholders and writes no binary', async () => {
       mockGetSettings = vi.fn(() =>
         Promise.resolve({ ...defaultSettings, enableImageExport: false })
@@ -2051,6 +2286,32 @@ describe('background/index', () => {
       expect(response.messagesAppended).toBe(2);
     });
 
+    it('reports why append mode found no existing note (issue #365)', async () => {
+      // The miss is what makes the save path fork a new file, so name it.
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      mockGetSettings = vi.fn(() => Promise.resolve(appendSettings));
+      mockClient.getFile.mockResolvedValue(null); // direct path absent
+      mockClient.listFiles.mockResolvedValue([]); // …and nothing to scan
+      mockClient.putFile.mockResolvedValue(undefined);
+
+      const sendResponse = vi.fn();
+      capturedListener(
+        { action: 'saveToOutputs', outputs: ['obsidian'], data: appendNote },
+        validSender as chrome.runtime.MessageSender,
+        sendResponse
+      );
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+
+      const call = info.mock.calls.find(c => String(c[0]).includes('Append lookup'));
+      expect(call).toBeDefined();
+      expect(call?.[1]).toMatchObject({
+        id: 'claude_abc-def',
+        missReason: 'empty-directory',
+        directProbe: { state: 'absent' },
+      });
+      info.mockRestore();
+    });
+
     it('returns messagesAppended: 0 when no new messages', async () => {
       mockGetSettings = vi.fn(() => Promise.resolve(appendSettings));
       // Existing file already has 4 messages
@@ -2070,6 +2331,119 @@ describe('background/index', () => {
       const response = sendResponse.mock.calls[0][0];
       expect(response.allSuccessful).toBe(true);
       expect(response.messagesAppended).toBe(0);
+    });
+
+    it('does not re-append the tail of a note whose callouts were flattened (issue #406)', async () => {
+      // The note we saved last time had one oversized callout, so the Obsidian
+      // save path wrote it as `**Claude:**` plain text. Nothing has changed in
+      // the conversation since. Append mode must recognise all 4 messages as
+      // already present — counting only the surviving callouts makes it append
+      // the tail a second time, verbatim.
+      const longAnswer = Array.from({ length: 8 }, (_, i) => `> answer line ${i}`);
+      const body = [
+        '> [!QUESTION] User',
+        '> Hello',
+        '',
+        '> [!NOTE] Claude',
+        ...longAnswer,
+        '',
+        '> [!QUESTION] User',
+        '> New question',
+        '',
+        '> [!NOTE] Claude',
+        '> New answer',
+      ].join('\n');
+      const note: ObsidianNote = {
+        ...appendNote,
+        body,
+        frontmatter: { ...appendNote.frontmatter, message_count: 4 },
+      };
+      // Exactly what the previous save wrote to the vault.
+      const onDisk = [
+        '---',
+        'id: claude_abc-def',
+        'message_count: 4',
+        'modified: "2026-01-01T00:00:00.000Z"',
+        '---',
+        flattenLargeCallouts(body, 5),
+      ].join('\n');
+      expect(onDisk).toContain('**Claude:**'); // guard: the fixture really is mixed
+
+      mockGetSettings = vi.fn(() =>
+        Promise.resolve({ ...appendSettings, flattenLargeCallouts: true, maxCalloutLines: 5 })
+      );
+      mockClient.getFile.mockResolvedValueOnce(onDisk);
+      mockClient.putFile.mockResolvedValue(undefined);
+
+      const sendResponse = vi.fn();
+      capturedListener(
+        { action: 'saveToOutputs', outputs: ['obsidian'], data: note },
+        validSender as chrome.runtime.MessageSender,
+        sendResponse
+      );
+
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+      const response = sendResponse.mock.calls[0][0];
+      expect(response.allSuccessful).toBe(true);
+      expect(response.messagesAppended).toBe(0);
+      expect(mockClient.putFile).not.toHaveBeenCalled();
+    });
+
+    it('flattens a CRLF note without losing labels or re-appending (issues #406, #407)', async () => {
+      // Flattening ran AFTER the CRLF restore, so it saw lines ending in '\r'.
+      // CALLOUT_HEADER_PATTERN's `(.*)$` cannot match past a CR (the same
+      // mechanism as #407), so the header fell through to the plain-blockquote
+      // branch: the `**Claude:**` label was dropped and a raw `[!NOTE] Claude`
+      // was left in the note text. With no label, the message is invisible to
+      // countExistingMessages() — so #406 recurs on CRLF files even once the
+      // counter reads both formats.
+      const longAnswer = Array.from({ length: 8 }, (_, i) => `> answer line ${i}`);
+      const bodyLines = [
+        '> [!QUESTION] User',
+        '> Hello',
+        '',
+        '> [!NOTE] Claude',
+        ...longAnswer,
+        '',
+        '> [!QUESTION] User',
+        '> New question',
+      ];
+      const note: ObsidianNote = {
+        ...appendNote,
+        body: bodyLines.join('\n'),
+        frontmatter: { ...appendNote.frontmatter, message_count: 3 },
+      };
+      const onDisk = [
+        '---',
+        'id: claude_abc-def',
+        'message_count: 2',
+        'modified: "2026-01-01T00:00:00.000Z"',
+        '---',
+        ...bodyLines.slice(0, -3),
+      ].join('\r\n');
+
+      mockGetSettings = vi.fn(() =>
+        Promise.resolve({ ...appendSettings, flattenLargeCallouts: true, maxCalloutLines: 5 })
+      );
+      mockClient.getFile.mockResolvedValueOnce(onDisk);
+      mockClient.putFile.mockResolvedValue(undefined);
+
+      const sendResponse = vi.fn();
+      capturedListener(
+        { action: 'saveToOutputs', outputs: ['obsidian'], data: note },
+        validSender as chrome.runtime.MessageSender,
+        sendResponse
+      );
+
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+      const written = mockClient.putFile.mock.calls[0][1] as string;
+
+      // The label survives flattening…
+      expect(written).toContain('**Claude:**');
+      // …no raw callout marker is left as body text…
+      expect(written).not.toMatch(/^\[!\w+\]/m);
+      // …and the file the user maintains as CRLF stays CRLF throughout (ADR-026).
+      expect(written).not.toMatch(/(?<!\r)\n/);
     });
 
     it('falls back to overwrite when append mode is off', async () => {
@@ -2244,6 +2618,79 @@ describe('background/index', () => {
       );
     });
   });
+  describe('note size cap (issue #467)', () => {
+    const validSender = { url: `chrome-extension://${chrome.runtime.id}/popup.html` };
+    const validNote: ObsidianNote = {
+      fileName: 'test.md',
+      body: 'a'.repeat(2 * 1024 * 1024), // 2 MiB
+      contentHash: 'abc123',
+      frontmatter: {
+        id: 'test-id',
+        title: 'Test Title',
+        source: 'gemini',
+        url: 'https://gemini.google.com/app/123',
+        created: '2024-01-01',
+        modified: '2024-01-01',
+        tags: ['test'],
+        message_count: 2,
+      },
+    };
+
+    async function save(outputs: string[]): Promise<{
+      results: Array<{ destination: string; success: boolean; error?: string }>;
+      allSuccessful: boolean;
+      anySuccessful: boolean;
+    }> {
+      const sendResponse = vi.fn();
+      capturedListener(
+        { action: 'saveToOutputs', data: validNote, outputs },
+        validSender as chrome.runtime.MessageSender,
+        sendResponse
+      );
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+      return sendResponse.mock.calls[0][0];
+    }
+
+    beforeEach(() => {
+      mockClient.getFile.mockResolvedValue(null);
+      mockClient.putFile.mockResolvedValue(undefined);
+      vi.mocked(chrome.runtime.sendMessage).mockResolvedValue({ success: true });
+    });
+
+    it('fails every requested destination when the body exceeds the configured cap', async () => {
+      mockGetSettings.mockResolvedValue({ ...defaultSettings, maxNoteSizeMiB: 1 });
+
+      const response = await save(['obsidian', 'clipboard']);
+
+      // A real save result, not the rejection envelope: the content script's
+      // toast and badge paths render it without any special case.
+      expect(response.allSuccessful).toBe(false);
+      expect(response.anySuccessful).toBe(false);
+      expect(response.results.map(r => r.destination)).toEqual(['obsidian', 'clipboard']);
+      expect(response.results.every(r => r.success === false)).toBe(true);
+      expect(mockClient.putFile).not.toHaveBeenCalled();
+    });
+
+    it('names the setting to raise, with both sizes', async () => {
+      mockGetSettings.mockResolvedValue({ ...defaultSettings, maxNoteSizeMiB: 1 });
+
+      const response = await save(['obsidian']);
+
+      expect(response.results[0].error).toMatch(/2\.0 MiB/);
+      expect(response.results[0].error).toMatch(/above the 1 MiB limit/);
+      expect(response.results[0].error).toMatch(/Maximum note size/);
+    });
+
+    it('saves the same note when the cap allows it', async () => {
+      mockGetSettings.mockResolvedValue({ ...defaultSettings, maxNoteSizeMiB: 8 });
+
+      const response = await save(['obsidian']);
+
+      expect(response.allSuccessful).toBe(true);
+      expect(mockClient.putFile).toHaveBeenCalled();
+    });
+  });
+
 });
 
 describe('background/index migrateSettings failure', () => {

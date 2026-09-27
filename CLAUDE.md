@@ -74,8 +74,9 @@ Nix is the canonical task surface (see [ADR-011](docs/adr/011-nix-task-surface.m
 nix run .#build           # TypeScript check + Vite production build
 nix run .#build-zip       # Build + zip dist/ for Chrome Web Store
 nix run .#dev             # Vite dev server with HMR
-nix run .#lint            # ESLint on src/ + platform consistency check
+nix run .#lint            # ESLint on src/ + platform consistency check + knip (dead code)
 nix run .#lint-platforms  # Platform consistency check only
+nix run .#lint-dead       # knip only: unused files/exports/dependencies (ADR-037)
 nix run .#format          # Prettier formatting (write)
 nix run .#format-check    # Prettier formatting (check only, for CI)
 nix run .#test            # Run test suite (vitest)
@@ -105,12 +106,37 @@ conversation via the daemon and print its URL → update `*_CONV_URL` in `e2e/.e
 `e2e-baseline-update`. Baselines are per-machine (gitignored) and are written ONLY by the
 update command; zero-match selectors are rejected at update time.
 
+**Test-data requirements.** A baseline can only be written when EVERY selector of the
+platform matches at least once — the rejection is per selector string, not per name, so a
+single dead fallback blocks the whole platform even while its primary works (issue #402).
+Consequently:
+
+- `GEMINI_CONV_URL` must point at a conversation that **contains a generated image**, because
+  `generatedImage` lives in `GEMINI_SELECTORS` and is validated by the conversation test.
+- If the update refuses with `refusing to record zero-match selectors`, the message names the
+  offender. Fix the selector (a fallback the platform no longer renders should be deleted, as
+  in #401) or the test conversation — never work around it by relaxing the baseline contract,
+  which exists because v1's zero entries made `lost` undetectable (ADR-016).
+- The baseline also records **how many matches carry content** (`nonEmptyCount`), because a
+  container can keep matching after its content moves elsewhere — that is how a Perplexity
+  layout change lost every assistant message while the contract stayed green (#444, ADR-031).
+  A `>0 → 0` drop blocks the run. Selectors that are legitimately empty (`citationSpacer`,
+  `generatedImage`) record `0` and can never drop, so they need no exception; but for the
+  containers in `CONTENT_REQUIRED` an empty match is refused at update time with
+  `refusing to record matched-but-empty selectors` — recording zero there would make content
+  loss undetectable for good. Fix the selector or the test conversation, never the contract.
+- An update also refuses to record a `matchCount` or `nonEmptyCount` **lower than the existing
+  baseline** for the same selector (`refusing to lower the <platform> baseline`), because a plain
+  re-record would turn a standing `degraded` advisory into the contract — that is how Claude's
+  `assistantResponse` went 62 → 6 in 2026-09 without a decision. Confirm the drop is the test
+  conversation, then rerun with `ACCEPT_DEGRADED=1 nix run .#e2e-baseline-update`.
+
 Load the extension in Chrome: `chrome://extensions` → Load unpacked → select `dist/` folder
 
 ## Architecture
 
 ```
-Content Script (gemini.google.com, claude.ai, chatgpt.com, www.perplexity.ai, notebooklm.google.com)
+Content Script (gemini.google.com, claude.ai, chatgpt.com, www.perplexity.ai, notebook.google.com + legacy notebooklm.google.com)
     ↓ extracts conversation / Deep Research / Artifacts
 Background Service Worker
     ↓ sends to Obsidian
@@ -204,17 +230,19 @@ source: gemini
 > response text
 ```
 
+The `tags:` list comes from two user settings in `TemplateOptions` (`conversationTags`, `deepResearchTags`), resolved by `src/lib/tag-template.ts`: entries are literal tags or the `{platform}` token, an invalid or empty field falls back to the defaults (`ai-conversation, {platform}` / `ai-research, deep-research, {platform}`), and append mode never rewrites an existing `tags:` block ([ADR-039](docs/adr/039-configurable-frontmatter-tags.md)).
+
 ## Supported Platforms
 
 - **Gemini** (`gemini.google.com`): Conversations, Deep Research reports, Gem conversations (`/gem/{gemId}/{conversationId}` — the conversation id is the second path segment), and generated images (see Image Export below)
 - **Claude** (`claude.ai`): Conversations, Extended Thinking, and Artifacts with inline citations
 - **ChatGPT** (`chatgpt.com`): Conversations (including custom GPTs via `/g/` URLs)
 - **Perplexity** (`www.perplexity.ai`): Conversations
-- **NotebookLM** (`notebooklm.google.com`): Chat conversations with source citations
+- **Gemini Notebook** (`notebook.google.com`, formerly NotebookLM on `notebooklm.google.com`): Chat conversations with source citations. Both hosts are matched while the legacy one redirects ([ADR-023](docs/adr/023-multi-host-platform-registry.md)); the platform id stays `notebooklm`
 
 ## Image Export
 
-Gemini-generated images are exported alongside the conversation ([ADR-008](docs/adr/008-image-sync-strategy.md), issue #186). Because Gemini uses blob: URLs that only the page context can read, images are captured as base64 **in the content script** (`src/content/image-capture.ts`) before sanitization, and each generated `<img>` is rewritten to a `data-g2o-image` marker. `conversationToNote()` emits a destination-agnostic placeholder `![alt](g2o-image://{id})`; the background resolves it per output (`src/lib/image-output.ts`):
+Gemini- and ChatGPT-generated images are exported alongside the conversation ([ADR-008](docs/adr/008-image-sync-strategy.md), [ADR-041](docs/adr/041-chatgpt-generated-image-capture.md), issues #186 / #423). Because Gemini uses blob: URLs that only the page context can read, images are captured as base64 **in the content script** (`src/content/image-capture.ts`) before sanitization, and each generated `<img>` is rewritten to a `data-g2o-image` marker by the shared `ImageMarkerCollector` (`src/content/image-markers.ts`). ChatGPT's images are page-readable too — `blob:` URLs since the 2026-09 layout (#515), same-origin `chatgpt.com/backend-api/…` before it — so the page reads them directly with no extra host; marker ids come from the answer's message id (legacy: the widget's `image-<uuid>`) so the virtualized harvest stays stable, and the detection selectors are extractor-private (#402). `conversationToNote()` emits a destination-agnostic placeholder `![alt](g2o-image://{id})`; the background resolves it per output (`src/lib/image-output.ts`):
 
 - **Obsidian**: image written to the vault (`putBinaryFile`) under `imageVaultPath` (default `AI/{platform}/images`, template tokens supported); body uses a wikilink embed `![[filename]]`.
 - **File download**: markdown + each image as separate files; body references the filename only.

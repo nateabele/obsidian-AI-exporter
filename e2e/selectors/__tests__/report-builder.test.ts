@@ -19,6 +19,7 @@ function makeSelectorResult(overrides: Partial<SelectorResult> = {}): SelectorRe
     selector: '.turn',
     index: 0,
     matchCount: 3,
+    nonEmptyCount: 1,
     ...overrides,
   };
 }
@@ -152,6 +153,29 @@ describe('processTestResult', () => {
     const map = processTestResult(new Map(), inputFor(detail, 'failed'));
 
     expect(map.get('gemini')!.authStatus).toBe('test_data_missing');
+  });
+
+  it('records a target whose selector counts never settled', () => {
+    // Counts read off a page that was still rendering are not evidence of DOM
+    // drift, so the report has to say which targets were sampled mid-render
+    // rather than leaving the numbers looking authoritative.
+    const detail = makeDetail({
+      settle: { settled: false, elapsedMs: 15_000, observations: 50 },
+    });
+
+    const map = processTestResult(new Map(), inputFor(detail, 'passed'));
+
+    expect(map.get('gemini')!.unsettledTargets).toEqual(['gemini_conv']);
+  });
+
+  it('leaves unsettledTargets empty when the page settled', () => {
+    const detail = makeDetail({
+      settle: { settled: true, elapsedMs: 2_800, observations: 6 },
+    });
+
+    const map = processTestResult(new Map(), inputFor(detail, 'passed'));
+
+    expect(map.get('gemini')!.unsettledTargets).toEqual([]);
   });
 
   it('records stall skips with their target', () => {

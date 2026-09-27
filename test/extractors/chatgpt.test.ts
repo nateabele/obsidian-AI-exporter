@@ -4,12 +4,12 @@ import {
   loadFixture,
   clearFixture,
   resetLocation,
-  setNonGeminiLocation,
   createChatGPTConversationDOM,
   setChatGPTLocation,
-  setNonChatGPTLocation,
+  defineLocation,
   createChatGPTInlineCitation,
   createChatGPTPage,
+  createChatGPTImageTurnDOM,
 } from '../fixtures/dom-helpers';
 
 describe('ChatGPTExtractor', () => {
@@ -40,12 +40,12 @@ describe('ChatGPTExtractor', () => {
       });
 
       it('returns false for other hosts', () => {
-        setNonGeminiLocation('chat.openai.com');
+        defineLocation('chat.openai.com');
         expect(extractor.canExtract()).toBe(false);
       });
 
       it('returns false for chat.openai.com (legacy domain)', () => {
-        setNonChatGPTLocation('chat.openai.com', '/c/test-123');
+        defineLocation('chat.openai.com', '/c/test-123');
         expect(extractor.canExtract()).toBe(false);
       });
     });
@@ -54,12 +54,12 @@ describe('ChatGPTExtractor', () => {
   // ========== 6.3.2 Security Tests (4 tests) ==========
   describe('Security', () => {
     it('rejects malicious subdomains containing chatgpt.com', () => {
-      setNonChatGPTLocation('evil-chatgpt.com.attacker.com');
+      defineLocation('evil-chatgpt.com.attacker.com');
       expect(extractor.canExtract()).toBe(false);
     });
 
     it('rejects chatgpt.com as subdomain', () => {
-      setNonChatGPTLocation('chatgpt.com.evil.com');
+      defineLocation('chatgpt.com.evil.com');
       expect(extractor.canExtract()).toBe(false);
     });
 
@@ -102,20 +102,12 @@ describe('ChatGPTExtractor', () => {
     });
 
     it('returns null for non-chat URLs', () => {
-      setNonChatGPTLocation('chatgpt.com', '/');
+      defineLocation('chatgpt.com', '/');
       expect(extractor.getConversationId()).toBeNull();
     });
 
     it('generates fallback ID when URL parsing fails', async () => {
-      Object.defineProperty(window, 'location', {
-        value: {
-          hostname: 'chatgpt.com',
-          pathname: '/settings',
-          href: 'https://chatgpt.com/settings',
-        },
-        writable: true,
-        configurable: true,
-      });
+      defineLocation('chatgpt.com', '/settings');
       loadFixture(
         createChatGPTConversationDOM([
           { role: 'user', content: 'Hello' },
@@ -886,6 +878,305 @@ describe('ChatGPTExtractor', () => {
       const messages = extractor.extractMessages();
       expect(messages).toHaveLength(1);
       expect(messages[0].content).not.toContain('utm_source');
+    });
+  });
+
+  // ========== Deep Research sandboxed iframe (issue #283) ==========
+  describe('Deep Research reports in a cross-origin iframe (issue #283)', () => {
+    /** The report turn as ChatGPT renders it: an empty turn wrapping an iframe. */
+    const DR_TURN = `
+      <section data-turn-id="turn-dr" data-testid="conversation-turn-2" data-turn="assistant">
+        <div data-message-author-role="assistant" data-message-id="m-dr">
+          <iframe
+            title="internal://deep-research"
+            src="https://connector_openai_deep_research.web-sandbox.oaiusercontent.com?app=chatgpt"
+            sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
+        </div>
+      </section>`;
+
+    const USER_TURN = `
+      <section data-turn-id="turn-q" data-testid="conversation-turn-1" data-turn="user">
+        <div data-message-author-role="user" data-message-id="m-q">
+          <div class="whitespace-pre-wrap">Research the history of movable type</div>
+        </div>
+      </section>`;
+
+    const ANSWERED_TURN = `
+      <section data-turn-id="turn-a" data-testid="conversation-turn-3" data-turn="assistant">
+        <div data-message-author-role="assistant" data-message-id="m-a">
+          <div class="markdown prose"><p>An ordinary inline answer.</p></div>
+        </div>
+      </section>`;
+
+    it('fails with an actionable error rather than saving a note with no report', async () => {
+      // The report body is unreachable from the parent page, so the only thing
+      // left to save is the user's own prompt. Saving that silently is worse
+      // than refusing: the user gets a note that looks complete and is not.
+      setChatGPTLocation('dr-only');
+      loadFixture(USER_TURN + DR_TURN);
+
+      const result = await extractor.extract();
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/deep research/i);
+      expect(result.error).toMatch(/iframe|sandbox/i);
+    });
+
+    it('keeps the rest of a mixed conversation but warns about the missing report', async () => {
+      setChatGPTLocation('dr-mixed');
+      loadFixture(USER_TURN + DR_TURN + ANSWERED_TURN);
+
+      const result = await extractor.extract();
+
+      expect(result.success).toBe(true);
+      expect(result.data?.messages).toHaveLength(2);
+      expect(result.warnings?.join(' ')).toMatch(/deep research/i);
+    });
+
+    it('recognises the report frame by its sandbox origin when the title changes', async () => {
+      // `title` is an internal string OpenAI can rename at any time; the
+      // sandbox host is the load-bearing part of the identification.
+      setChatGPTLocation('dr-retitled');
+      loadFixture(
+        USER_TURN +
+          `<section data-turn-id="turn-dr" data-turn="assistant">
+             <div data-message-author-role="assistant" data-message-id="m-dr">
+               <iframe src="https://connector_openai_deep_research.web-sandbox.oaiusercontent.com?app=chatgpt"></iframe>
+             </div>
+           </section>`
+      );
+
+      const result = await extractor.extract();
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/deep research/i);
+    });
+
+    it('leaves an ordinary conversation completely untouched', async () => {
+      // Detection must be inert when no report frame is present — this is what
+      // makes the change safe to ship without live re-verification.
+      setChatGPTLocation('ordinary');
+      loadFixture(USER_TURN + ANSWERED_TURN);
+
+      const result = await extractor.extract();
+
+      expect(result.success).toBe(true);
+      expect(result.data?.messages).toHaveLength(2);
+      expect(result.warnings?.join(' ') ?? '').not.toMatch(/deep research/i);
+    });
+
+    // Markup captured from a live conversation on 2026-08-09. Faithful to the
+    // observed structure in two ways that matter:
+    //   - the assistant turn carries NO `data-message-author-role`; the role is
+    //     only on `data-turn`, so role detection depends on that attribute
+    //   - the frame sits inside a `fixed` full-viewport overlay, several levels
+    //     below the turn
+    // The host is `connector-openai-deep-research…` with HYPHENS. Issue #283
+    // recorded `connector_openai_deep_research…` with UNDERSCORES, so the
+    // src-based fallback shipped against the old spelling matched nothing.
+    const OBSERVED_SRC =
+      'https://connector-openai-deep-research.web-sandbox.oaiusercontent.com' +
+      '?app=chatgpt&darkModeType=increased&locale=en-US&deviceType=desktop';
+
+    const observedTurn = (iframeAttrs: string): string => `
+      <section data-turn-id="request-WEB:0d7f4684-0" data-testid="conversation-turn-2"
+               data-turn="assistant" dir="auto">
+        <h4 class="sr-only select-none">ChatGPT said:</h4>
+        <div class="text-base my-auto mx-auto pb-8">
+          <div class="agent-turn">
+            <div class="flex max-w-full flex-col gap-4 grow">
+              <div class="no-scrollbar fixed start-0 end-0 top-0 bottom-0 z-50">
+                <div class="relative max-w-full overflow-hidden flex-1">
+                  <iframe ${iframeAttrs} sandbox="allow-scripts allow-same-origin allow-forms"
+                          class="h-full w-full max-w-full"></iframe>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="mx-auto flex-1"><div></div></div>
+        </div>
+      </section>`;
+
+    it('detects the frame markup observed live on 2026-08-09', async () => {
+      setChatGPTLocation('6a77cac1-0840-83e8-ba7c-590e2bc8e35d');
+      loadFixture(
+        USER_TURN + observedTurn(`title="internal://deep-research" src="${OBSERVED_SRC}"`)
+      );
+
+      const result = await extractor.extract();
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/deep research/i);
+    });
+
+    it('detects the observed frame by src when the title is absent', async () => {
+      // The whole point of the src fallback. Against the hyphenated host that
+      // the live page now serves, the underscore spelling from #283 misses.
+      setChatGPTLocation('6a77cac1-0840-83e8-ba7c-590e2bc8e35d');
+      loadFixture(USER_TURN + observedTurn(`src="${OBSERVED_SRC}"`));
+
+      const result = await extractor.extract();
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/deep research/i);
+    });
+
+    it('still detects the underscore host recorded in #283', async () => {
+      // Older builds/rollouts may still serve it; both spellings must work.
+      setChatGPTLocation('legacy-host');
+      loadFixture(
+        USER_TURN +
+          observedTurn(
+            'src="https://connector_openai_deep_research.web-sandbox.oaiusercontent.com?app=chatgpt"'
+          )
+      );
+
+      const result = await extractor.extract();
+
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/deep research/i);
+    });
+
+    it('ignores unrelated iframes', async () => {
+      setChatGPTLocation('other-iframe');
+      loadFixture(
+        USER_TURN + ANSWERED_TURN + '<iframe title="ad" src="https://example.com/embed"></iframe>'
+      );
+
+      const result = await extractor.extract();
+
+      expect(result.success).toBe(true);
+      expect(result.warnings?.join(' ') ?? '').not.toMatch(/deep research/i);
+    });
+  });
+
+  // ========== Generated images (ADR-041) ==========
+  describe('extract — generated images', () => {
+    const UUID = 'f5bf8dc7-0591-45fa-a3de-9a4e13104fcf';
+    const SAME_ORIGIN_SRC = () =>
+      `${window.location.origin}/backend-api/estuary/content?id=file_1&ts=497244&p=fs&cid=1&sig=abc&v=0`;
+
+    function mockImageFetch(bytes: Uint8Array, type = 'image/png'): void {
+      const blob = {
+        size: bytes.byteLength,
+        type,
+        arrayBuffer: () => Promise.resolve(bytes.buffer),
+      } as unknown as Blob;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({ ok: true, blob: () => Promise.resolve(blob) })
+      );
+    }
+
+    function loadImageConversation(options: { prose?: string; alt?: string } = {}): void {
+      setChatGPTLocation('6789abcd-ef01-2345-6789-abcdef012345');
+      loadFixture(`
+        <div class="app-container"><div class="flex flex-col">
+          ${createChatGPTConversationDOM([{ role: 'user', content: 'Draw a sunrise', id: 'turn-user' }])}
+          ${createChatGPTImageTurnDOM({
+            turnId: 'turn-image',
+            ordinal: 2,
+            imageUuid: UUID,
+            src: SAME_ORIGIN_SRC(),
+            alt: options.alt,
+            prose: options.prose,
+          })}
+        </div></div>
+      `);
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    });
+
+    it('turns an image-only assistant turn into a message with a marker keyed by the widget id', async () => {
+      loadImageConversation();
+      mockImageFetch(new Uint8Array([0x50, 0x4e, 0x47]));
+
+      const result = await extractor.extract();
+
+      expect(result.success).toBe(true);
+      const messages = result.data!.messages;
+      expect(messages).toHaveLength(2);
+      expect(messages[1].role).toBe('assistant');
+      expect(messages[1].content).toContain(`data-g2o-image="img-${UUID}"`);
+      expect(messages[1].content).toContain('alt="Generated image: A test picture"');
+      // Only the visible <img> is captured; the two aria-hidden duplicates are not.
+      expect(messages[1].content.match(/data-g2o-image/g)).toHaveLength(1);
+      expect(result.data!.images).toHaveLength(1);
+      expect(result.data!.images![0]).toMatchObject({
+        id: `img-${UUID}`,
+        mimeType: 'image/png',
+        data: 'UE5H',
+        alt: 'Generated image: A test picture',
+      });
+    });
+
+    it('fetches the image from the page, not the worker, because the source is same-origin', async () => {
+      loadImageConversation();
+      mockImageFetch(new Uint8Array([1, 2, 3]));
+      const sendMessage = vi.fn();
+      vi.stubGlobal('chrome', { runtime: { sendMessage } });
+
+      await extractor.extract();
+
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(vi.mocked(fetch).mock.calls[0][0]).toBe(SAME_ORIGIN_SRC());
+    });
+
+    it('keeps the marker id stable across repeated harvests and captures the image once', async () => {
+      loadImageConversation();
+      mockImageFetch(new Uint8Array([1, 2, 3]));
+
+      // harvestWindow re-runs once per scroll window; the id must not depend on the pass.
+      const first = extractor.extractMessages();
+      const second = extractor.extractMessages();
+      expect(first[1].content).toBe(second[1].content);
+
+      const result = await extractor.extract();
+      expect(result.data!.images).toHaveLength(1);
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    });
+
+    it('appends the marker after the prose in a mixed turn', async () => {
+      loadImageConversation({ prose: '<p>Here you go.</p>' });
+      mockImageFetch(new Uint8Array([1, 2, 3]));
+
+      const result = await extractor.extract();
+
+      const content = result.data!.messages[1].content;
+      expect(content.indexOf('Here you go.')).toBeLessThan(content.indexOf('data-g2o-image'));
+    });
+
+    it('drops the widget — and so the image-only turn — when image export is disabled', async () => {
+      loadImageConversation();
+      extractor.applySettings({
+        enableImageExport: false,
+      } as import('../../src/lib/types').SyncSettings);
+      const fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+
+      const result = await extractor.extract();
+
+      expect(result.data!.messages).toHaveLength(1);
+      expect(result.data!.messages[0].role).toBe('user');
+      expect(result.data!.images ?? []).toHaveLength(0);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('warns instead of dropping the image when capture fails', async () => {
+      loadImageConversation();
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 403 }));
+      // The rendered bitmap is not available either (jsdom never decodes).
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const result = await extractor.extract();
+
+      expect(result.success).toBe(true);
+      expect(result.data!.messages[1].content).toContain('data-g2o-image');
+      expect(result.data!.images).toHaveLength(0);
+      expect(result.warnings?.join(' ')).toMatch(/1 image\(s\) could not be captured/);
     });
   });
 });

@@ -29,33 +29,55 @@ export class ClaudeExtractor extends BaseExtractor {
   /**
    * Apply user settings: enable/disable tool content extraction and auto-scroll
    */
-  applySettings(settings: SyncSettings): void {
+  protected applyPlatformSettings(settings: SyncSettings): void {
     this.enableToolContent = settings.enableToolContent ?? false;
-    this.enableAutoScroll = settings.enableAutoScroll ?? false;
   }
 
   // ========== Platform Detection ==========
 
   /**
-   * Check if this extractor can handle the current page
+   * Check if a Deep Research / Artifact report is the actively-viewed panel.
    *
-   * IMPORTANT: Uses strict comparison (===) to prevent
-   * subdomain attacks like "evil-claude.ai.attacker.com"
-   * @see NFR-001-1 in design document
-   */
-  canExtract(): boolean {
-    return window.location.hostname === 'claude.ai';
-  }
-
-  /**
-   * Check if Deep Research mode is visible
+   * Detects the #markdown-artifact element, but presence alone is not enough:
+   * Claude keeps the artifact mounted after the panel is closed, moving the
+   * off-screen panel into an `inert` + `aria-hidden="true"` subtree (verified
+   * live 2026-07-16, w/h collapse to 0 and x is pushed past the viewport). A
+   * presence-only check therefore hijacked every save after the user had ever
+   * opened a report — returning the stale report and dropping the conversation
+   * (issue #352 follow-up). Treat an inert / aria-hidden subtree as "closed".
    *
-   * Detects presence of #markdown-artifact element
    * @see FR-003-3 in design document
    */
   isDeepResearchVisible(): boolean {
     const artifact = this.queryWithFallback<HTMLElement>(DEEP_RESEARCH_SELECTORS.artifact);
-    return artifact !== null;
+    if (!artifact) return false;
+    return !this.isInDismissedPanel(artifact);
+  }
+
+  /**
+   * Whether an element sits inside a dismissed (closed) panel subtree.
+   *
+   * Claude does not unmount a closed Deep Research / Artifact panel — it moves
+   * the off-screen subtree into `inert` + `aria-hidden="true"` (verified live
+   * 2026-07-16). Such content is neither the active view nor a real conversation
+   * turn, so both DR detection and message collection ignore it — otherwise the
+   * lingering report (which also carries `.font-claude-response`) would leak into
+   * the conversation as a stale extra assistant turn.
+   */
+  private isInDismissedPanel(element: Element): boolean {
+    if (element.closest('[inert], [aria-hidden="true"]') === null) return false;
+
+    // `inert` alone is not enough to call something dismissed: Claude also uses
+    // it for the collapsed overflow of a LONG message, so treating every inert
+    // ancestor as a closed panel silently dropped the user's own prompt from
+    // the export while the reply survived.
+    //
+    // Measured live via CDP on one account, same day: user turns of 16 / 54 /
+    // 182 characters sit outside `[inert]`, a 597-character one sits inside it,
+    // and `#markdown-artifact` sits outside any `[data-index]` row. So position
+    // — not the attribute — is what separates a conversation turn from a
+    // dismissed panel.
+    return element.closest(SELECTORS.conversationRow[0]) === null;
   }
 
   // ========== ID & Title Extraction ==========
@@ -137,15 +159,18 @@ export class ClaudeExtractor extends BaseExtractor {
    * Collect user/assistant message elements in DOM order.
    *
    * User messages nested inside an assistant response (e.g. quoted content) are
-   * skipped. Shared by extractMessages() (single pass) and harvestWindow()
-   * (per-scroll-window pass for virtualized conversations).
+   * skipped, as is anything inside a dismissed artifact panel (a closed report
+   * lingers with `.font-claude-response`; see {@link isInDismissedPanel}).
+   * Shared by extractMessages() (single pass) and harvestWindow() (per-scroll-
+   * window pass for virtualized conversations).
    */
   private collectSortedElements(): Array<{ element: Element; type: 'user' | 'assistant' }> {
     const allElements: Array<{ element: Element; type: 'user' | 'assistant' }> = [];
 
     const userMessages = this.queryAllWithFallback<HTMLElement>(SELECTORS.userMessage);
     userMessages.forEach(el => {
-      const assistantParent = el.closest('.font-claude-response, [class*="font-claude-response"]');
+      if (this.isInDismissedPanel(el)) return;
+      const assistantParent = el.closest(JOINED_SELECTORS.assistantResponse);
       if (!assistantParent) {
         allElements.push({ element: el, type: 'user' });
       }
@@ -153,6 +178,7 @@ export class ClaudeExtractor extends BaseExtractor {
 
     const assistantResponses = this.queryAllWithFallback<HTMLElement>(SELECTORS.assistantResponse);
     assistantResponses.forEach(el => {
+      if (this.isInDismissedPanel(el)) return;
       allElements.push({ element: el, type: 'assistant' });
     });
 
@@ -167,6 +193,27 @@ export class ClaudeExtractor extends BaseExtractor {
       container: SELECTORS.scrollContainer,
       harvest: () => this.harvestWindow(),
     };
+  }
+
+  /**
+   * Highest `data-index` currently mounted (issue #465).
+   *
+   * `data-index` is the virtual-row ordinal Claude assigns in conversation
+   * order and never renumbers, so a value above the one a sync covered can only
+   * mean a turn was added — scrolling up mounts *smaller* indices, never larger.
+   */
+  getMessageWatermark(): number | null {
+    // Scoped to the thread scroller: `[data-index]` is a bare attribute
+    // selector and Claude's own chrome virtualizes lists too, so a sidebar row
+    // would otherwise raise the watermark and clear the badge for a scroll.
+    const root = this.queryWithFallback<HTMLElement>(SELECTORS.scrollContainer) ?? document;
+    let highest: number | null = null;
+    this.queryAllWithFallback<HTMLElement>(SELECTORS.conversationRow, root).forEach(row => {
+      const index = Number(row.getAttribute('data-index'));
+      if (!Number.isFinite(index)) return;
+      if (highest === null || index > highest) highest = index;
+    });
+    return highest;
   }
 
   /**
@@ -185,7 +232,14 @@ export class ClaudeExtractor extends BaseExtractor {
           : this.extractAssistantContent(item.element);
       if (!content) return;
 
-      const key = this.turnKey(item.element, item.type, content);
+      // `data-index` is monotonic in conversation order; use it both as the
+      // stable de-dup key and as the ordering signal so accumulation can sort by
+      // it (robust against mergeWindow scramble — issue #352).
+      const row = item.element.closest(SELECTORS.conversationRow[0]);
+      const dataIndex = row?.getAttribute('data-index');
+      const parsed = dataIndex !== undefined && dataIndex !== null ? Number(dataIndex) : NaN;
+      const key = dataIndex ? `idx-${dataIndex}` : `${item.type}-${generateHash(content)}`;
+      const order = Number.isFinite(parsed) ? parsed : undefined;
       const message: ConversationMessage = {
         id: key,
         role: item.type,
@@ -197,23 +251,13 @@ export class ClaudeExtractor extends BaseExtractor {
       if (this.enableToolContent && item.type === 'assistant') {
         const tc = this.extractToolContentFromElement(item.element);
         if (tc) {
-          entries.push({ key, value: { ...message, toolContent: tc } });
+          entries.push({ key, value: { ...message, toolContent: tc }, order });
           return;
         }
       }
-      entries.push({ key, value: message });
+      entries.push({ key, value: message, order });
     });
     return entries;
-  }
-
-  /**
-   * Stable per-turn key for de-duplication across scroll windows.
-   * Prefers the virtual-list `data-index`; hashes content otherwise.
-   */
-  private turnKey(element: Element, type: 'user' | 'assistant', content: string): string {
-    const dataIndex = element.closest('[data-index]')?.getAttribute('data-index');
-    if (dataIndex) return `idx-${dataIndex}`;
-    return `${type}-${generateHash(content)}`;
   }
 
   /**
@@ -251,43 +295,60 @@ export class ClaudeExtractor extends BaseExtractor {
    * @see NFR-001-2 in design document
    */
   private extractAssistantContent(element: Element): string {
-    // Grid layout: Extended Thinking or Tool-Use (.row-start-1 + .row-start-2).
-    //
-    // A single response may be split across MULTIPLE sequential grid blocks
-    // (interleaved thinking / tool-use steps), each with its own .row-start-2
-    // content section and the final answer in the last block. Gather every
-    // section's markdown so the answer isn't dropped when it follows earlier
-    // preamble blocks (a prior single-querySelector kept only the first).
-    // Tool-use / thinking summaries live in .row-start-1 headers, so reading
-    // only .row-start-2 keeps status labels out of the response body.
-    const responseSections = element.querySelectorAll<HTMLElement>('.row-start-2');
-    if (responseSections.length > 0) {
-      const parts: string[] = [];
-      responseSections.forEach(section => {
-        const markdownInSection = this.queryWithFallback<HTMLElement>(
-          SELECTORS.markdownContent,
-          section
-        );
-        if (markdownInSection) {
-          const html = sanitizeHtml(markdownInSection.innerHTML);
-          if (html.trim()) parts.push(html);
-        }
-      });
-      if (parts.length > 0) {
-        return parts.join('\n');
-      }
-      // All .row-start-2 sections empty (e.g., thinking-status responses where
-      // content is a grid sibling). Fall through to search entire element.
+    const parts = this.collectResponseMarkdown(element);
+    if (parts.length > 0) {
+      return parts.join('\n');
     }
 
-    // Non-grid fallback or empty .row-start-2: search the entire element
-    const markdownEl = this.queryWithFallback<HTMLElement>(SELECTORS.markdownContent, element);
-    if (markdownEl) {
-      return sanitizeHtml(markdownEl.innerHTML);
-    }
-
-    // Fallback: use the element's innerHTML
+    // No markdown section anywhere: fall back to the whole response element.
     return sanitizeHtml(element.innerHTML);
+  }
+
+  /**
+   * Collect the response body's markdown sections, in DOM order.
+   *
+   * A single response interleaves two content shapes. Thinking / tool-use steps
+   * put their text inside a grid block's `.row-start-2`, while the final answer
+   * is emitted as top-level `.standard-markdown` blocks that sit inside NO grid
+   * section. Earlier revisions read only `.row-start-2` and fell back to a
+   * whole-element search solely when every section came back empty, so a
+   * response that had both shapes returned just the step preambles and dropped
+   * the entire answer.
+   *
+   * `querySelectorAll` walks in document order, so one sweep yields both shapes
+   * already in conversation order.
+   */
+  private collectResponseMarkdown(element: Element): string[] {
+    const sections = this.queryAllWithFallback<HTMLElement>(SELECTORS.markdownContent, element);
+    const parts: string[] = [];
+
+    for (const section of sections) {
+      if (this.isInStatusHeader(section)) continue;
+      // A lower-priority selector such as [class*="markdown"] can match both a
+      // wrapper and the node inside it; emitting both would repeat the shared
+      // text, so keep only the outermost match.
+      if (sections.some(other => other !== section && other.contains(section))) continue;
+      const html = sanitizeHtml(section.innerHTML);
+      if (html.trim()) parts.push(html);
+    }
+
+    return parts;
+  }
+
+  /**
+   * Whether a markdown section belongs to a step's status header rather than to
+   * the response body.
+   *
+   * Claude reuses `.row-start-1` / `.row-start-2` at two nesting levels: the
+   * OUTER `.row-start-1` is the status header, whose tool output is surfaced
+   * separately by {@link extractToolContentFromElement}, while a step's own text
+   * sits under `.row-start-2` — wrapped in a SECOND, nested `.row-start-1`.
+   * Skipping everything beneath any `.row-start-1` would therefore discard the
+   * step text as well; only a header outside `.row-start-2` is a status header.
+   */
+  private isInStatusHeader(element: Element): boolean {
+    const header = element.closest('.row-start-1');
+    return header !== null && header.closest('.row-start-2') === null;
   }
 
   /**
@@ -297,17 +358,33 @@ export class ClaudeExtractor extends BaseExtractor {
    * null otherwise (no grid, no tool section, or Extended Thinking).
    */
   private extractToolContentFromElement(element: Element): string | null {
-    const responseSection = element.querySelector('.row-start-2');
-    if (!responseSection) return null; // Non-grid → no tool content
+    if (!element.querySelector('.row-start-2')) return null; // Non-grid → no tool content
 
-    const toolSection = element.querySelector('.row-start-1');
-    if (!toolSection) return null;
+    const parts: string[] = [];
+    for (const header of this.collectStatusHeaders(element)) {
+      // Extended Thinking is presented separately from tool activity. Skip just
+      // that block: a thinking step early in the response must not suppress the
+      // tool content of every step after it.
+      if (header.querySelector('[class*="group/thinking"]')) continue;
 
-    const isExtendedThinking = toolSection.querySelector('[class*="group/thinking"]') !== null;
-    if (isExtendedThinking) return null;
+      const toolContent = this.extractToolContent(header);
+      if (toolContent) parts.push(toolContent);
+    }
 
-    const toolContent = this.extractToolContent(toolSection);
-    return toolContent || null;
+    return parts.length > 0 ? parts.join('\n\n') : null;
+  }
+
+  /**
+   * Status headers of a response's grid step blocks, in DOM order.
+   *
+   * A response can carry several sequential steps, each with its own header.
+   * Only the OUTER `.row-start-1` is a header — see {@link isInStatusHeader}
+   * for why the nested one under `.row-start-2` must not be treated as such.
+   */
+  private collectStatusHeaders(element: Element): HTMLElement[] {
+    return Array.from(element.querySelectorAll<HTMLElement>('.row-start-1')).filter(
+      header => header.closest('.row-start-2') === null
+    );
   }
 
   /**
@@ -376,7 +453,9 @@ export class ClaudeExtractor extends BaseExtractor {
 
   /** .standard-markdown content (code interpreter, file analysis) */
   private extractToolMarkdown(toolSection: Element, parts: string[]): void {
-    const markdownEls = toolSection.querySelectorAll('.standard-markdown');
+    // Primary only: tool sections are opt-in content, and the group's loose
+    // `[class*="markdown"]` fallback would pull unrelated nodes into the note.
+    const markdownEls = toolSection.querySelectorAll(SELECTORS.markdownContent[0]);
     markdownEls.forEach(el => {
       const html = sanitizeHtml(el.innerHTML);
       if (html.trim()) {

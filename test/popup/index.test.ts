@@ -33,6 +33,8 @@ const storedSettings: ExtensionSettings = {
   vaultPath: 'AI/Gemini',
   imageVaultPath: 'AI/Gemini/images',
   maxCalloutLines: 200,
+  scrollIdleTimeoutSec: 15,
+  scrollMaxTimeoutSec: 300,
   enableAutoScroll: true,
   enableAppendMode: false,
   enableToolContent: false,
@@ -96,6 +98,12 @@ function buildPopupDom(): void {
       <input type="number" id="maxCalloutLines" />
       <input type="password" id="companion-token" />
       <input type="text" id="companion-url" />
+      <div id="scrollTimeoutGroup">
+        <input type="number" id="scrollIdleTimeoutSec" />
+        <input type="number" id="scrollMaxTimeoutSec" />
+      </div>
+      <input type="range" id="maxNoteSizeMiB" min="1" max="16" step="1" />
+      <output id="maxNoteSizeMiBValue"></output>
     </section>
     ${switches}
     <select id="messageFormat">
@@ -111,6 +119,8 @@ function buildPopupDom(): void {
       <input type="text" id="userCallout" />
       <input type="text" id="assistantCallout" />
     </div>
+    <input type="text" id="conversationTags" />
+    <input type="text" id="deepResearchTags" />
     <div id="timezoneGroup">
       <select id="timezone"><option value="UTC">UTC</option></select>
     </div>
@@ -741,5 +751,198 @@ describe('popup/app', () => {
         ]);
       });
     });
+  });
+});
+
+/**
+ * Auto-scroll deadlines in the popup (issue #449, ADR-032).
+ *
+ * The whole point of making them settable is that a user who hits the limit can
+ * raise it, so the inputs must round-trip and must refuse to write nonsense.
+ */
+describe('auto-scroll timeout settings', () => {
+  async function initWith(overrides: Record<string, unknown>): Promise<void> {
+    buildPopupDom();
+    vi.mocked(getSettings).mockResolvedValue({ ...storedSettings, ...overrides });
+    await initPopup();
+  }
+
+  async function saveAndRead(): Promise<Record<string, unknown>> {
+    vi.mocked(saveSettings).mockResolvedValue(undefined);
+    el('saveBtn').click();
+    await vi.waitFor(() => expect(saveSettings).toHaveBeenCalled());
+    return vi.mocked(saveSettings).mock.calls[0][0] as unknown as Record<string, unknown>;
+  }
+
+  it('populates both inputs from stored settings', async () => {
+    await initWith({ scrollIdleTimeoutSec: 60, scrollMaxTimeoutSec: 1800 });
+
+    expect(el<HTMLInputElement>('scrollIdleTimeoutSec').value).toBe('60');
+    expect(el<HTMLInputElement>('scrollMaxTimeoutSec').value).toBe('1800');
+  });
+
+  it('saves edited values', async () => {
+    await initWith({});
+    el<HTMLInputElement>('scrollIdleTimeoutSec').value = '45';
+    el<HTMLInputElement>('scrollMaxTimeoutSec').value = '900';
+
+    expect(await saveAndRead()).toMatchObject({
+      scrollIdleTimeoutSec: 45,
+      scrollMaxTimeoutSec: 900,
+    });
+  });
+
+  it('falls back to the default when a field is emptied or unparseable', async () => {
+    await initWith({});
+    el<HTMLInputElement>('scrollIdleTimeoutSec').value = '';
+    el<HTMLInputElement>('scrollMaxTimeoutSec').value = 'abc';
+
+    expect(await saveAndRead()).toMatchObject({
+      scrollIdleTimeoutSec: 15,
+      scrollMaxTimeoutSec: 300,
+    });
+  });
+
+  it('clamps a value below the floor rather than saving something unusable', async () => {
+    await initWith({});
+    el<HTMLInputElement>('scrollIdleTimeoutSec').value = '2';
+    el<HTMLInputElement>('scrollMaxTimeoutSec').value = '1';
+
+    expect(await saveAndRead()).toMatchObject({
+      scrollIdleTimeoutSec: 5,
+      scrollMaxTimeoutSec: 30,
+    });
+  });
+
+  it('hides the timeouts when auto-scroll is off', async () => {
+    await initWith({ enableAutoScroll: false });
+
+    expect(el('scrollTimeoutGroup').style.display).toBe('none');
+  });
+});
+
+describe('note size setting (issue #467)', () => {
+  async function initWith(overrides: Record<string, unknown>): Promise<void> {
+    buildPopupDom();
+    vi.mocked(getSettings).mockResolvedValue({ ...storedSettings, ...overrides });
+    await initPopup();
+  }
+
+  async function saveAndRead(): Promise<Record<string, unknown>> {
+    vi.mocked(saveSettings).mockResolvedValue(undefined);
+    el('saveBtn').click();
+    await vi.waitFor(() => expect(saveSettings).toHaveBeenCalled());
+    return vi.mocked(saveSettings).mock.calls[0][0] as unknown as Record<string, unknown>;
+  }
+
+  it('populates the slider and its label from stored settings', async () => {
+    await initWith({ maxNoteSizeMiB: 12 });
+
+    expect(el<HTMLInputElement>('maxNoteSizeMiB').value).toBe('12');
+    expect(el<HTMLOutputElement>('maxNoteSizeMiBValue').textContent).toBe('12 MiB');
+  });
+
+  it('shows the 8 MiB default for settings written before the field existed', async () => {
+    await initWith({});
+
+    expect(el<HTMLInputElement>('maxNoteSizeMiB').value).toBe('8');
+    expect(el<HTMLOutputElement>('maxNoteSizeMiBValue').textContent).toBe('8 MiB');
+  });
+
+  it('updates the label as the slider moves', async () => {
+    await initWith({});
+    const slider = el<HTMLInputElement>('maxNoteSizeMiB');
+    slider.value = '3';
+    slider.dispatchEvent(new Event('input'));
+
+    expect(el<HTMLOutputElement>('maxNoteSizeMiBValue').textContent).toBe('3 MiB');
+  });
+
+  it('saves the chosen value', async () => {
+    await initWith({});
+    el<HTMLInputElement>('maxNoteSizeMiB').value = '3';
+
+    expect(await saveAndRead()).toMatchObject({ maxNoteSizeMiB: 3 });
+  });
+
+  it('clamps a value the slider cannot normally produce', async () => {
+    await initWith({});
+    el<HTMLInputElement>('maxNoteSizeMiB').value = '99';
+
+    expect(await saveAndRead()).toMatchObject({ maxNoteSizeMiB: 16 });
+  });
+});
+
+describe('frontmatter tag lists (issue #493)', () => {
+  const templateWith = (extra: Record<string, unknown>) => ({
+    templateOptions: { ...storedSettings.templateOptions, ...extra },
+  });
+
+  async function initWith(overrides: Record<string, unknown>): Promise<void> {
+    buildPopupDom();
+    vi.mocked(getSettings).mockResolvedValue({ ...storedSettings, ...overrides });
+    await initPopup();
+  }
+
+  async function saveAndRead(): Promise<Record<string, unknown>> {
+    vi.mocked(saveSettings).mockResolvedValue(undefined);
+    el('saveBtn').click();
+    await vi.waitFor(() => expect(saveSettings).toHaveBeenCalled());
+    return vi.mocked(saveSettings).mock.calls[0][0] as unknown as Record<string, unknown>;
+  }
+
+  function savedTemplate(saved: Record<string, unknown>): Record<string, unknown> {
+    return saved.templateOptions as Record<string, unknown>;
+  }
+
+  it('shows the historical defaults when stored settings predate the fields', async () => {
+    await initWith({});
+
+    expect(el<HTMLInputElement>('conversationTags').value).toBe('ai-conversation, {platform}');
+    expect(el<HTMLInputElement>('deepResearchTags').value).toBe(
+      'ai-research, deep-research, {platform}'
+    );
+  });
+
+  it('populates both fields from stored lists', async () => {
+    await initWith(
+      templateWith({ conversationTags: ['ai/chat', '{platform}'], deepResearchTags: ['研究'] })
+    );
+
+    expect(el<HTMLInputElement>('conversationTags').value).toBe('ai/chat, {platform}');
+    expect(el<HTMLInputElement>('deepResearchTags').value).toBe('研究');
+  });
+
+  it('saves the typed lists as normalised arrays', async () => {
+    await initWith({});
+    el<HTMLInputElement>('conversationTags').value = ' #Foo Bar , ai/chat,{platform} ';
+    el<HTMLInputElement>('deepResearchTags').value = 'notes';
+
+    const t = savedTemplate(await saveAndRead());
+    expect(t.conversationTags).toEqual(['Foo-Bar', 'ai/chat', '{platform}']);
+    expect(t.deepResearchTags).toEqual(['notes']);
+  });
+
+  it('saves the defaults for an empty field', async () => {
+    await initWith({});
+    el<HTMLInputElement>('conversationTags').value = '';
+    el<HTMLInputElement>('deepResearchTags').value = ' , ';
+
+    const t = savedTemplate(await saveAndRead());
+    expect(t.conversationTags).toEqual(['ai-conversation', '{platform}']);
+    expect(t.deepResearchTags).toEqual(['ai-research', 'deep-research', '{platform}']);
+  });
+
+  it('falls back to the defaults, with a warning, when an entry is invalid', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await initWith({});
+    el<HTMLInputElement>('conversationTags').value = 'x,y!';
+    el<HTMLInputElement>('deepResearchTags').value = 'fine';
+
+    const t = savedTemplate(await saveAndRead());
+    expect(t.conversationTags).toEqual(['ai-conversation', '{platform}']);
+    expect(t.deepResearchTags).toEqual(['fine']);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[G2O]'));
+    warn.mockRestore();
   });
 });

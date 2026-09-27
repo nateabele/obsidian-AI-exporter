@@ -1,8 +1,9 @@
 /**
  * NotebookLM Extractor
  *
- * Extracts chat conversations from NotebookLM (notebooklm.google.com)
- * with inline source citations converted to footnotes.
+ * Extracts chat conversations from Gemini Notebook / NotebookLM
+ * (notebook.google.com, formerly notebooklm.google.com) with inline source
+ * citations converted to footnotes.
  *
  * NotebookLM uses Angular Material with custom elements:
  * - chat-panel / chat-message — conversation structure
@@ -18,7 +19,7 @@ import type { ConversationMessage } from '../../lib/types';
 import { createFootnoteRef, footnoteDefsToHtml, transformCitations } from './footnotes';
 import type { CitationTransformResult } from './footnotes';
 
-import { SELECTORS } from './selectors/notebooklm';
+import { SELECTORS, COMPUTED_SELECTORS } from './selectors/notebooklm';
 
 // ========== Citation transformation (formerly notebooklm-citations.ts) ==========
 //
@@ -64,9 +65,9 @@ function transformCitationsToFootnotes(
   messageIndex: number
 ): CitationTransformResult {
   return transformCitations(html, {
-    hasCitations: doc => doc.querySelector('button.citation-marker') !== null,
+    hasCitations: doc => doc.querySelector(COMPUTED_SELECTORS.citationButton) !== null,
     collectFootnotes: doc => {
-      const buttons = Array.from(doc.querySelectorAll('button.citation-marker'));
+      const buttons = Array.from(doc.querySelectorAll(COMPUTED_SELECTORS.citationButton));
       const footnoteByNumber = new Map<string, string>();
       const order: string[] = [];
 
@@ -103,24 +104,12 @@ function transformCitationsToFootnotes(
 export class NotebookLMExtractor extends BaseExtractor {
   readonly platform = 'notebooklm';
 
-  // ========== Platform Detection ==========
-
-  /**
-   * Check if this extractor can handle the current page
-   *
-   * IMPORTANT: Uses strict comparison (===) to prevent
-   * subdomain attacks like "evil-notebooklm.google.com.attacker.com"
-   */
-  canExtract(): boolean {
-    return window.location.hostname === 'notebooklm.google.com';
-  }
-
   // ========== ID & Title Extraction ==========
 
   /**
    * Extract notebook ID from URL
    *
-   * URL format: https://notebooklm.google.com/notebook/{uuid}
+   * URL format: https://notebook.google.com/notebook/{uuid}
    * @returns UUID string or null if not found
    */
   getConversationId(): string | null {
@@ -140,7 +129,7 @@ export class NotebookLMExtractor extends BaseExtractor {
     if (titleEl?.textContent) {
       return this.sanitizeText(titleEl.textContent);
     }
-    return 'Untitled NotebookLM Conversation';
+    return 'Untitled Gemini Notebook Conversation';
   }
 
   // ========== Message Extraction ==========

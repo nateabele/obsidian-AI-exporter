@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "__MSG_extName__",
-  "version": "2.2.0",
+  "version": "2.14.5",
   "description": "__MSG_extDescription__",
   "default_locale": "en",
   "minimum_chrome_version": "96",
@@ -18,12 +18,15 @@
     "https://claude.ai/*",
     "https://chatgpt.com/*",
     "https://www.perplexity.ai/*",
+    "https://notebook.google.com/*",
     "https://notebooklm.google.com/*",
+    "https://*.googleusercontent.com/*",
+    "https://lh3.google.com/*",
     "http://127.0.0.1/*",
     "https://127.0.0.1/*"
   ],
   "content_security_policy": {
-    "extension_pages": "default-src 'self'; script-src 'self'; connect-src 'self' http://127.0.0.1:* https://127.0.0.1:*; object-src 'none'; frame-src 'none'; style-src 'self'"
+    "extension_pages": "default-src 'self'; script-src 'self'; connect-src 'self' http://127.0.0.1:* https://127.0.0.1:* https://*.googleusercontent.com https://lh3.google.com; object-src 'none'; frame-src 'none'; style-src 'self'"
   },
   "background": {
     "service_worker": "src/background/service-worker.ts",
@@ -36,6 +39,7 @@
         "https://claude.ai/*",
         "https://chatgpt.com/*",
         "https://www.perplexity.ai/*",
+        "https://notebook.google.com/*",
         "https://notebooklm.google.com/*"
       ],
       "js": ["src/content/index.ts"],

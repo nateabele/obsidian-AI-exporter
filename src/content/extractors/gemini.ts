@@ -6,15 +6,17 @@
 import { BaseExtractor } from './base';
 import { sanitizeHtml } from '../../lib/sanitize';
 import { extractErrorMessage } from '../../lib/error-utils';
-import { SCROLL_TIMEOUT } from '../../lib/constants';
-import { ensureAllElementsLoaded, type ScrollResult } from '../../lib/scroll-manager';
-import { fetchImageAsBase64 } from '../image-capture';
+import {
+  ensureAllElementsLoaded,
+  describeScrollStop,
+  type ScrollResult,
+} from '../../lib/scroll-manager';
+import { ImageMarkerCollector } from '../image-markers';
 import type {
   SyncSettings,
   ExtractionResult,
   ConversationMessage,
   DeepResearchSource,
-  ExtractedImage,
 } from '../../lib/types';
 
 import { SELECTORS, DEEP_RESEARCH_SELECTORS, COMPUTED_SELECTORS } from './selectors/gemini';
@@ -26,26 +28,17 @@ export class GeminiExtractor extends BaseExtractor {
   enableImageExport = true;
 
   /**
-   * Generated-image capture state, populated (sync) while extractMessages()
-   * rewrites `<img>` into markers and drained (async) in extract(). Reset at
-   * the start of every extract() so re-runs never carry stale ids.
+   * Generated-image markers, registered (sync) while extractMessages()
+   * rewrites `<img>` and drained (async) in extract(). Ids count up within one
+   * extraction — safe here because Gemini extracts in a single pass — and the
+   * counter and collector are reset at the start of every extract().
    */
+  private readonly images = new ImageMarkerCollector();
   private imageIdCounter = 0;
-  private pendingImages: Array<{ id: string; src: string; alt: string }> = [];
 
-  /**
-   * Apply user settings: enable/disable auto-scroll
-   */
-  applySettings(settings: SyncSettings): void {
-    this.enableAutoScroll = settings.enableAutoScroll ?? false;
+  /** Apply the settings only Gemini has; the shared ones live in BaseExtractor. */
+  protected applyPlatformSettings(settings: SyncSettings): void {
     this.enableImageExport = settings.enableImageExport ?? true;
-  }
-
-  /**
-   * Check if this extractor can handle the current page
-   */
-  canExtract(): boolean {
-    return window.location.hostname === 'gemini.google.com';
   }
 
   /**
@@ -72,7 +65,7 @@ export class GeminiExtractor extends BaseExtractor {
 
       // Reset per-extraction image state before extractMessages() populates it.
       this.imageIdCounter = 0;
-      this.pendingImages = [];
+      this.images.reset();
 
       const scrollResult = await this.runAutoScroll();
 
@@ -88,12 +81,18 @@ export class GeminiExtractor extends BaseExtractor {
       );
 
       // Fetch captured generated images (blob → base64) and attach to the data.
-      const result = await this.attachImages(baseResult);
+      const result = await this.images.attach(baseResult);
 
-      if (scrollResult && !scrollResult.fullyLoaded && !scrollResult.skipped) {
-        const warning =
-          `Auto-scroll timed out after ${SCROLL_TIMEOUT / 1000}s. ` +
-          `Some earlier messages may be missing (${scrollResult.elementCount} turns loaded).`;
+      // One builder for both engines: this warning used to be a byte-identical
+      // literal here and in BaseExtractor.collectMessages() (ADR-032).
+      const warning = scrollResult
+        ? describeScrollStop(
+            scrollResult.stopReason,
+            scrollResult.elementCount,
+            this.scrollDeadlines
+          )
+        : undefined;
+      if (warning) {
         return { ...result, warnings: [...(result.warnings ?? []), warning] };
       }
       return result;
@@ -105,14 +104,30 @@ export class GeminiExtractor extends BaseExtractor {
 
   private async runAutoScroll(): Promise<ScrollResult> {
     if (!this.enableAutoScroll) {
-      return { fullyLoaded: true, elementCount: 0, scrollIterations: 0, skipped: true };
+      return {
+        fullyLoaded: true,
+        elementCount: 0,
+        scrollIterations: 0,
+        skipped: true,
+        stopReason: 'complete',
+      };
     }
     const container = this.queryWithFallback<HTMLElement>(SELECTORS.scrollContainer);
     if (!container) {
       console.info('[G2O] No scroll container found, skipping auto-scroll');
-      return { fullyLoaded: true, elementCount: 0, scrollIterations: 0, skipped: true };
+      return {
+        fullyLoaded: true,
+        elementCount: 0,
+        scrollIterations: 0,
+        skipped: true,
+        stopReason: 'complete',
+      };
     }
-    return ensureAllElementsLoaded(container, COMPUTED_SELECTORS.conversationTurn);
+    return ensureAllElementsLoaded(
+      container,
+      COMPUTED_SELECTORS.conversationTurn,
+      this.scrollDeadlines
+    );
   }
 
   /** Expose platform selectors to BaseExtractor's DR title/content helpers. */
@@ -177,14 +192,22 @@ export class GeminiExtractor extends BaseExtractor {
   }
 
   /**
-   * Get conversation title from the first user query.
+   * Get conversation title from document.title, falling back to the first
+   * user query.
    *
-   * Gemini stopped rendering a conversation-title element by 2026-03 (the
-   * old top-bar selector group never matched again), so the first query has
-   * been the de-facto title source ever since; the dead path was removed.
+   * Gemini renders its auto-generated chat name as
+   * `"<name> - Google Gemini"` in document.title while a conversation is open
+   * (verified live 2026-09-14, issue #504, ADR-040); the bare landing page and
+   * a not-yet-named chat carry only "Google Gemini", which getPageTitle()
+   * rejects. No in-page title element exists (the old top-bar selector group
+   * never matched after 2026-03 and was removed), so the first query is the
+   * only DOM fallback.
    */
   getTitle(): string {
-    return this.getFirstMessageTitle(SELECTORS.queryTextLine, 'Untitled Gemini Conversation');
+    return (
+      this.getPageTitle() ??
+      this.getFirstMessageTitle(SELECTORS.queryTextLine, 'Untitled Gemini Conversation')
+    );
   }
 
   /**
@@ -207,7 +230,7 @@ export class GeminiExtractor extends BaseExtractor {
     // Process each conversation turn
     turns.forEach((turn, index) => {
       // Extract user query from this turn
-      const userQuery = turn.querySelector('user-query');
+      const userQuery = this.queryWithFallback<HTMLElement>(SELECTORS.userQuery, turn);
       if (userQuery) {
         const content = this.extractUserQueryContent(userQuery);
         if (content) {
@@ -221,7 +244,7 @@ export class GeminiExtractor extends BaseExtractor {
       }
 
       // Extract model response from this turn
-      const modelResponse = turn.querySelector('model-response');
+      const modelResponse = this.queryWithFallback<HTMLElement>(SELECTORS.modelResponse, turn);
       if (modelResponse) {
         const content = this.extractModelResponseContent(modelResponse);
         if (content) {
@@ -269,7 +292,7 @@ export class GeminiExtractor extends BaseExtractor {
    */
   private extractUserQueryContent(element: Element): string {
     // Get all query text lines and join them
-    const lines = element.querySelectorAll('.query-text-line');
+    const lines = this.queryAllWithFallback<HTMLElement>(SELECTORS.queryTextLine, element);
 
     if (lines.length > 0) {
       const textParts: string[] = [];
@@ -309,61 +332,14 @@ export class GeminiExtractor extends BaseExtractor {
 
   /**
    * Return the element's innerHTML with every generated `<img>` replaced by a
-   * `<img data-g2o-image="img-N">` marker. Each replaced image's blob URL and
-   * alt text are recorded in {@link pendingImages} for later async capture.
-   * Operates on a clone so the live DOM is never mutated.
+   * `<img data-g2o-image="img-N">` marker; the live images are queued on the
+   * shared collector for async capture (see {@link ImageMarkerCollector}).
    */
   private replaceGeneratedImages(element: HTMLElement): string {
-    if (!element.querySelector(COMPUTED_SELECTORS.generatedImage)) {
-      return element.innerHTML;
-    }
-
-    const clone = element.cloneNode(true) as HTMLElement;
-    const imgs = clone.querySelectorAll<HTMLImageElement>(COMPUTED_SELECTORS.generatedImage);
-    imgs.forEach(img => {
-      // Image export disabled: drop the generated image so a src-less <img>
-      // does not leak an empty `![]()` link into the note.
-      if (!this.enableImageExport) {
-        img.remove();
-        return;
-      }
-
-      const src = img.getAttribute('src') ?? '';
-      if (!src) return;
-      const id = `img-${++this.imageIdCounter}`;
-      const alt = img.getAttribute('alt') ?? '';
-      this.pendingImages.push({ id, src, alt });
-
-      const marker = clone.ownerDocument.createElement('img');
-      marker.setAttribute('data-g2o-image', id);
-      if (alt) marker.setAttribute('alt', alt);
-      img.replaceWith(marker);
+    return this.images.rewrite(element, {
+      selector: COMPUTED_SELECTORS.generatedImage,
+      enabled: this.enableImageExport,
+      idFor: () => `img-${++this.imageIdCounter}`,
     });
-
-    return clone.innerHTML;
-  }
-
-  /**
-   * Attach captured images to a successful extraction result (immutably).
-   * Failed fetches are skipped; their markers remain in the body and are
-   * resolved away per output destination.
-   */
-  private async attachImages(result: ExtractionResult): Promise<ExtractionResult> {
-    if (!result.success || !result.data) return result;
-    const images = await this.collectPendingImages();
-    return { ...result, data: { ...result.data, images } };
-  }
-
-  /**
-   * Drain {@link pendingImages}, fetching each blob URL as base64 in the page
-   * context. Sequential to avoid overwhelming the page; a handful of images.
-   */
-  private async collectPendingImages(): Promise<ExtractedImage[]> {
-    const images: ExtractedImage[] = [];
-    for (const pending of this.pendingImages) {
-      const image = await fetchImageAsBase64(pending.src, pending.id, pending.alt);
-      if (image) images.push(image);
-    }
-    return images;
   }
 }

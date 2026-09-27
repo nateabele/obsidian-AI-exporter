@@ -4,6 +4,7 @@ import { htmlToMarkdown } from '../../src/content/markdown';
 import {
   loadFixture,
   clearFixture,
+  defineLocation,
   resetLocation,
   setNotebookLMLocation,
   createNotebookLMPage,
@@ -28,18 +29,28 @@ describe('NotebookLMExtractor', () => {
       expect(extractor.platform).toBe('notebooklm');
     });
 
-    it('returns true for notebooklm.google.com', () => {
+    it('returns true for notebook.google.com (post-rebrand host)', () => {
       setNotebookLMLocation('test-notebook-id');
+      expect(extractor.canExtract()).toBe(true);
+    });
+
+    it('returns true for the legacy notebooklm.google.com host', () => {
+      setNotebookLMLocation('test-notebook-id', { legacyHost: true });
       expect(extractor.canExtract()).toBe(true);
     });
 
     it('returns false for other hosts', () => {
       // Use gemini location as a non-notebooklm host
-      Object.defineProperty(window, 'location', {
-        value: { hostname: 'gemini.google.com', pathname: '/app/123' },
-        writable: true,
-        configurable: true,
-      });
+      defineLocation('gemini.google.com', '/app/123');
+      expect(extractor.canExtract()).toBe(false);
+    });
+
+    it.each([
+      'evil-notebook.google.com.attacker.com',
+      'notebook.google.com.attacker.com',
+      'sub.notebook.google.com',
+    ])('returns false for lookalike host %s', hostname => {
+      defineLocation(hostname, '/notebook/abc');
       expect(extractor.canExtract()).toBe(false);
     });
   });
@@ -51,15 +62,13 @@ describe('NotebookLMExtractor', () => {
       expect(extractor.getConversationId()).toBe('02c6ebb0-b0b2-4960-bdc2-bfdb4e7b88a9');
     });
 
+    it('extracts the same UUID from a legacy-host URL (path format unchanged)', () => {
+      setNotebookLMLocation('02c6ebb0-b0b2-4960-bdc2-bfdb4e7b88a9', { legacyHost: true });
+      expect(extractor.getConversationId()).toBe('02c6ebb0-b0b2-4960-bdc2-bfdb4e7b88a9');
+    });
+
     it('returns null for non-notebook URLs', () => {
-      Object.defineProperty(window, 'location', {
-        value: {
-          hostname: 'notebooklm.google.com',
-          pathname: '/',
-        },
-        writable: true,
-        configurable: true,
-      });
+      defineLocation('notebooklm.google.com', '/');
       expect(extractor.getConversationId()).toBeNull();
     });
   });
@@ -89,7 +98,7 @@ describe('NotebookLMExtractor', () => {
     it('falls back to default when .cover-title is absent', () => {
       setNotebookLMLocation('test-id');
       loadFixture('<div></div>');
-      expect(extractor.getTitle()).toBe('Untitled NotebookLM Conversation');
+      expect(extractor.getTitle()).toBe('Untitled Gemini Notebook Conversation');
     });
   });
 
@@ -504,7 +513,8 @@ describe('NotebookLMExtractor', () => {
       resetLocation();
       const result = await extractor.extract();
       expect(result.success).toBe(false);
-      expect(result.error).toBe('Not on a NotebookLM page');
+      // Message is derived from the current display label (ADR-023 rebrand).
+      expect(result.error).toBe('Not on a Gemini Notebook page');
     });
   });
 });

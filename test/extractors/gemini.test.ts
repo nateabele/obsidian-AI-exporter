@@ -3,7 +3,7 @@ import { GeminiExtractor } from '../../src/content/extractors/gemini';
 import { buildSourceMap } from '../../src/lib/source-map';
 import {
   SCROLL_POLL_INTERVAL,
-  SCROLL_TIMEOUT,
+  SCROLL_MAX_TIMEOUT,
   SCROLL_STABILITY_THRESHOLD,
   SCROLL_REARM_DELAY,
 } from '../../src/lib/constants';
@@ -12,7 +12,7 @@ import {
   clearFixture,
   setGeminiLocation,
   setGeminiGemLocation,
-  setNonGeminiLocation,
+  defineLocation,
   createGeminiConversationDOM,
   createGeminiScrollableDOM,
   mockScrollContainer,
@@ -30,6 +30,10 @@ describe('GeminiExtractor', () => {
   beforeEach(() => {
     extractor = new GeminiExtractor();
     clearFixture();
+    // clearFixture() only wipes <body>; a <title> set by an earlier test
+    // (setGeminiTitle / document.title) lives in <head> and would leak into
+    // getTitle(), which now prefers document.title (issue #504).
+    document.title = '';
   });
 
   afterEach(() => {
@@ -50,7 +54,7 @@ describe('GeminiExtractor', () => {
     });
 
     it('returns false for other hosts', () => {
-      setNonGeminiLocation('chat.openai.com');
+      defineLocation('chat.openai.com');
       expect(extractor.canExtract()).toBe(false);
     });
 
@@ -67,12 +71,12 @@ describe('GeminiExtractor', () => {
     });
 
     it('returns null for invalid URL', () => {
-      setNonGeminiLocation('gemini.google.com', '/');
+      defineLocation('gemini.google.com', '/');
       expect(extractor.getConversationId()).toBeNull();
     });
 
     it('returns null when no ID in path', () => {
-      setNonGeminiLocation('gemini.google.com', '/settings');
+      defineLocation('gemini.google.com', '/settings');
       expect(extractor.getConversationId()).toBeNull();
     });
 
@@ -163,6 +167,52 @@ describe('GeminiExtractor', () => {
         <p class="query-text-line">Query text fallback</p>
       `);
       expect(extractor.getTitle()).toBe('Query text fallback');
+    });
+
+    // Gemini has rendered its auto-generated chat name in document.title as
+    // "<name> - Google Gemini" since at least 2026-09 (issue #504). The first
+    // query is only a fallback for pages that carry the bare product title.
+    it('prefers the chat name in document.title over the first query (issue #504)', () => {
+      setGeminiLocation('test123');
+      document.title = 'ベーマガのInternet Archive公開における著作権問題 - Google Gemini';
+      loadFixture(`
+        <p class="query-text-line">このサイトは著作権上、問題ないのですか？</p>
+      `);
+      expect(extractor.getTitle()).toBe('ベーマガのInternet Archive公開における著作権問題');
+    });
+
+    it('falls back to the first query on the bare landing title "Google Gemini"', () => {
+      setGeminiLocation('test123');
+      document.title = 'Google Gemini';
+      loadFixture(`
+        <p class="query-text-line">First query</p>
+      `);
+      expect(extractor.getTitle()).toBe('First query');
+    });
+
+    it('falls back to the first query when document.title is empty', () => {
+      setGeminiLocation('test123');
+      document.title = '';
+      loadFixture(`
+        <p class="query-text-line">First query</p>
+      `);
+      expect(extractor.getTitle()).toBe('First query');
+    });
+
+    it('returns the default title when document.title is bare and no query exists', () => {
+      setGeminiLocation('test123');
+      document.title = 'Google Gemini';
+      loadFixture('<div>Empty page</div>');
+      expect(extractor.getTitle()).toBe('Untitled Gemini Conversation');
+    });
+
+    it('truncates a document.title-derived title to 100 characters', () => {
+      setGeminiLocation('test123');
+      document.title = `${'b'.repeat(150)} - Google Gemini`;
+      loadFixture(`
+        <p class="query-text-line">short</p>
+      `);
+      expect(extractor.getTitle()).toBe('b'.repeat(100));
     });
   });
 
@@ -312,6 +362,67 @@ describe('GeminiExtractor', () => {
       expect(assistant?.content).toContain('data-g2o-image="img-1"');
     });
 
+    it('recovers the image from the rendered element when the blob URL is revoked', async () => {
+      // Gemini revokes the blob URL once the image has decoded, so the fetch
+      // fails while the <img> keeps rendering (measured live 2026-08-06: the
+      // fetch fails even from the page's own main world). The element still
+      // holds the bitmap, so the capture has to come off a canvas.
+      setGeminiLocation('imgrevoked');
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+        drawImage: vi.fn(),
+      } as unknown as CanvasRenderingContext2D);
+      vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue(
+        'data:image/png;base64,UE5H'
+      );
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'draw' },
+          { role: 'assistant', content: IMG_HTML('blob:https://gemini.google.com/revoked') },
+        ])
+      );
+      const img = document.querySelector('img.image') as HTMLImageElement;
+      Object.defineProperty(img, 'complete', { value: true, configurable: true });
+      Object.defineProperty(img, 'naturalWidth', { value: 8, configurable: true });
+      Object.defineProperty(img, 'naturalHeight', { value: 4, configurable: true });
+
+      const result = await extractor.extract();
+
+      expect(result.data?.images).toHaveLength(1);
+      expect(result.data?.images?.[0]).toMatchObject({ id: 'img-1', mimeType: 'image/png' });
+      vi.restoreAllMocks();
+    });
+
+    it('warns instead of silently dropping an image it could not capture', async () => {
+      // A dropped image used to leave nothing at all: the marker was stripped
+      // at save time and the assistant message came out empty, which looks
+      // exactly like image export being switched off.
+      setGeminiLocation('imgfail');
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+        drawImage: vi.fn(),
+      } as unknown as CanvasRenderingContext2D);
+      vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockImplementation(() => {
+        throw new Error('SecurityError: Tainted canvases may not be exported.');
+      });
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'draw' },
+          { role: 'assistant', content: IMG_HTML('blob:https://gemini.google.com/tainted') },
+        ])
+      );
+      const img = document.querySelector('img.image') as HTMLImageElement;
+      Object.defineProperty(img, 'complete', { value: true, configurable: true });
+      Object.defineProperty(img, 'naturalWidth', { value: 8, configurable: true });
+      Object.defineProperty(img, 'naturalHeight', { value: 4, configurable: true });
+
+      const result = await extractor.extract();
+
+      expect(result.data?.images).toHaveLength(0);
+      expect(result.warnings?.join(' ')).toMatch(/1 image/i);
+      vi.restoreAllMocks();
+    });
+
     it('leaves conversations without images unaffected', async () => {
       setGeminiLocation('noimg');
       loadFixture(
@@ -343,10 +454,12 @@ describe('GeminiExtractor', () => {
       expect(result.data?.id).toBe('abc123def456');
       expect(result.data?.source).toBe('gemini');
       expect(result.data?.messages.length).toBe(2);
+      // The <title> element wins over the first user query "Hello" (issue #504)
+      expect(result.data?.title).toBe('Test Conversation');
     });
 
     it('generates fallback ID when no conversation ID in URL', async () => {
-      setNonGeminiLocation('gemini.google.com', '/');
+      defineLocation('gemini.google.com', '/');
       const html = createGeminiConversationDOM([
         { role: 'user', content: 'Hello' },
         { role: 'assistant', content: 'Hi' },
@@ -1112,7 +1225,7 @@ describe('GeminiExtractor', () => {
       // All turns should be in result
       expect(result.data!.messages.length).toBeGreaterThanOrEqual(4);
       // No timeout warning
-      const timeoutWarning = result.warnings?.find(w => w.includes('Auto-scroll timed out'));
+      const timeoutWarning = result.warnings?.find(w => w.startsWith('Auto-scroll'));
       expect(timeoutWarning).toBeUndefined();
     });
 
@@ -1138,18 +1251,63 @@ describe('GeminiExtractor', () => {
 
       const extractPromise = extractor.extract();
 
-      // Advance past the full timeout (with re-arm delay per iteration)
+      // Growth never stops, so the pass runs until the absolute safety cap
+      // (SCROLL_MAX_TIMEOUT) rather than a fixed 30s wall. Advance past it.
       const perIteration = SCROLL_REARM_DELAY + SCROLL_POLL_INTERVAL;
-      await vi.advanceTimersByTimeAsync(SCROLL_TIMEOUT + perIteration * 2);
+      await vi.advanceTimersByTimeAsync(SCROLL_MAX_TIMEOUT + perIteration * 2);
 
       const result = await extractPromise;
 
       expect(result.success).toBe(true);
       expect(result.warnings).toBeDefined();
-      const timeoutWarning = result.warnings!.find(w => w.includes('Auto-scroll timed out'));
+      // Elements keep arriving, so the pass ends at the cap, not on idleness.
+      const timeoutWarning = result.warnings!.find(w => w.startsWith('Auto-scroll'));
       expect(timeoutWarning).toBeDefined();
-      expect(timeoutWarning).toContain(`${SCROLL_TIMEOUT / 1000}s`);
-      expect(timeoutWarning).toContain('turns loaded');
+      expect(timeoutWarning).toMatch(/time limit/);
+      expect(timeoutWarning).not.toMatch(/no progress/);
+      expect(timeoutWarning).toContain('turns captured');
+    });
+
+    it('keeps loading a long conversation past the old 30s wall while turns keep arriving (issue #360)', async () => {
+      setGeminiLocation('test123');
+      setGeminiTitle('Long Conversation');
+      const initialHTML = createGeminiConversationDOM([
+        { role: 'user', content: 'Q1' },
+        { role: 'assistant', content: '<p>A1</p>' },
+      ]);
+      loadFixture(createGeminiScrollableDOM(initialHTML));
+
+      // Genuine growth: an older turn loads on each scroll for many iterations,
+      // then loading stops and the count stabilizes. The total scroll time far
+      // exceeds the old fixed 30s wall, so a fixed-timeout engine would cut off
+      // mid-load and emit a timeout warning; a progress-aware engine must load
+      // them all with no warning.
+      let added = 0;
+      const TOTAL_TO_ADD = 100;
+      mockScrollContainer(1000, () => {
+        if (added < TOTAL_TO_ADD) {
+          const scroller = document.querySelector('infinite-scroller');
+          if (!scroller) return;
+          added++;
+          scroller.insertAdjacentHTML(
+            'afterbegin',
+            createTurnHTML(`Loaded Q${added}`, `Loaded A${added}`, 100 + added)
+          );
+        }
+      });
+
+      const extractPromise = extractor.extract();
+      // Advance far past the old 30s wall so a fixed-timeout engine would have
+      // long since timed out mid-load.
+      await vi.advanceTimersByTimeAsync(200_000);
+
+      const result = await extractPromise;
+
+      expect(result.success).toBe(true);
+      const timeoutWarning = result.warnings?.find(w => w.startsWith('Auto-scroll'));
+      expect(timeoutWarning).toBeUndefined();
+      // Far more than the ~25 turns an old 30s wall could load before cutting off.
+      expect(result.data!.messages.length).toBeGreaterThanOrEqual(150);
     });
 
     it('does not scroll when Deep Research panel is visible', async () => {
@@ -1242,8 +1400,9 @@ describe('GeminiExtractor', () => {
 
       const extractPromise = extractor.extract();
 
+      // Growth never stops → the pass runs until the absolute safety cap.
       const perIteration = SCROLL_REARM_DELAY + SCROLL_POLL_INTERVAL;
-      await vi.advanceTimersByTimeAsync(SCROLL_TIMEOUT + perIteration * 2);
+      await vi.advanceTimersByTimeAsync(SCROLL_MAX_TIMEOUT + perIteration * 2);
 
       const result = await extractPromise;
 
@@ -1252,7 +1411,7 @@ describe('GeminiExtractor', () => {
       // Should have at least 2 warnings: "No user messages found" + timeout
       expect(result.warnings!.length).toBeGreaterThanOrEqual(2);
       expect(result.warnings!.some(w => w.includes('No user messages found'))).toBe(true);
-      expect(result.warnings!.some(w => w.includes('Auto-scroll timed out'))).toBe(true);
+      expect(result.warnings!.some(w => w.startsWith('Auto-scroll'))).toBe(true);
     });
   });
 });

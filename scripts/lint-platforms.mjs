@@ -25,7 +25,14 @@ const HOST_DISPLAY_NAMES = {
   'claude.ai': 'Claude',
   'chatgpt.com': 'ChatGPT',
   'www.perplexity.ai': 'Perplexity',
-  'notebooklm.google.com': 'NotebookLM',
+  // Google rebranded NotebookLM to "Gemini Notebook" and moved the host. Both
+  // hosts stay listed while the old one still redirects (ADR-023), and both
+  // serve the *same* product, so both map to the current brand name. Requiring
+  // the retired "NotebookLM" name here would force it into every description,
+  // including the store's 132-character extDescription (see
+  // test/arch/store-listing-limits.test.ts).
+  'notebook.google.com': 'Gemini Notebook',
+  'notebooklm.google.com': 'Gemini Notebook',
 };
 
 // Check targets: each entry defines a file and what to look for.
@@ -33,6 +40,10 @@ const HOST_DISPLAY_NAMES = {
 // "displayName" checks parse a specific JSON field and look for the display name (case-insensitive).
 const CHECK_TARGETS = [
   { file: 'docs/privacy.html', type: 'hostname' },
+  // Chrome Web Store dashboard text (docs/store/listing.md). Field-level checks
+  // live in test/arch/store-listing-fields.test.ts; this only proves every host
+  // is named somewhere in the file.
+  { file: 'docs/store/listing.md', type: 'hostname' },
   { file: 'README.md', type: 'hostname' },
   { file: 'README.ja.md', type: 'hostname' },
   { file: 'CLAUDE.md', type: 'hostname' },

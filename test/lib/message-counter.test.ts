@@ -68,8 +68,8 @@ describe('message-counter', () => {
     });
 
     it('strips fenced code blocks at column 0 before counting', () => {
-      // Real fenced code block (unlike blockquote-nested) exercises stripCodeBlocks()
-      // — CODE_BLOCK_PATTERN only matches ``` at start of line.
+      // Real fenced code block (unlike blockquote-nested) exercises the
+      // code-fence toggle — only ``` at column 0 opens/closes a block.
       const body = [
         '**User:**',
         '',
@@ -94,6 +94,62 @@ describe('message-counter', () => {
       expect(countExistingMessages(body)).toBe(3);
     });
 
+    // Issue #433: the length-blind toggle counted an inner fence as a
+    // delimiter, so a note holding a Markdown-about-Markdown answer desynced
+    // and append mode wrote from the wrong offset (the #406 class, ADR-029).
+    describe('code blocks that contain other code blocks (issue #433)', () => {
+      const F3 = '`'.repeat(3);
+      const F4 = '`'.repeat(4);
+
+      /** A 4-message note whose second message holds `codeLines` as a block. */
+      function bodyWith(codeLines: readonly string[]): string {
+        return [
+          '**User:**',
+          '',
+          'q1',
+          '',
+          '**Claude:**',
+          '',
+          ...codeLines,
+          '',
+          '**User:**',
+          '',
+          'q2',
+          '',
+          '**Claude:**',
+          '',
+          'a2',
+        ].join('\n');
+      }
+
+      it('counts across a properly nested block', () => {
+        const body = bodyWith([`${F4}markdown`, '# Title', `${F3}python`, 'print(1)', F3, F4]);
+        expect(countExistingMessages(body)).toBe(4);
+        expect(countExistingMessages(extractTailMessages(body, 2))).toBe(2);
+      });
+
+      it('counts across a block that shows an opening fence only', () => {
+        // "Put this at the top of the file" — the snippet is an opener with no
+        // closer, so the note holds an odd number of column-0 fence lines.
+        const body = bodyWith([`${F4}markdown`, 'Put this at the top:', `${F3}md`, F4]);
+        expect(countExistingMessages(body)).toBe(4);
+        expect(extractTailMessages(body, 2)).not.toBe('');
+        expect(countExistingMessages(extractTailMessages(body, 2))).toBe(2);
+      });
+
+      it('still hides message-shaped lines inside the inner block', () => {
+        const body = bodyWith([`${F4}markdown`, `${F3}md`, '**User:**', '**Claude:**', F3, F4]);
+        expect(countExistingMessages(body)).toBe(4);
+      });
+
+      it('does not let a tilde fence open a block and hide messages', () => {
+        // The writer never emits tildes; a stray column-0 `~~~` in a note must
+        // stay inert rather than swallowing every message after it (ADR-029).
+        const body = bodyWith(['~~~']);
+        expect(countExistingMessages(body)).toBe(4);
+      });
+    });
+
     it('handles ChatGPT and Perplexity labels', () => {
       const body = [
         '> [!QUESTION] User',
@@ -112,10 +168,67 @@ describe('message-counter', () => {
       expect(countExistingMessages(body)).toBe(4);
     });
 
+    it('handles the current Gemini Notebook label', () => {
+      const body = ['> [!QUESTION] User', '> Hello', '', '> [!NOTE] Gemini Notebook', '> Hi'].join(
+        '\n'
+      );
+
+      expect(countExistingMessages(body)).toBe(2);
+    });
+
+    it('still counts notes written under the legacy NotebookLM label (ADR-023)', () => {
+      // Regression guard: dropping the old label makes append-mode see 0
+      // existing messages and re-append the entire conversation.
+      const body = [
+        '> [!QUESTION] User',
+        '> Hello',
+        '',
+        '> [!NOTE] NotebookLM',
+        '> Hi',
+        '',
+        '> [!QUESTION] User',
+        '> Bye',
+        '',
+        '> [!NOTE] NotebookLM',
+        '> See ya',
+      ].join('\n');
+
+      expect(countExistingMessages(body)).toBe(4);
+    });
+
+    it('counts legacy NotebookLM labels in **Label:** format', () => {
+      const body = ['**User:**', '> Hello', '', '**NotebookLM:**', '> Hi there!'].join('\n');
+
+      expect(countExistingMessages(body)).toBe(2);
+    });
+
     it('handles Assistant label', () => {
       const body = ['**User:**', '> Hello', '', '**Assistant:**', '> Hi there!'].join('\n');
 
       expect(countExistingMessages(body)).toBe(2);
+    });
+
+    it('counts BOTH forms in a note that mixes them (issue #406)', () => {
+      // The Obsidian save path flattens oversized callouts to `**Label:**`
+      // (callout-flatten.ts), so a saved note legitimately holds both forms.
+      // Returning only the callout tally undercounts, and append mode then
+      // re-appends that many already-present tail messages.
+      const body = [
+        '> [!QUESTION] User',
+        '> Hello',
+        '',
+        '**Claude:**',
+        '',
+        'A flattened, oversized answer',
+        '',
+        '> [!QUESTION] User',
+        '> Second question',
+        '',
+        '> [!NOTE] Claude',
+        '> Short answer',
+      ].join('\n');
+
+      expect(countExistingMessages(body)).toBe(4);
     });
 
     it('counts messages with multi-line content', () => {

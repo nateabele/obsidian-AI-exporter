@@ -26,6 +26,12 @@ export interface NotifyStateFingerprint {
     authStatus: string;
     failedTargets: string[];
     stallSkips: string[];
+    /**
+     * Targets whose counts were sampled mid-render. Part of the identity: a
+     * run that never settled is a different state from a clean one, and the
+     * reader must be told its numbers are not evidence of DOM drift.
+     */
+    unsettledTargets: string[];
     deadPrimaries: string[];
     failures: string[];
     baselineBlocking: string[];
@@ -50,15 +56,18 @@ export function buildStateFingerprint(report: ValidationReport): NotifyStateFing
         authStatus: p.authStatus,
         failedTargets: [...p.failedTargets].sort(),
         stallSkips: [...p.stallSkips].sort(),
+        unsettledTargets: [...p.unsettledTargets].sort(),
         deadPrimaries: (c?.warn ?? [])
           .map(w => `${w.failedPrimary.group}:${w.failedPrimary.name}:${w.failedPrimary.selector}`)
           .sort(),
         failures: (c?.fail ?? []).map(f => `${f.group}:${f.name}:${f.selector}`).sort(),
         baselineBlocking: (c?.baselineBlocking ?? [])
-          .map(b => `${b.group}:${b.name}:${b.selector}:${b.status}`)
+          .map(b => `${b.group}:${b.name}:${b.selector}:${b.status}:${b.contentStatus ?? '-'}`)
           .sort(),
+        // The status belongs in the advisory fingerprint too: with more than one
+        // advisory verdict, a swap between them would otherwise go unnotified.
         baselineAdvisory: (c?.baselineAdvisory ?? [])
-          .map(b => `${b.group}:${b.name}:${b.selector}`)
+          .map(b => `${b.group}:${b.name}:${b.selector}:${b.status}:${b.contentStatus ?? '-'}`)
           .sort(),
       };
     });

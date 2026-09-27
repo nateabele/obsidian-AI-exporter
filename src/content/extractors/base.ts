@@ -17,12 +17,20 @@ import { extractErrorMessage } from '../../lib/error-utils';
 import { generateHash } from '../../lib/hash';
 import { sanitizeHtml } from '../../lib/sanitize';
 import {
+  ALL_PLATFORM_LABELS,
   MAX_CONVERSATION_TITLE_LENGTH,
   MAX_DEEP_RESEARCH_TITLE_LENGTH,
   PLATFORM_LABELS,
-  SCROLL_TIMEOUT,
 } from '../../lib/constants';
-import { accumulateWhileScrolling, type HarvestEntry } from '../../lib/scroll-manager';
+import {
+  accumulateWhileScrolling,
+  describeScrollStop,
+  resolveScrollDeadlines,
+  DEFAULT_SCROLL_DEADLINES,
+  type HarvestEntry,
+  type ScrollDeadlines,
+} from '../../lib/scroll-manager';
+import { platformForHost } from '../../lib/platform-registry';
 
 /**
  * Per-platform configuration for accumulating a virtualized conversation
@@ -35,6 +43,11 @@ export interface ScrollConfig {
   readonly container: readonly string[];
   /** Harvest the currently-mounted window as keyed messages, in DOM order. */
   harvest(): HarvestEntry<ConversationMessage>[];
+  /**
+   * How long the view must rest at the top before the pass may complete, for
+   * platforms that load older turns only once the top is reached (ADR-042).
+   */
+  readonly topSettleMs?: number;
 }
 
 /**
@@ -46,11 +59,33 @@ export abstract class BaseExtractor implements IConversationExtractor {
 
   /** Whether to auto-scroll to load lazily-rendered history (set from settings). */
   enableAutoScroll = false;
+  /**
+   * Deadlines for one auto-scroll pass. Replaced from user settings in
+   * applySettings(); the default reproduces the shipped 15s/300s (ADR-032).
+   */
+  protected scrollDeadlines: ScrollDeadlines = DEFAULT_SCROLL_DEADLINES;
 
-  abstract canExtract(): boolean;
   abstract getConversationId(): string | null;
   abstract getTitle(): string;
   abstract extractMessages(): ConversationMessage[];
+
+  /**
+   * Check whether this extractor handles the current page.
+   *
+   * Resolved from PLATFORM_REGISTRY rather than a per-extractor hostname
+   * literal: a host written down twice is a host that can go stale in one
+   * place, which is exactly how the NotebookLM rebrand broke extraction
+   * (ADR-023). Platforms served from several hosts work automatically.
+   *
+   * IMPORTANT: platformForHost() compares each candidate with strict equality,
+   * which prevents subdomain attacks like "evil-claude.ai.attacker.com"
+   * (NFR-001-1; CodeQL js/incomplete-url-substring-sanitization).
+   *
+   * Overridable for platforms that need more than a host match.
+   */
+  canExtract(): boolean {
+    return platformForHost(window.location.hostname) === this.platform;
+  }
 
   // ========== Platform Label ==========
 
@@ -85,15 +120,25 @@ export abstract class BaseExtractor implements IConversationExtractor {
         return deepResearchResult;
       }
 
+      this.onExtractStart();
       console.info(`[G2O] Extracting ${this.platformLabel} conversation`);
-      const { messages, warning } = await this.collectMessages();
+      const { messages, warning, truncated, watermark } = await this.collectMessages();
       const conversationId = this.getConversationId() || `${this.platform}-${Date.now()}`;
       const title = this.getTitle();
       const result = this.buildConversationResult(messages, conversationId, title, this.platform);
-      if (warning && result.success) {
-        return { ...result, warnings: [...(result.warnings ?? []), warning] };
-      }
-      return result;
+      if (!result.success) return result;
+      const data = result.data
+        ? {
+            ...result.data,
+            ...(truncated ? { truncated } : {}),
+            ...(watermark === undefined ? {} : { messageWatermark: watermark }),
+          }
+        : result.data;
+      return this.finalizeExtraction(
+        warning
+          ? { ...result, data, warnings: [...(result.warnings ?? []), warning] }
+          : { ...result, data }
+      );
     } catch (error) {
       console.error(`[G2O] ${this.platformLabel} extraction error:`, error);
       return {
@@ -126,6 +171,26 @@ export abstract class BaseExtractor implements IConversationExtractor {
   }
 
   /**
+   * Hook: per-extraction state reset, called once before messages are
+   * collected (after the Deep Research short-circuit). A virtualized platform
+   * harvests the same turn repeatedly, so anything it accumulates while
+   * reading turns — pending generated images (ADR-041) — must start empty here,
+   * not in extractMessages().
+   */
+  protected onExtractStart(): void {
+    // no-op by default
+  }
+
+  /**
+   * Hook: last word on a successful conversation result, e.g. attaching the
+   * generated images captured while the turns were read. Runs after the
+   * scroll warning is appended, so a platform may add its own warnings.
+   */
+  protected async finalizeExtraction(result: ExtractionResult): Promise<ExtractionResult> {
+    return result;
+  }
+
+  /**
    * Hook: auto-scroll configuration for virtualized platforms (ADR-017).
    * Return null (default) for platforms that render all turns eagerly or that
    * handle scrolling in their own extract() override (Gemini).
@@ -142,31 +207,57 @@ export abstract class BaseExtractor implements IConversationExtractor {
   protected async collectMessages(): Promise<{
     messages: ConversationMessage[];
     warning?: string;
+    /** The pass ended on a deadline, so earlier messages may be missing (#449). */
+    truncated?: boolean;
+    /** Ordinal of the newest turn covered, when the platform has one (#465). */
+    watermark?: number;
   }> {
     const config = this.getScrollConfig();
     if (!this.enableAutoScroll || !config) {
-      return { messages: this.extractMessages() };
+      return { messages: this.extractMessages(), watermark: this.currentWatermark() };
     }
 
     const container = this.queryWithFallback<HTMLElement>(config.container);
     if (!container) {
       console.info('[G2O] No scroll container found, skipping auto-scroll');
-      return { messages: this.extractMessages() };
+      return { messages: this.extractMessages(), watermark: this.currentWatermark() };
     }
 
-    const result = await accumulateWhileScrolling(container, () => config.harvest());
+    const result = await accumulateWhileScrolling(
+      container,
+      () => config.harvest(),
+      this.scrollDeadlines,
+      { topSettleMs: config.topSettleMs }
+    );
     // Re-index into contiguous conversation order after de-duplication.
     const messages = result.items.map((message, index) => ({ ...message, index }));
 
-    if (result.fullyLoaded || result.skipped) {
-      return { messages };
-    }
-    return {
-      messages,
-      warning:
-        `Auto-scroll timed out after ${SCROLL_TIMEOUT / 1000}s. ` +
-        `Some earlier messages may be missing (${result.itemCount} turns loaded).`,
-    };
+    // Deliberately the accumulated maximum, never a DOM re-read: the pass ends
+    // pinned at the TOP of the conversation, where the newest turn is unmounted
+    // and its ordinal is no longer readable (issue #465).
+    const watermark = result.maxOrder;
+
+    const warning = describeScrollStop(result.stopReason, result.itemCount, this.scrollDeadlines);
+    return warning ? { messages, warning, truncated: true, watermark } : { messages, watermark };
+  }
+
+  /**
+   * Hook: highest conversation-wide turn ordinal currently in the DOM.
+   *
+   * Null by default. A platform may only override this with an ordinal that is
+   * **monotonic in conversation order and never renumbered** — Claude's
+   * `data-index` and ChatGPT's `conversation-turn-N` qualify (measured live,
+   * issues #352/#353). A turn *count* does not: Gemini lazy-loads older turns
+   * when the user scrolls up, so its count grows with no new message and the
+   * badge would clear itself for nothing (ADR-036).
+   */
+  getMessageWatermark(): number | null {
+    return null;
+  }
+
+  /** {@link getMessageWatermark} as the optional field callers store. */
+  private currentWatermark(): number | undefined {
+    return this.getMessageWatermark() ?? undefined;
   }
 
   // ========== Settings ==========
@@ -175,7 +266,21 @@ export abstract class BaseExtractor implements IConversationExtractor {
    * Apply user settings before extraction.
    * Override in subclasses that have platform-specific settings.
    */
-  applySettings(_settings: SyncSettings): void {
+  applySettings(settings: SyncSettings): void {
+    this.enableAutoScroll = settings.enableAutoScroll ?? false;
+    this.scrollDeadlines = resolveScrollDeadlines(settings);
+    this.applyPlatformSettings(settings);
+  }
+
+  /**
+   * Hook: settings only one platform cares about.
+   *
+   * Overriding `applySettings` instead would drop whatever the base class
+   * assigns — which is exactly how the auto-scroll deadlines would have gone
+   * missing on all three virtualized platforms (ADR-032). Guarded by
+   * test/arch/extractor-settings-hook.test.ts.
+   */
+  protected applyPlatformSettings(_settings: SyncSettings): void {
     // no-op by default
   }
 
@@ -447,31 +552,36 @@ export abstract class BaseExtractor implements IConversationExtractor {
   }
 
   /**
-   * Known platform suffixes in document.title, derived from PLATFORM_LABELS
-   * so new platforms are picked up automatically.
-   * Matches: " - Claude", " | Gemini", " - Google Gemini", " - ChatGPT", etc.
+   * Known platform suffixes in document.title, derived from ALL_PLATFORM_LABELS
+   * so new platforms are picked up automatically and renamed ones keep working
+   * during a staggered rollout (ADR-023).
+   * Matches: " - Claude", " | Gemini", " - Google Gemini", " - Gemini Notebook", etc.
+   *
+   * ALL_PLATFORM_LABELS is longest-first, so "Gemini Notebook" is tried before
+   * the shorter "Gemini" that is a prefix of it.
    */
   private static readonly TITLE_SUFFIX_PATTERN = new RegExp(
-    `\\s*[-|]\\s*(?:Google\\s+)?(?:${Object.values(PLATFORM_LABELS).join('|')})\\s*$`,
+    `\\s*[-|]\\s*(?:Google\\s+)?(?:${ALL_PLATFORM_LABELS.join('|')})\\s*$`,
     'i'
   );
 
   /**
    * Titles that are nothing but a platform name (lowercased), derived from
-   * PLATFORM_LABELS plus known aliases.
+   * ALL_PLATFORM_LABELS plus known aliases.
    */
   private static readonly PLATFORM_ONLY_TITLES = new Set([
     'google gemini',
-    ...Object.values(PLATFORM_LABELS).map(label => label.toLowerCase()),
+    ...ALL_PLATFORM_LABELS.map(label => label.toLowerCase()),
   ]);
 
   /**
    * Extract conversation title from document.title, stripping platform suffixes.
    * Returns null if document.title is empty or contains only the platform name.
    *
-   * Useful as a fallback for platforms where document.title reflects the
-   * conversation title (Claude, ChatGPT, Perplexity). Not suitable for Gemini
-   * where document.title is always "Google Gemini".
+   * Used by every platform whose document.title reflects the conversation
+   * title (Claude, ChatGPT, Perplexity, and — since Gemini started emitting
+   * "<name> - Google Gemini" — Gemini too; issue #504, ADR-040). The bare
+   * "Google Gemini" landing title is rejected via PLATFORM_ONLY_TITLES.
    */
   protected getPageTitle(): string | null {
     const raw = document.title?.replace(BaseExtractor.TITLE_SUFFIX_PATTERN, '').trim();

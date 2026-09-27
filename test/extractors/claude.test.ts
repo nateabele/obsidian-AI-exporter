@@ -4,11 +4,10 @@ import {
   loadFixture,
   clearFixture,
   resetLocation,
-  setNonGeminiLocation,
   createClaudeConversationDOM,
   createClaudeDeepResearchDOM,
   setClaudeLocation,
-  setNonClaudeLocation,
+  defineLocation,
   createClaudeInlineCitation,
   createClaudePage,
   createClaudeDeepResearchPage,
@@ -16,6 +15,7 @@ import {
   createClaudePageWithToolUse,
   createClaudePageWithThinkingStatus,
   createClaudePageWithMultiStatusResponse,
+  createClaudePageWithMixedContentBlocks,
 } from '../fixtures/dom-helpers';
 
 describe('ClaudeExtractor', () => {
@@ -46,7 +46,7 @@ describe('ClaudeExtractor', () => {
       });
 
       it('returns false for other hosts', () => {
-        setNonGeminiLocation('chat.openai.com');
+        defineLocation('chat.openai.com');
         expect(extractor.canExtract()).toBe(false);
       });
 
@@ -72,6 +72,48 @@ describe('ClaudeExtractor', () => {
           ])
         );
         expect(extractor.isDeepResearchVisible()).toBe(false);
+      });
+
+      // Claude keeps the artifact mounted after the panel is closed, moving the
+      // off-screen panel into an `inert` + `aria-hidden="true"` subtree (verified
+      // live 2026-07-16). Presence alone must NOT count as "visible", else every
+      // Sync after ever opening a DR/Artifact hijacks the save to report-only and
+      // discards the conversation (user report, issue #352 follow-up).
+      it('returns false when the artifact is inside an inert (closed) panel', () => {
+        setClaudeLocation('test-123');
+        loadFixture(
+          `<div inert aria-hidden="true">${createClaudeDeepResearchDOM('Closed Report', '<p>Lingering</p>')}</div>`
+        );
+        expect(extractor.isDeepResearchVisible()).toBe(false);
+      });
+
+      it('returns false when the artifact panel is aria-hidden (dismissed but mounted)', () => {
+        setClaudeLocation('test-123');
+        loadFixture(
+          `<div aria-hidden="true">${createClaudeDeepResearchDOM('Hidden', '<p>x</p>')}</div>`
+        );
+        expect(extractor.isDeepResearchVisible()).toBe(false);
+      });
+
+      it('returns true when the artifact panel is open (aria-hidden="false")', () => {
+        setClaudeLocation('test-123');
+        loadFixture(
+          `<div aria-hidden="false">${createClaudeDeepResearchDOM('Open', '<p>x</p>')}</div>`
+        );
+        expect(extractor.isDeepResearchVisible()).toBe(true);
+      });
+
+      it('still detects an open artifact when an unrelated sibling is aria-hidden', () => {
+        // Over-suppression guard: only the artifact's own ancestors count, not a
+        // hidden sibling subtree elsewhere on the page (code-review #2/#4).
+        setClaudeLocation('test-123');
+        loadFixture(`
+          <div>
+            <div aria-hidden="true"><p>an unrelated dismissed dialog</p></div>
+            ${createClaudeDeepResearchDOM('Open', '<p>x</p>')}
+          </div>
+        `);
+        expect(extractor.isDeepResearchVisible()).toBe(true);
       });
     });
   });
@@ -102,12 +144,12 @@ describe('ClaudeExtractor', () => {
   // ========== 6.3.2 Security Tests (5 tests) ==========
   describe('Security', () => {
     it('rejects malicious subdomains containing claude.ai', () => {
-      setNonClaudeLocation('evil-claude.ai.attacker.com');
+      defineLocation('evil-claude.ai.attacker.com');
       expect(extractor.canExtract()).toBe(false);
     });
 
     it('rejects claude.ai as subdomain', () => {
-      setNonClaudeLocation('claude.ai.evil.com');
+      defineLocation('claude.ai.evil.com');
       expect(extractor.canExtract()).toBe(false);
     });
 
@@ -166,22 +208,12 @@ describe('ClaudeExtractor', () => {
     });
 
     it('returns null for non-chat URLs', () => {
-      setNonClaudeLocation('claude.ai', '/');
+      defineLocation('claude.ai', '/');
       expect(extractor.getConversationId()).toBeNull();
     });
 
     it('generates fallback ID when URL parsing fails', async () => {
-      setNonClaudeLocation('claude.ai', '/settings');
-      // Set hostname correctly for canExtract
-      Object.defineProperty(window, 'location', {
-        value: {
-          hostname: 'claude.ai',
-          pathname: '/settings',
-          href: 'https://claude.ai/settings',
-        },
-        writable: true,
-        configurable: true,
-      });
+      defineLocation('claude.ai', '/settings');
       loadFixture(
         createClaudeConversationDOM([
           { role: 'user', content: 'Hello' },
@@ -467,6 +499,54 @@ describe('ClaudeExtractor', () => {
       expect(result.data?.type).toBe('deep-research');
     });
 
+    it('extracts the conversation (not DR) when a lingering artifact panel is closed', async () => {
+      // Regression: once a DR/Artifact has been opened, #markdown-artifact stays
+      // mounted in an inert/aria-hidden subtree. The save must return the
+      // conversation, not hijack to the stale report (issue #352 follow-up).
+      setClaudeLocation('test-123');
+      loadFixture(`
+        <div class="app-container">
+          ${createClaudeConversationDOM([
+            { role: 'user', content: 'What is the weather?' },
+            { role: 'assistant', content: '<p>It is sunny.</p>' },
+          ])}
+          <div inert aria-hidden="true">
+            ${createClaudeDeepResearchDOM('Stale Report', '<p>lingering</p>')}
+          </div>
+        </div>
+      `);
+      const result = await extractor.extract();
+      expect(result.success).toBe(true);
+      expect(result.data?.type).not.toBe('deep-research');
+      expect(
+        result.data?.messages.some(m => m.role === 'user' && m.content.includes('weather'))
+      ).toBe(true);
+    });
+
+    it('excludes a lingering closed artifact from the conversation messages', async () => {
+      // The closed #markdown-artifact still carries .font-claude-response, so
+      // conversation extraction must not pull the stale report in as an extra
+      // assistant turn (code-review #1 of the DR-visibility fix).
+      setClaudeLocation('test-123');
+      loadFixture(`
+        <div class="app-container">
+          ${createClaudeConversationDOM([
+            { role: 'user', content: 'What is the weather?' },
+            { role: 'assistant', content: '<p>It is sunny.</p>' },
+          ])}
+          <div inert aria-hidden="true">
+            ${createClaudeDeepResearchDOM('Stale Report Title', '<p>lingering report body</p>')}
+          </div>
+        </div>
+      `);
+      const result = await extractor.extract();
+      const joined = (result.data?.messages ?? []).map(m => m.content).join('\n');
+      expect(joined).not.toContain('Stale Report Title');
+      expect(joined).not.toContain('lingering report body');
+      // The real conversation is intact: exactly one assistant turn.
+      expect(result.data?.messages.filter(m => m.role === 'assistant')).toHaveLength(1);
+    });
+
     it('deduplicates citations by URL', () => {
       setClaudeLocation('test-123');
       loadFixture(`
@@ -542,8 +622,11 @@ describe('ClaudeExtractor', () => {
 
   // ========== 6.3.7 Fallback Selectors (12 tests) ==========
   describe('Fallback Selectors', () => {
-    describe('conversationBlock selectors', () => {
-      it('works with primary selector (.group[style])', async () => {
+    // These pin that extraction is independent of the message WRAPPER shape:
+    // Claude has changed it repeatedly, and the selector group that used to
+    // describe it was removed in #446 because no code read it.
+    describe('message wrapper shapes', () => {
+      it('works when turns are wrapped in .group with an inline height style', async () => {
         setClaudeLocation('test-123');
         loadFixture(`
           <div class="group" style="height: auto;">
@@ -561,7 +644,7 @@ describe('ClaudeExtractor', () => {
         expect(result.data?.messages.length).toBeGreaterThan(0);
       });
 
-      it('works with secondary selector ([data-test-render-count])', async () => {
+      it('works when turns are wrapped in [data-test-render-count]', async () => {
         setClaudeLocation('test-123');
         loadFixture(`
           <div data-test-render-count="2">
@@ -577,7 +660,7 @@ describe('ClaudeExtractor', () => {
         expect(result.success).toBe(true);
       });
 
-      it('works with tertiary selector (.group)', async () => {
+      it('works when turns are wrapped in a bare .group', async () => {
         setClaudeLocation('test-123');
         loadFixture(`
           <div class="group">
@@ -1542,6 +1625,168 @@ console.log(x);</code></pre>
     });
   });
 
+  // ========== Mixed grid + top-level content blocks ==========
+  //
+  // A response may place its answer in top-level `.standard-markdown` blocks
+  // that sit OUTSIDE the `.row-start-2` grid sections used by the preceding
+  // thinking / tool-use steps. Treating the two locations as mutually exclusive
+  // dropped the entire answer whenever both were present.
+  describe('Mixed content blocks (grid steps + top-level markdown)', () => {
+    it('captures top-level content that follows grid step blocks', async () => {
+      createClaudePageWithMixedContentBlocks('11111111-2222-3333-4444-555555555551', 'Question', [
+        { kind: 'step', statusText: 'Status one.', content: '<p>PREAMBLE-1</p>' },
+        { kind: 'step', statusText: 'Searched the web', content: '<p>PREAMBLE-2</p>' },
+        { kind: 'step', statusText: 'Status three.', content: '<p>PREAMBLE-3</p>' },
+        { kind: 'body', content: '<p>ANSWER-A</p>' },
+        { kind: 'body', content: '<p>ANSWER-B</p><h3>HEADING</h3>' },
+      ]);
+
+      const result = await extractor.extract();
+      expect(result.success).toBe(true);
+      const assistantMsg = result.data?.messages.find(m => m.role === 'assistant');
+
+      // The answer lives outside .row-start-2 and must survive
+      expect(assistantMsg?.content).toContain('ANSWER-A');
+      expect(assistantMsg?.content).toContain('ANSWER-B');
+      expect(assistantMsg?.content).toContain('HEADING');
+      // Step preambles are visible response text too
+      expect(assistantMsg?.content).toContain('PREAMBLE-1');
+      expect(assistantMsg?.content).toContain('PREAMBLE-3');
+      // Status labels stay out of the body
+      expect(assistantMsg?.content).not.toContain('Searched the web');
+    });
+
+    it('preserves DOM order when step and body blocks interleave', async () => {
+      createClaudePageWithMixedContentBlocks('11111111-2222-3333-4444-555555555552', 'Question', [
+        { kind: 'step', statusText: 'First step.', content: '<p>FIRST</p>' },
+        { kind: 'body', content: '<p>SECOND</p>' },
+        { kind: 'step', statusText: 'Third step.', content: '<p>THIRD</p>' },
+        { kind: 'body', content: '<p>FOURTH</p>' },
+      ]);
+
+      const result = await extractor.extract();
+      const content = result.data?.messages.find(m => m.role === 'assistant')?.content ?? '';
+
+      expect(content).toContain('FIRST');
+      expect(content).toContain('FOURTH');
+      expect(content.indexOf('FIRST')).toBeLessThan(content.indexOf('SECOND'));
+      expect(content.indexOf('SECOND')).toBeLessThan(content.indexOf('THIRD'));
+      expect(content.indexOf('THIRD')).toBeLessThan(content.indexOf('FOURTH'));
+    });
+
+    it('ignores embedded widget containers that carry no markdown', async () => {
+      createClaudePageWithMixedContentBlocks('11111111-2222-3333-4444-555555555553', 'Question', [
+        { kind: 'step', statusText: 'Status.', content: '<p>PREAMBLE</p>' },
+        { kind: 'body', content: '<p>BEFORE-WIDGET</p>' },
+        { kind: 'widget' },
+        { kind: 'body', content: '<p>AFTER-WIDGET</p>' },
+      ]);
+
+      const result = await extractor.extract();
+      const content = result.data?.messages.find(m => m.role === 'assistant')?.content ?? '';
+
+      expect(content).toContain('BEFORE-WIDGET');
+      expect(content).toContain('AFTER-WIDGET');
+      expect(content).not.toContain('iframe');
+    });
+
+    it('keeps tool markdown inside the status header out of the response body', async () => {
+      createClaudePageWithMixedContentBlocks('11111111-2222-3333-4444-555555555554', 'Question', [
+        {
+          kind: 'step',
+          statusText: 'Ran a tool.',
+          content: '<p>PREAMBLE</p>',
+          toolMarkdown: 'TOOL-ONLY-TEXT',
+        },
+        { kind: 'body', content: '<p>ANSWER</p>' },
+      ]);
+
+      const result = await extractor.extract();
+      const content = result.data?.messages.find(m => m.role === 'assistant')?.content ?? '';
+
+      expect(content).toContain('PREAMBLE');
+      expect(content).toContain('ANSWER');
+      // .standard-markdown nested in the OUTER .row-start-1 is tool content
+      expect(content).not.toContain('TOOL-ONLY-TEXT');
+    });
+
+    it('does not emit nested fallback matches twice', async () => {
+      // No .standard-markdown, so the lower-priority [class*="markdown"]
+      // selector takes over — and it matches BOTH the wrapper and the inner
+      // node. Sweeping every match must not duplicate the shared text.
+      setClaudeLocation('11111111-2222-3333-4444-555555555555');
+      loadFixture(`
+        <div class="conversation-thread">
+          <div data-test-render-count="2" class="group" style="height: auto;">
+            <div class="bg-bg-300 rounded-xl">
+              <div data-testid="user-message">
+                <p class="whitespace-pre-wrap break-words">Question</p>
+              </div>
+            </div>
+          </div>
+          <div data-test-render-count="1" class="group" style="height: auto;">
+            <div class="font-claude-response" data-is-streaming="false">
+              <div class="markdown-wrapper">
+                <div class="markdown-body"><p>NESTED-ONCE</p></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      `);
+
+      const result = await extractor.extract();
+      const content = result.data?.messages.find(m => m.role === 'assistant')?.content ?? '';
+
+      expect(content).toContain('NESTED-ONCE');
+      expect(content.split('NESTED-ONCE').length - 1).toBe(1);
+    });
+
+    // Tool content is gathered per status header. Reading only the first one
+    // discarded every later step's tool activity.
+    it('captures tool content from every status block', async () => {
+      extractor.applySettings({ enableToolContent: true } as never);
+      createClaudePageWithMixedContentBlocks('11111111-2222-3333-4444-555555555556', 'Question', [
+        { kind: 'step', statusText: 'Planned the work.', content: '<p>PREAMBLE-1</p>' },
+        { kind: 'step', statusText: 'Searched the web', content: '<p>PREAMBLE-2</p>' },
+        { kind: 'step', statusText: 'Summarised findings.', content: '<p>PREAMBLE-3</p>' },
+        { kind: 'body', content: '<p>ANSWER</p>' },
+      ]);
+
+      const result = await extractor.extract();
+      const toolContent =
+        result.data?.messages.find(m => m.role === 'assistant')?.toolContent ?? '';
+
+      expect(toolContent).toContain('Planned the work.');
+      expect(toolContent).toContain('Searched the web');
+      expect(toolContent).toContain('Summarised findings.');
+    });
+
+    it('skips only the Extended Thinking block, keeping other tool content', async () => {
+      extractor.applySettings({ enableToolContent: true } as never);
+      createClaudePageWithMixedContentBlocks('11111111-2222-3333-4444-555555555557', 'Question', [
+        {
+          kind: 'step',
+          statusText: 'THINKING-HEADER',
+          content: '<p>PREAMBLE-1</p>',
+          thinking: true,
+        },
+        { kind: 'step', statusText: 'Searched the web', content: '<p>PREAMBLE-2</p>' },
+        { kind: 'body', content: '<p>ANSWER</p>' },
+      ]);
+
+      const result = await extractor.extract();
+      const assistantMsg = result.data?.messages.find(m => m.role === 'assistant');
+      const toolContent = assistantMsg?.toolContent ?? '';
+
+      // Extended Thinking is presented separately, not as tool activity
+      expect(toolContent).not.toContain('THINKING-HEADER');
+      // …but a thinking block first in the response must not suppress the rest
+      expect(toolContent).toContain('Searched the web');
+      // Response body is unaffected either way
+      expect(assistantMsg?.content).toContain('ANSWER');
+    });
+  });
+
   // ========== Code Blocks in Assistant Responses ==========
   describe('Code Blocks in Assistant Responses', () => {
     it('preserves code block HTML for markdown conversion', async () => {
@@ -1636,5 +1881,136 @@ console.log(x);</code></pre>
 
       vi.unstubAllGlobals();
     });
+  });
+});
+
+/**
+ * Long user messages are collapsed behind an `inert` wrapper.
+ *
+ * Claude does not only use `inert` for a dismissed Deep Research / Artifact
+ * panel (#352). It also uses it for the overflow of a **collapsed long user
+ * message**, and `isInDismissedPanel()` could not tell the two apart, so the
+ * user's own prompt vanished from the export while the reply survived.
+ *
+ * Measured live via CDP (2026-08-16), same account, same day:
+ *
+ * | conversation | user turn | inside `[inert]` |
+ * | ------------ | --------- | ---------------- |
+ * | pinned test  | 16 / 54 / 182 chars | no  |
+ * | reported     | 597 chars           | YES |
+ *
+ * The structural discriminator is where the element sits: conversation turns
+ * live inside a `[data-index]` row, and the artifact panel does not
+ * (`#markdown-artifact` measured at `closest('[data-index]') === null`).
+ */
+describe('collapsed long user messages (issue: first comment missing)', () => {
+  /** The reported shape: a real turn whose overflow wrapper carries `inert`. */
+  const COLLAPSED_USER_TURN = `
+    <div data-index="0">
+      <div class="group/message-row">
+        <div class="relative">
+          <div id="_r_du_" class="overflow-hidden">
+            <div inert>
+              <div class="grid">
+                <div data-testid="user-message">
+                  <p class="whitespace-pre-wrap break-words">A very long pasted requirement</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div data-index="1">
+      <div class="font-claude-response">
+        <div class="standard-markdown"><p>The reply</p></div>
+      </div>
+    </div>
+  `;
+
+  let extractor: ClaudeExtractor;
+
+  beforeEach(() => {
+    extractor = new ClaudeExtractor();
+    clearFixture();
+    setClaudeLocation('dee90067');
+  });
+
+  afterEach(() => {
+    clearFixture();
+    resetLocation();
+  });
+
+  it('extracts a user message whose turn is partly inert', () => {
+    loadFixture(COLLAPSED_USER_TURN);
+
+    const messages = extractor.extractMessages();
+
+    expect(messages.map(m => m.role)).toEqual(['user', 'assistant']);
+    expect(messages[0].content).toContain('very long pasted requirement');
+  });
+
+  it('reports both counts, with no missing-user warning', async () => {
+    loadFixture(COLLAPSED_USER_TURN);
+
+    const result = await extractor.extract();
+
+    expect(result.success).toBe(true);
+    expect(result.warnings ?? []).not.toContain('No user messages found');
+    expect(result.data?.metadata.userMessageCount).toBe(1);
+    expect(result.data?.metadata.assistantMessageCount).toBe(1);
+  });
+
+  it('still ignores a dismissed panel outside the conversation rows (issue #352)', () => {
+    // The regression this must not undo: a closed artifact keeps its
+    // .font-claude-response and would otherwise leak in as a stale extra turn.
+    loadFixture(`
+      <div data-index="0">
+        <div data-testid="user-message">
+          <p class="whitespace-pre-wrap break-words">Question</p>
+        </div>
+      </div>
+      <div data-index="1">
+        <div class="font-claude-response">
+          <div class="standard-markdown"><p>Answer</p></div>
+        </div>
+      </div>
+      <div inert aria-hidden="true">
+        <div class="font-claude-response">
+          <div class="standard-markdown"><p>Lingering closed report</p></div>
+        </div>
+      </div>
+    `);
+
+    const messages = extractor.extractMessages();
+
+    expect(messages.map(m => m.role)).toEqual(['user', 'assistant']);
+    expect(messages.some(m => m.content.includes('Lingering'))).toBe(false);
+  });
+
+  it('extracts a collapsed assistant response too', () => {
+    // Not observed live, but it runs through the same guard: if Claude ever
+    // collapses a long reply, the reply must not vanish either.
+    loadFixture(`
+      <div data-index="0">
+        <div data-testid="user-message">
+          <p class="whitespace-pre-wrap break-words">Question</p>
+        </div>
+      </div>
+      <div data-index="1">
+        <div class="overflow-hidden">
+          <div inert>
+            <div class="font-claude-response">
+              <div class="standard-markdown"><p>A very long reply</p></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `);
+
+    const messages = extractor.extractMessages();
+
+    expect(messages.map(m => m.role)).toEqual(['user', 'assistant']);
+    expect(messages[1].content).toContain('very long reply');
   });
 });
