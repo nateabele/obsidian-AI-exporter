@@ -27,7 +27,9 @@ export interface WarnDetail {
   workingFallback: SelectorResult;
 }
 
-export interface DeadMiddleDetail {
+// Module-internal: reachable through `ClassificationResult.deadMiddle`, and
+// nothing names it directly (knip: unused exported type).
+interface DeadMiddleDetail {
   /** A non-primary selector (index >= 1) that failed while a sibling matched */
   dead: SelectorResult;
   /** A selector in the same group that is currently matching, for context */

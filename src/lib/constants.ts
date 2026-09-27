@@ -306,17 +306,11 @@ export const MAX_SCROLL_MAX_TIMEOUT_SEC = 3600;
 
 export const BYTES_PER_MIB = 1024 * 1024;
 
-/**
- * Per-message payload cap on the companion sync path (chatSync / chatBackfill),
- * in UTF-16 code units of one message's markdown.
- *
- * Upstream removed the identically-named whole-note cap when the note body
- * limit became a user setting (ADR-038): a 1,077-message conversation exceeded
- * a fixed 1 MiB. That reasoning is about a whole note; this bounds a SINGLE
- * message block, where 1 MiB is still far above anything observed, so the
- * companion validators keep it.
- */
-export const MAX_CONTENT_SIZE = BYTES_PER_MIB;
+// The companion sync path keeps a fixed 1 MiB cap per MESSAGE (as opposed to
+// per note), which lives with its only two readers as MAX_MESSAGE_CONTENT_SIZE
+// in `background/validation.ts` — exporting it from here made it an alias of
+// BYTES_PER_MIB, i.e. a second name for the same value (knip: duplicate export).
+
 /** 8 MiB: an order of magnitude above the old limit, well inside the ceiling. */
 export const DEFAULT_NOTE_SIZE_MIB = 8;
 export const MIN_NOTE_SIZE_MIB = 1;

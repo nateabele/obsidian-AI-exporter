@@ -7,7 +7,7 @@
  * `hash` field, and `ChatBackfillRequest.messages` requires one.
  */
 import { generateHash } from '../../lib/hash';
-import type { ChatBackfillRequest } from '../../lib/types';
+import type { ChatBackfillMessage, ChatBackfillRequest } from '../../lib/types';
 import { escapeAngleBrackets, escapeUserText } from '../markdown-rules';
 import type { ArchivedConversation, ArchivedMessage } from './types';
 
@@ -55,7 +55,7 @@ export function toBackfillRequest(conv: ArchivedConversation): ChatBackfillReque
     createdAt: conv.createdAt,
     accountId: conv.accountId,
     accountName: conv.accountName,
-    messages: conv.messages.map(m => {
+    messages: conv.messages.map((m): ChatBackfillMessage => {
       const markdown = escapeForVault(m);
       return {
         role: m.role,

@@ -6,7 +6,7 @@
  */
 
 import {
-  MAX_CONTENT_SIZE,
+  BYTES_PER_MIB,
   MAX_FILENAME_LENGTH,
   MAX_FRONTMATTER_TITLE_LENGTH,
   MAX_TAGS_COUNT,
@@ -29,6 +29,20 @@ import type {
 import { containsPathTraversal } from '../lib/path-utils';
 import { isHttpUrl } from '../lib/validation';
 import { isAllowedImageMime, isLikelyBase64, isAllowedImageSourceUrl } from '../lib/image-utils';
+
+/**
+ * Per-message payload cap on the companion sync path (chatSync / chatBackfill),
+ * in UTF-16 code units of one message's markdown.
+ *
+ * Upstream removed an identically-sized whole-note cap when the note body limit
+ * became a user setting (ADR-038): a 1,077-message conversation exceeded a fixed
+ * 1 MiB. That reasoning is about a whole note; this bounds a SINGLE message
+ * block, where 1 MiB is still far above anything observed, so the companion
+ * validators keep it. Module-local rather than exported from `constants.ts`
+ * because these two validators are its only readers, and an exported alias of
+ * `BYTES_PER_MIB` reads as a second unit constant rather than as a cap.
+ */
+const MAX_MESSAGE_CONTENT_SIZE = BYTES_PER_MIB;
 
 /**
  * Validate message sender (M-02)
@@ -68,49 +82,50 @@ export function validateMessageContent(message: ExtensionMessage): boolean {
     return false;
   }
 
-  // Detailed validation for saveToOutputs action
-  if (message.action === 'saveToOutputs') {
-    if (!validateNoteData(message.data)) {
-      return false;
-    }
-    // Validate outputs array (using centralized constants)
-    if (!Array.isArray(message.outputs) || message.outputs.length === 0) {
-      return false;
-    }
-    if (
-      !message.outputs.every(o =>
-        VALID_OUTPUT_DESTINATIONS.includes(o as (typeof VALID_OUTPUT_DESTINATIONS)[number])
-      )
-    ) {
-      return false;
-    }
+  // Per-action payload validation, one named validator each. Dispatched on the
+  // discriminant rather than checked as a chain of independent `if`s: the
+  // actions are mutually exclusive, so only ever one could run anyway.
+  switch (message.action) {
+    case 'saveToOutputs':
+      return validateSaveToOutputsMessage(message);
+    case 'chatSync':
+      return validateChatSyncData(message.data);
+    case 'chatBackfill':
+      return validateChatBackfillData(message.data);
+    case 'openInObsidian':
+      return validateOpenInObsidianData(message.data);
+    case 'fetchImage':
+      return validateFetchImageUrl(message.url);
+    default:
+      // getSettings / testConnection carry no payload to validate.
+      return true;
   }
+}
 
-  // Detailed validation for chatSync action
-  if (message.action === 'chatSync' && !validateChatSyncData(message.data)) {
-    return false;
-  }
+/**
+ * Validate a saveToOutputs message: the note itself, plus a non-empty outputs
+ * array drawn from the destination whitelist.
+ */
+function validateSaveToOutputsMessage(
+  message: Extract<ExtensionMessage, { action: 'saveToOutputs' }>
+): boolean {
+  if (!validateNoteData(message.data)) return false;
+  // Validate outputs array (using centralized constants)
+  if (!Array.isArray(message.outputs) || message.outputs.length === 0) return false;
+  return message.outputs.every(o =>
+    VALID_OUTPUT_DESTINATIONS.includes(o as (typeof VALID_OUTPUT_DESTINATIONS)[number])
+  );
+}
 
-  // Detailed validation for chatBackfill action
-  if (message.action === 'chatBackfill' && !validateChatBackfillData(message.data)) {
-    return false;
-  }
-
-  // Detailed validation for openInObsidian action
-  if (message.action === 'openInObsidian' && !validateOpenInObsidianData(message.data)) {
-    return false;
-  }
-
-  // The worker can reach hosts the page cannot, so a fetchImage URL is only
-  // accepted for the image CDN allow-list (issue #376). Re-checked in the
-  // handler; rejecting here keeps a bad URL from ever reaching it.
-  if (message.action === 'fetchImage') {
-    if (typeof message.url !== 'string' || !isAllowedImageSourceUrl(message.url)) {
-      return false;
-    }
-  }
-
-  return true;
+/**
+ * Validate a fetchImage URL. The worker can reach hosts the page cannot, so the
+ * URL is only accepted for the image CDN allow-list (issue #376). Re-checked in
+ * the handler; rejecting here keeps a bad URL from ever reaching it.
+ */
+function validateFetchImageUrl(url: unknown): boolean {
+  // Messages arrive as unvalidated JSON: `url` may be absent/malformed
+  // despite the type.
+  return typeof url === 'string' && isAllowedImageSourceUrl(url);
 }
 
 /**
@@ -130,7 +145,7 @@ function validateChatSyncData(data: ChatSyncRequest | undefined): boolean {
     b =>
       (b?.role !== 'user' && b?.role !== 'assistant') ||
       typeof b.markdown !== 'string' ||
-      b.markdown.length > MAX_CONTENT_SIZE ||
+      b.markdown.length > MAX_MESSAGE_CONTENT_SIZE ||
       typeof b.hash !== 'string' ||
       b.hash.length === 0
   );
@@ -158,7 +173,7 @@ function validateChatBackfillData(data: ChatBackfillRequest | undefined): boolea
     m =>
       (m?.role !== 'user' && m?.role !== 'assistant') ||
       typeof m.markdown !== 'string' ||
-      m.markdown.length > MAX_CONTENT_SIZE ||
+      m.markdown.length > MAX_MESSAGE_CONTENT_SIZE ||
       typeof m.hash !== 'string' ||
       m.hash.length === 0 ||
       typeof m.sourceId !== 'string' ||

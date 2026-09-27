@@ -8,8 +8,10 @@
 
 import type { MultiOutputResponse, OutputResult } from '../lib/types';
 
-/** How the last sync ended. */
-export type SyncStatusKind = 'success' | 'partial' | 'error';
+// How the last sync ended. Module-internal: it is reachable through
+// `SyncStatus.kind`, and no consumer names it (knip: unused exported type).
+// Export it again if one does.
+type SyncStatusKind = 'success' | 'partial' | 'error';
 
 /**
  * The result of the **last** sync attempt.

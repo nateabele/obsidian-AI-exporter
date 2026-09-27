@@ -13,6 +13,7 @@ import type {
   TemplateOptions,
   OutputOptions,
   AIPlatform,
+  ArchiveDiscoverMessage,
   ArchiveDiscoverResponse,
   ChatBackfillRequest,
 } from '../lib/types';
@@ -110,24 +111,58 @@ function getElement<T extends HTMLElement>(id: string): T {
 }
 
 // DOM Elements — queried inside initPopup() (not at module scope) so that
-// importing this module has no side effects and tests can build the DOM first
+// importing this module has no side effects and tests can build the DOM first.
+//
+// One helper per settings section, mirroring `populateForm`'s delegation (and
+// for the same reason: the flat version was 52 lines, over the limit).
 function queryElements() {
   return {
-    // Output destinations
+    ...queryOutputElements(),
+    ...queryObsidianElements(),
+    ...queryTemplateElements(),
+    ...queryFrontmatterElements(),
+    ...queryExtractionElements(),
+    ...queryCompanionElements(),
+    ...queryActionElements(),
+  };
+}
+
+/** Output destinations */
+function queryOutputElements() {
+  return {
     outputObsidian: getElement<HTMLInputElement>('outputObsidian'),
     outputFile: getElement<HTMLInputElement>('outputFile'),
     outputClipboard: getElement<HTMLInputElement>('outputClipboard'),
     obsidianSettings: getElement<HTMLElement>('obsidianSettings'),
-    // Obsidian settings
+  };
+}
+
+/** Obsidian API settings */
+function queryObsidianElements() {
+  return {
     apiKey: getElement<HTMLInputElement>('apiKey'),
     obsidianUrl: getElement<HTMLInputElement>('obsidianUrl'),
     vaultPath: getElement<HTMLInputElement>('vaultPath'),
+  };
+}
+
+/** Message format, filename scheme, callout types and timezone */
+function queryTemplateElements() {
+  return {
     messageFormat: getElement<HTMLSelectElement>('messageFormat'),
     filenameScheme: getElement<HTMLSelectElement>('filenameScheme'),
     calloutSettingsGroup: getElement<HTMLElement>('calloutSettingsGroup'),
     userCallout: getElement<HTMLInputElement>('userCallout'),
     assistantCallout: getElement<HTMLInputElement>('assistantCallout'),
     includeQuestionHeaders: getElement<HTMLInputElement>('includeQuestionHeaders'),
+    timezone: getElement<HTMLSelectElement>('timezone'),
+    timezoneGroup: getElement<HTMLElement>('timezoneGroup'),
+  };
+}
+
+/** Frontmatter field toggles */
+function queryFrontmatterElements() {
+  return {
     includeId: getElement<HTMLInputElement>('includeId'),
     includeTitle: getElement<HTMLInputElement>('includeTitle'),
     includeTags: getElement<HTMLInputElement>('includeTags'),
@@ -136,6 +171,12 @@ function queryElements() {
     includeSource: getElement<HTMLInputElement>('includeSource'),
     includeDates: getElement<HTMLInputElement>('includeDates'),
     includeMessageCount: getElement<HTMLInputElement>('includeMessageCount'),
+  };
+}
+
+/** Extraction options, including the scroll and note-size bounds */
+function queryExtractionElements() {
+  return {
     enableAutoScroll: getElement<HTMLInputElement>('enableAutoScroll'),
     enableAppendMode: getElement<HTMLInputElement>('enableAppendMode'),
     enableToolContent: getElement<HTMLInputElement>('enableToolContent'),
@@ -143,6 +184,17 @@ function queryElements() {
     imageVaultPath: getElement<HTMLInputElement>('imageVaultPath'),
     flattenLargeCallouts: getElement<HTMLInputElement>('flattenLargeCallouts'),
     maxCalloutLines: getElement<HTMLInputElement>('maxCalloutLines'),
+    scrollIdleTimeoutSec: getElement<HTMLInputElement>('scrollIdleTimeoutSec'),
+    scrollMaxTimeoutSec: getElement<HTMLInputElement>('scrollMaxTimeoutSec'),
+    scrollTimeoutGroup: getElement<HTMLElement>('scrollTimeoutGroup'),
+    maxNoteSizeMiB: getElement<HTMLInputElement>('maxNoteSizeMiB'),
+    maxNoteSizeMiBValue: getElement<HTMLOutputElement>('maxNoteSizeMiBValue'),
+  };
+}
+
+/** Companion listener credentials and the per-platform continuous-sync toggles */
+function queryCompanionElements() {
+  return {
     companionToken: getElement<HTMLInputElement>('companion-token'),
     companionUrl: getElement<HTMLInputElement>('companion-url'),
     autoSyncPlatforms: Object.fromEntries(
@@ -151,13 +203,12 @@ function queryElements() {
         getElement<HTMLInputElement>(AUTO_SYNC_CHECKBOX_IDS[platform]),
       ])
     ) as Record<AIPlatform, HTMLInputElement>,
-    scrollIdleTimeoutSec: getElement<HTMLInputElement>('scrollIdleTimeoutSec'),
-    scrollMaxTimeoutSec: getElement<HTMLInputElement>('scrollMaxTimeoutSec'),
-    scrollTimeoutGroup: getElement<HTMLElement>('scrollTimeoutGroup'),
-    maxNoteSizeMiB: getElement<HTMLInputElement>('maxNoteSizeMiB'),
-    maxNoteSizeMiBValue: getElement<HTMLOutputElement>('maxNoteSizeMiBValue'),
-    timezone: getElement<HTMLSelectElement>('timezone'),
-    timezoneGroup: getElement<HTMLElement>('timezoneGroup'),
+  };
+}
+
+/** Buttons and the status / results surfaces they write to */
+function queryActionElements() {
+  return {
     testBtn: getElement<HTMLButtonElement>('testBtn'),
     saveBtn: getElement<HTMLButtonElement>('saveBtn'),
     status: getElement<HTMLDivElement>('status'),
@@ -825,7 +876,7 @@ async function handleImportHistory(tabId: number): Promise<void> {
 
   try {
     const discovery = await chrome.tabs.sendMessage<
-      { action: 'archiveDiscover' },
+      ArchiveDiscoverMessage,
       ArchiveDiscoverResponse
     >(tabId, { action: 'archiveDiscover' });
 

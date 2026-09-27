@@ -184,15 +184,11 @@ export function getLastError(): string | null {
   return lastError;
 }
 
-/**
- * The last known `blocked` reason (see `SyncStateInput.blocked`), as last
- * reported via `setSyncState`, or `null` if nothing is currently blocking a
- * sync attempt from even starting. Distinct from `getLastError()` — see
- * `lastBlockedReason`'s doc comment for why the two are never merged.
- */
-export function getLastBlockedReason(): string | null {
-  return lastBlockedReason;
-}
+// There is deliberately no `getLastBlockedReason()` counterpart to
+// `getLastError()`: `setSyncState` treats an absent `blocked` as "leave the
+// retained reason alone" (see `paintFor`), so a caller deriving a follow-up
+// state never has to read it back to avoid clearing it. One existed and was
+// never called; knip reported it as dead in the 2.14.5 merge.
 
 // The href of the conversation the retained detail above belongs to, or
 // `null` before any conversation has been established. This is the single
