@@ -206,6 +206,7 @@ git checkout --theirs package-lock.json
 rm -rf node_modules
 npm install --package-lock-only
 node -e "const l=require('./package-lock.json');console.log(l.packages['node_modules/@crxjs/vite-plugin'].version)"
+npm ci    # REQUIRED before Step 10: the rm -rf above removed the toolchain npx tsc needs
 ```
 
 Expected: a 3.x version. If it prints 2.x, the pin did not take — fix Step 8 before continuing.
