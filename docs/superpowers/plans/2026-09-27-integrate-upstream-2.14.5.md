@@ -17,6 +17,7 @@
 - `vite: ^8.0.16`, `vitest: ^4.1.8`, `typescript: ^5.3.3`, `@playwright/test: ^1.58.2`, `knip: ^6.34.0` — take upstream's values.
 - ESLint limits are **`error`**, not `warn`: `max-lines` 800, `max-lines-per-function` 50, `max-depth` 4, `complexity` 15. Never re-loosen them — that discards an upstream invariant.
 - `package-lock.json` is **regenerated**, never hand-merged.
+- `npm run lint` **is** `eslint src/ && node scripts/lint-platforms.mjs && knip` — one command, three gates. knip's config records that every test file counts as an entry, so **exports used only by tests are NOT reported** (deliberate, ADR-015). Never collapse a testable seam to appease knip: a finding means genuinely dead code, or an entry point CRXJS resolves from `src/manifest.json` that belongs in `knip.jsonc`'s `entry` array.
 - Recovery references, both already pushed to `fork`: branch `preserve/companion-sync-2.2.0-base`, tag `pre-integration/2026-09-27`.
 - `fork` = `git@github.com:nateabele/obsidian-AI-exporter.git` (ADMIN). `origin` = `sho7650/…` is **READ-only — never push there.**
 - Do not change tier semantics in mail-api (`blockAlignment.js`, `normalizeForIdentity`, tier ordering) without telling the peer session first.
@@ -449,14 +450,15 @@ resend full content exactly once."
 
 **Interfaces:**
 - Consumes: green suite from Task 3
-- Produces: `npm run lint`, `npx knip` and `npm test` all clean
+- Produces: `npm run lint` (which includes knip) and `npm test` all clean
 
 - [ ] **Step 1: Run lint at error severity and capture the real list**
 
 ```bash
 npm run lint 2>&1 | tail -40
-npm run lint:platforms 2>&1 | tail -10
 ```
+
+That one command runs `eslint src/`, then `scripts/lint-platforms.mjs`, then `knip` — three gates, failing at the first. Run parts separately (`npm run lint:platforms`, `npm run lint:dead`) only to isolate a failure.
 
 The two pre-merge violations should be gone: `saveSettings` because upstream hoisted `PASS_THROUGH_KEYS` to module scope, `populateForm` because Task 1 Step 7 followed upstream's delegation pattern. If either still trips, extract a named helper — never relax the rule.
 
@@ -468,13 +470,15 @@ npm run lint 2>&1 | tail -20
 
 Expected: clean exit.
 
-- [ ] **Step 3: Run knip for the first time against the feature line**
+- [ ] **Step 3: Read what knip reported (it already ran inside `npm run lint`)**
 
 ```bash
-npx knip 2>&1 | tail -40
+npm run lint:dead 2>&1 | tail -40
 ```
 
-Expect findings on dependency-injection seams exported only for tests. For each: if nothing in `src/` imports it, either stop exporting it (inject through one exported factory) or add it to `knip.jsonc` with a comment saying why. Prefer not exporting.
+**Do NOT restructure modules to avoid knip findings.** `knip.jsonc` records that the Vitest and Playwright plugins are auto-detected, every test file counts as an entry, and therefore **exports used only by tests are NOT reported** — deliberately, per ADR-015. An exported dependency-injection seam with a test importing it is both reachable and used.
+
+So a finding here is either genuinely dead code (delete it) or a real entry point knip cannot see because CRXJS resolves it from `src/manifest.json` (add it to `knip.jsonc`'s `entry` array, following that file's existing comment). The four listed entries — `service-worker.ts`, `content/index.ts`, `popup/index.ts`, `offscreen/offscreen.ts` — all exist on both sides.
 
 - [ ] **Step 4: Write the failing test for Review Focus 3 — settings predating the new keys**
 
@@ -504,7 +508,7 @@ If it fails, the merged `getSettings()` is missing defaults for one side's keys.
 - [ ] **Step 6: Full gate, then commit**
 
 ```bash
-npm run lint && npx knip && npx vitest run 2>&1 | tail -10
+npm run lint && npx vitest run 2>&1 | tail -10
 git add -A
 git commit -m "fix: satisfy upstream's lint ratchet and knip, and default the merged settings keys
 
@@ -710,7 +714,7 @@ git commit -m "docs: record end-to-end verification of the 2.14.5 merge"
 - [ ] **Step 1: Final gate**
 
 ```bash
-npm run lint && npm run format:check && npx knip && npx vitest run 2>&1 | tail -5 && npm run build 2>&1 | tail -5
+npm run lint && npm run format:check && npx vitest run 2>&1 | tail -5 && npm run build 2>&1 | tail -5
 git merge-base --is-ancestor origin/main HEAD && echo "on a current base"
 git status --short
 ```
