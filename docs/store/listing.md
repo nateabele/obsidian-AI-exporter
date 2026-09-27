@@ -34,7 +34,8 @@ permission into an unjustified one.
 5. Update **Last synced** below.
 
 **Last synced:** 2026-08-02, extension v2.5.0. Every field below matches the
-dashboard, each verified against its character counter after pasting.
+dashboard, each verified against its character counter after pasting — except
+`permission.alarms`, which is new and still has to be pasted.
 
 ---
 
@@ -100,6 +101,17 @@ The extension allows users to copy exported conversation content to their clipbo
 ```
 
 220 characters — matches the live dashboard value.
+
+### `alarms`
+
+<!-- field: permission.alarms, limit: 1000 -->
+
+```text
+The extension uses chrome.alarms to retry sending a conversation to the local companion listener on the user's own computer after a send fails - for example when that listener is not running yet. Failed sends are queued on the device and the alarm drains that queue every few minutes, so a transient failure does not lose the conversation. A page-lifetime timer cannot do this, because the service worker is stopped between events. Retries reach the user's own machine only.
+```
+
+474 characters — new field, added with the `alarms` permission (the recurring companion
+queue flush in `src/background/service-worker.ts`). Not yet pasted into the dashboard.
 
 ---
 
