@@ -86,6 +86,7 @@ function mergeClassification(
   return {
     pass: [...existing.pass, ...incoming.pass],
     warn: [...existing.warn, ...incoming.warn],
+    deadMiddle: [...existing.deadMiddle, ...incoming.deadMiddle],
     fail: [...existing.fail, ...incoming.fail],
     baselineBlocking: [...existing.baselineBlocking, ...incoming.baselineBlocking],
     baselineAdvisory: [...existing.baselineAdvisory, ...incoming.baselineAdvisory],
@@ -149,6 +150,7 @@ export function processTestResult(
  * overallStatus priority: fail > auth_expired > warn > pass.
  * fail includes: any failed Playwright test (even without detail),
  * test_data_missing, zero-match failures, dead primaries (warn entries),
+ * dead middle fallbacks (deadMiddle entries — rot masked by a live sibling),
  * and baseline contract violations. warn covers advisory degradation and
  * transient stall skips.
  */
@@ -166,6 +168,7 @@ export function buildValidationReport(
       (p.classification !== undefined &&
         (p.classification.fail.length > 0 ||
           p.classification.warn.length > 0 ||
+          p.classification.deadMiddle.length > 0 ||
           p.classification.baselineBlocking.length > 0))
   );
   const hasAuthExpired = platforms.some(p => p.authStatus === 'auth_expired');

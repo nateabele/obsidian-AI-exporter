@@ -67,6 +67,12 @@ export const MIN_API_KEY_LENGTH = 16;
 /** Default Obsidian Local REST API URL */
 export const DEFAULT_OBSIDIAN_URL = 'http://127.0.0.1:27123';
 
+/** Default base URL of the Mail API companion listener (continuous sync). */
+export const DEFAULT_COMPANION_URL = 'http://127.0.0.1:3447';
+
+/** Debounce delay before a conversation change is pushed to the companion listener (milliseconds). */
+export const AUTO_SYNC_DEBOUNCE = 4000;
+
 /** Minimum valid port number */
 export const MIN_PORT = 1024;
 
@@ -128,7 +134,14 @@ export const ALLOWED_ORIGINS: readonly string[] = ALL_PLATFORMS.map(platformOrig
  * Valid message actions for background worker (M-02)
  * Whitelist of actions accepted from content scripts
  */
-export const VALID_MESSAGE_ACTIONS = ['getSettings', 'testConnection', 'saveToOutputs'] as const;
+export const VALID_MESSAGE_ACTIONS = [
+  'getSettings',
+  'testConnection',
+  'saveToOutputs',
+  'chatSync',
+  'chatBackfill',
+  'openInObsidian',
+] as const;
 
 /**
  * Valid output destinations for multi-output operations
@@ -139,6 +152,15 @@ export const VALID_OUTPUT_DESTINATIONS = ['obsidian', 'file', 'clipboard'] as co
  * Valid AI platform sources. Derived from PLATFORM_REGISTRY (ADR-014).
  */
 export const VALID_SOURCES: readonly AIPlatform[] = ALL_PLATFORMS;
+
+/**
+ * Platforms with a working `ArchiveAdapter` (see `src/content/archive/`),
+ * i.e. ones the "Import history" backfill flow can actually enumerate.
+ * Single source of truth so the popup's button-enablement check
+ * (`src/popup/app.ts`) and the content script's adapter registry
+ * (`src/content/archive/discover.ts`) can't drift apart.
+ */
+export const ARCHIVE_SUPPORTED_PLATFORMS: readonly AIPlatform[] = ['claude', 'chatgpt'];
 
 /**
  * Valid message format options for template rendering

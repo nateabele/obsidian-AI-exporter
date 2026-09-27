@@ -256,6 +256,128 @@
                   Messages longer than this many lines are saved as plain text (Obsidian only).
                 </p>
               </div>
+
+              <div class="form-group">
+                <label for="companion-token" data-i18n="settings_companionToken"
+                  >Mail API companion token</label
+                >
+                <input
+                  type="password"
+                  id="companion-token"
+                  data-i18n-placeholder="settings_companionTokenPlaceholder"
+                  placeholder="Enter your companion listener token"
+                  autocomplete="off"
+                />
+                <p class="help" data-i18n="settings_companionTokenHelp">
+                  Bearer token for the local Mail API companion listener (continuous sync).
+                </p>
+              </div>
+
+              <div class="form-group">
+                <label for="companion-url" data-i18n="settings_companionUrl">Companion URL</label>
+                <input
+                  type="url"
+                  id="companion-url"
+                  value="http://127.0.0.1:3447"
+                  data-i18n-placeholder="settings_companionUrlPlaceholder"
+                  placeholder="http://127.0.0.1:3447"
+                />
+                <p class="help" data-i18n="settings_companionUrlHelp">
+                  Mail API companion listener URL (default: http://127.0.0.1:3447)
+                </p>
+              </div>
+
+              <div class="form-group">
+                <label data-i18n="settings_autoSyncPlatforms">Auto-sync platforms</label>
+                <p class="help" data-i18n="settings_autoSyncPlatformsHelp">
+                  Continuously sync conversations to the vault in the background, for the
+                  platforms enabled below.
+                </p>
+                <div class="toggle-list">
+                  <label class="toggle-row">
+                    <span class="toggle-icon">✨</span>
+                    <span class="toggle-label" data-i18n="settings_autoSyncGemini">Gemini</span>
+                    <span class="toggle-switch">
+                      <input
+                        type="checkbox"
+                        id="autoSyncGemini"
+                        role="switch"
+                        aria-checked="false"
+                      />
+                      <span class="slider" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <label class="toggle-row">
+                    <span class="toggle-icon">🟠</span>
+                    <span class="toggle-label" data-i18n="settings_autoSyncClaude">Claude</span>
+                    <span class="toggle-switch">
+                      <input
+                        type="checkbox"
+                        id="autoSyncClaude"
+                        role="switch"
+                        aria-checked="false"
+                      />
+                      <span class="slider" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <label class="toggle-row">
+                    <span class="toggle-icon">🟢</span>
+                    <span class="toggle-label" data-i18n="settings_autoSyncChatgpt">ChatGPT</span>
+                    <span class="toggle-switch">
+                      <input
+                        type="checkbox"
+                        id="autoSyncChatgpt"
+                        role="switch"
+                        aria-checked="false"
+                      />
+                      <span class="slider" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <label class="toggle-row">
+                    <span class="toggle-icon">🔷</span>
+                    <span class="toggle-label" data-i18n="settings_autoSyncPerplexity"
+                      >Perplexity</span
+                    >
+                    <span class="toggle-switch">
+                      <input
+                        type="checkbox"
+                        id="autoSyncPerplexity"
+                        role="switch"
+                        aria-checked="false"
+                      />
+                      <span class="slider" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <label class="toggle-row">
+                    <span class="toggle-icon">📓</span>
+                    <span class="toggle-label" data-i18n="settings_autoSyncNotebooklm"
+                      >NotebookLM</span
+                    >
+                    <span class="toggle-switch">
+                      <input
+                        type="checkbox"
+                        id="autoSyncNotebooklm"
+                        role="switch"
+                        aria-checked="false"
+                      />
+                      <span class="slider" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label data-i18n="popup_importHistoryLabel">Import history</label>
+                <p class="help" data-i18n="popup_importHistoryHelp">
+                  Imports every conversation visible to the signed-in account on this tab. Sign
+                  into another account and run it again to import that account too.
+                </p>
+                <button id="importBtn" class="btn secondary" type="button" disabled>
+                  <span class="btn-icon">📥</span>
+                  <span data-i18n="popup_importHistory">Import history</span>
+                </button>
+                <div id="importResults" class="help" role="status" aria-live="polite"></div>
+              </div>
             </section>
 
             <!-- Message Format -->

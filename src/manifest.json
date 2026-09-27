@@ -12,12 +12,7 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "permissions": [
-    "storage",
-    "downloads",
-    "offscreen",
-    "clipboardWrite"
-  ],
+  "permissions": ["storage", "downloads", "offscreen", "clipboardWrite", "alarms"],
   "host_permissions": [
     "https://gemini.google.com/*",
     "https://claude.ai/*",
@@ -43,9 +38,7 @@
         "https://www.perplexity.ai/*",
         "https://notebooklm.google.com/*"
       ],
-      "js": [
-        "src/content/index.ts"
-      ],
+      "js": ["src/content/index.ts"],
       "run_at": "document_idle"
     }
   ],

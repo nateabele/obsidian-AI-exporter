@@ -24,6 +24,16 @@ const chromeMock = {
       set: vi.fn(),
     },
   },
+  // For the companion replay queue's periodic drain (service-worker.ts).
+  // create() is a no-op mock (real Chrome dedupes by name), and
+  // onAlarm.addListener just records the listener like runtime.onMessage
+  // above — nothing here fires it; tests that care invoke it directly.
+  alarms: {
+    create: vi.fn(),
+    onAlarm: {
+      addListener: vi.fn(),
+    },
+  },
   i18n: {
     getMessage: vi.fn((key: string) => key),
   },
@@ -52,6 +62,13 @@ const chromeMock = {
     createDocument: vi.fn(() => Promise.resolve()),
     closeDocument: vi.fn(() => Promise.resolve()),
     Reason: { CLIPBOARD: 'CLIPBOARD' },
+  },
+  // For the popup's active-tab lookup (Import history). Defaults to "no
+  // active tab" so tests that don't care about this feature see it stay
+  // disabled rather than throw.
+  tabs: {
+    query: vi.fn(() => Promise.resolve([])),
+    sendMessage: vi.fn(() => Promise.resolve(undefined)),
   },
 };
 

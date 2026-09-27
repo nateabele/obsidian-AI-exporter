@@ -8,13 +8,79 @@
     "description": "Extension description shown in browser and store"
   },
 
-  "ui_syncButton": {
-    "message": "Sync to Obsidian",
-    "description": "Text on the floating sync button"
+  "syncIcon_ariaLabel": {
+    "message": "Obsidian sync",
+    "description": "Accessible label for the sync status icon"
   },
-  "ui_syncing": {
-    "message": "Syncing...",
-    "description": "Text shown while syncing"
+  "syncIcon_openSettings": {
+    "message": "Open settings",
+    "description": "Sync icon menu entry: open the extension's settings"
+  },
+  "syncIcon_retry": {
+    "message": "Retry",
+    "description": "Sync icon menu entry: retry a failed sync"
+  },
+  "syncIcon_syncNow": {
+    "message": "Sync now",
+    "description": "Sync icon menu entry: trigger a sync immediately"
+  },
+  "syncIcon_openTranscript": {
+    "message": "Open transcript",
+    "description": "Sync icon menu entry: open the last saved note"
+  },
+  "syncIcon_repair": {
+    "message": "Repair this conversation from source",
+    "description": "Sync icon menu entry: re-import this one conversation authoritatively from the platform's own API"
+  },
+  "syncIcon_syncFailed": {
+    "message": "Sync failed",
+    "description": "Fallback detail shown in the sync icon menu when no specific error is known"
+  },
+  "syncIcon_syncStalled": {
+    "message": "Sync stalled: scroll up to load the full conversation, or run a manual export",
+    "description": "Error detail shown when the server reports no-op for a non-empty sync (e.g. after a page reload on a long, virtualized conversation)"
+  },
+  "syncIcon_fullContentLoop": {
+    "message": "Sync failed: the server repeatedly asked for the full conversation",
+    "description": "Error detail shown when the server responds needsFullContent a second time in the same sync attempt, after a full-content resend"
+  },
+  "syncIcon_repairNoConversationId": {
+    "message": "Couldn't determine which conversation to repair",
+    "description": "Error detail when the current page has no resolvable conversation id at the time repair is clicked"
+  },
+  "syncIcon_repairSkipped": {
+    "message": "Repair skipped ($REASON$) — nothing was written",
+    "description": "Toast shown when the server declines to import the repaired conversation (e.g. a truncated message), a normal outcome rather than a failure",
+    "placeholders": {
+      "reason": {
+        "content": "$1",
+        "example": "truncated"
+      }
+    }
+  },
+  "syncIcon_attentionDefault": {
+    "message": "This conversation couldn't be synced. Check the page and try again.",
+    "description": "Fallback detail shown in the sync icon menu for the `attention` state when no more specific blocked reason is known"
+  },
+  "syncIcon_notOnConversationPage": {
+    "message": "Couldn't find an active conversation on this page",
+    "description": "Blocked-reason detail when the extractor reports it can no longer handle the current page"
+  },
+  "syncIcon_extractionFailed": {
+    "message": "Extraction failed",
+    "description": "Fallback blocked-reason detail when extraction yields no data and no specific error or warning is available"
+  },
+  "syncIcon_autoSyncDisabled": {
+    "message": "Auto-sync is off for this platform — use Sync now to sync manually, or turn it on in settings",
+    "description": "Note shown in the sync icon menu's `disabled` state, when the current platform is excluded from autoSyncPlatforms"
+  },
+  "syncIcon_relatedConversations": {
+    "message": "Related conversations",
+    "description": "Sync icon menu group heading: suggested related transcripts"
+  },
+  "syncIcon_relatedTopics": {
+    "message": "Related topics",
+    "description": "Sync icon menu group heading: suggested related topic pages"
   },
 
   "settings_title": {
@@ -399,6 +465,113 @@
   "settings_maxCalloutLinesHelp": {
     "message": "Messages longer than this many lines are saved as plain text (Obsidian only).",
     "description": "Help text for max callout lines input"
+  },
+  "settings_companionToken": {
+    "message": "Mail API companion token",
+    "description": "Label for companion listener token input"
+  },
+  "settings_companionTokenPlaceholder": {
+    "message": "Enter your companion listener token",
+    "description": "Placeholder for companion listener token input"
+  },
+  "settings_companionTokenHelp": {
+    "message": "Bearer token for the local Mail API companion listener (continuous sync).",
+    "description": "Help text for companion listener token input"
+  },
+  "settings_companionUrl": {
+    "message": "Companion URL",
+    "description": "Label for companion listener URL input"
+  },
+  "settings_companionUrlPlaceholder": {
+    "message": "http://127.0.0.1:3447",
+    "description": "Placeholder for companion listener URL input"
+  },
+  "settings_companionUrlHelp": {
+    "message": "Mail API companion listener URL (default: http://127.0.0.1:3447)",
+    "description": "Help text for companion listener URL input"
+  },
+  "settings_autoSyncPlatforms": {
+    "message": "Auto-sync platforms",
+    "description": "Label for the per-platform auto-sync toggle group"
+  },
+  "settings_autoSyncPlatformsHelp": {
+    "message": "Continuously sync conversations to the vault in the background, for the platforms enabled below.",
+    "description": "Help text for the per-platform auto-sync toggle group"
+  },
+  "settings_autoSyncGemini": {
+    "message": "Gemini",
+    "description": "Auto-sync toggle label for the Gemini platform"
+  },
+  "settings_autoSyncClaude": {
+    "message": "Claude",
+    "description": "Auto-sync toggle label for the Claude platform"
+  },
+  "settings_autoSyncChatgpt": {
+    "message": "ChatGPT",
+    "description": "Auto-sync toggle label for the ChatGPT platform"
+  },
+  "settings_autoSyncPerplexity": {
+    "message": "Perplexity",
+    "description": "Auto-sync toggle label for the Perplexity platform"
+  },
+  "settings_autoSyncNotebooklm": {
+    "message": "NotebookLM",
+    "description": "Auto-sync toggle label for the NotebookLM platform"
+  },
+
+  "popup_importHistoryLabel": {
+    "message": "Import history",
+    "description": "Label for the Import history form group in the popup"
+  },
+  "popup_importHistoryHelp": {
+    "message": "Imports every conversation visible to the signed-in account on this tab. Sign into another account and run it again to import that account too.",
+    "description": "Help text for the Import history button, explaining it covers one signed-in account per run"
+  },
+  "popup_importHistory": {
+    "message": "Import history",
+    "description": "Button label that starts a backfill import of the active tab's conversation history"
+  },
+  "popup_importDiscovering": {
+    "message": "Looking for conversations…",
+    "description": "Import history progress line shown while discovery is in progress"
+  },
+  "popup_importAccount": {
+    "message": "Importing from account",
+    "description": "Import history line prefix naming the discovered account before import starts"
+  },
+  "popup_importAccountUnknown": {
+    "message": "Importing from the signed-in account",
+    "description": "Import history line shown before import starts when the platform reports no account name"
+  },
+  "popup_importNoneFound": {
+    "message": "No conversations found for the signed-in account",
+    "description": "Import history line shown when discovery finds nothing to import"
+  },
+  "popup_importSaved": {
+    "message": "Imported",
+    "description": "Import history line prefix for a successfully imported conversation"
+  },
+  "popup_importSkipped": {
+    "message": "Skipped",
+    "description": "Import history line prefix for a conversation the server declined to import (e.g. truncated content), reported with its reason"
+  },
+  "popup_importError": {
+    "message": "Import error",
+    "description": "Import history line prefix for a conversation or discovery request that failed"
+  },
+  "popup_importComplete": {
+    "message": "Finished importing the signed-in account: $IMPORTED$ imported, $SKIPPED$ skipped.",
+    "description": "Import history completion summary — deliberately scoped to one signed-in account, never worded as covering all accounts",
+    "placeholders": {
+      "imported": {
+        "content": "$1",
+        "example": "3"
+      },
+      "skipped": {
+        "content": "$2",
+        "example": "1"
+      }
+    }
   },
 
   "toast_appended": {

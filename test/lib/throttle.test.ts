@@ -1,4 +1,4 @@
-import { throttle } from '../../src/lib/throttle';
+import { throttle, debounce } from '../../src/lib/throttle';
 
 describe('throttle', () => {
   beforeEach(() => {
@@ -77,5 +77,80 @@ describe('throttle', () => {
     throttled();
 
     expect(fn).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('debounce', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('does not fire during a burst of rapid calls', () => {
+    const fn = vi.fn();
+    const debounced = debounce(fn, 1000);
+
+    debounced();
+    vi.advanceTimersByTime(400);
+    debounced();
+    vi.advanceTimersByTime(400);
+    debounced();
+    vi.advanceTimersByTime(400);
+
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("fires exactly once after the quiet period, with the last call's arguments", () => {
+    const fn = vi.fn();
+    const debounced = debounce(fn, 1000);
+
+    debounced('first');
+    vi.advanceTimersByTime(400);
+    debounced('second');
+    vi.advanceTimersByTime(400);
+    debounced('third');
+
+    vi.advanceTimersByTime(999);
+    expect(fn).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(1);
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(fn).toHaveBeenCalledWith('third');
+  });
+
+  it('fires again for a later, separate burst', () => {
+    const fn = vi.fn();
+    const debounced = debounce(fn, 1000);
+
+    debounced();
+    vi.advanceTimersByTime(1000);
+    expect(fn).toHaveBeenCalledTimes(1);
+
+    debounced();
+    vi.advanceTimersByTime(1000);
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('cancel() clears a pending timer so it never fires', () => {
+    const fn = vi.fn();
+    const debounced = debounce(fn, 1000);
+
+    debounced();
+    vi.advanceTimersByTime(500);
+    debounced.cancel();
+    vi.advanceTimersByTime(1000);
+
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it('cancel() is a no-op when nothing is pending', () => {
+    const fn = vi.fn();
+    const debounced = debounce(fn, 1000);
+
+    expect(() => debounced.cancel()).not.toThrow();
+    expect(fn).not.toHaveBeenCalled();
   });
 });

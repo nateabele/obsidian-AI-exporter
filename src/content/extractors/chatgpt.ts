@@ -130,6 +130,15 @@ export class ChatGPTExtractor extends BaseExtractor {
    * Determine a turn's role from data-turn or a nested data-message-author-role.
    */
   private turnRole(turn: Element): string | null {
+    // 2026-09: the role moved into the unit key's suffix
+    // (`fallback-turn-0:2:assistant`). Read it first -- `data-turn` and
+    // `[data-message-author-role]` are both absent on the current DOM, and
+    // returning null there is what made extraction yield zero messages.
+    const unitKey = turn.getAttribute('data-content-search-unit-key');
+    if (unitKey) {
+      const suffix = unitKey.slice(unitKey.lastIndexOf(':') + 1);
+      if (suffix === 'user' || suffix === 'assistant') return suffix;
+    }
     const turnRole = turn.getAttribute('data-turn');
     const authorRole = turn
       .querySelector('[data-message-author-role]')

@@ -200,6 +200,8 @@ export interface MultiOutputResponse {
  */
 export interface SecureSettings {
   obsidianApiKey: string;
+  /** Bearer token for the Mail API companion listener. Local-only, never synced. */
+  companionToken: string;
 }
 
 /**
@@ -235,6 +237,10 @@ export interface SyncSettings {
   flattenLargeCallouts: boolean;
   /** Line threshold for {@link flattenLargeCallouts}. Default 200. */
   maxCalloutLines: number;
+  /** Base URL of the Mail API companion listener. */
+  companionUrl: string;
+  /** Platforms on which continuous sync is active. */
+  autoSyncPlatforms: AIPlatform[];
 }
 
 /**
@@ -252,6 +258,7 @@ export interface ExtensionSettings extends SecureSettings, SyncSettings {}
  */
 export interface ContentScriptSettings extends SyncSettings {
   isApiKeyConfigured: boolean;
+  isCompanionConfigured: boolean;
 }
 
 /**
@@ -301,7 +308,10 @@ export interface TemplateOptions {
 export type ExtensionMessage =
   | { action: 'saveToOutputs'; data: ObsidianNote; outputs: OutputDestination[] }
   | { action: 'getSettings' }
-  | { action: 'testConnection' };
+  | { action: 'testConnection' }
+  | { action: 'chatSync'; data: ChatSyncRequest }
+  | { action: 'chatBackfill'; data: ChatBackfillRequest }
+  | { action: 'openInObsidian'; data: { path: string } };
 
 /**
  * Message sent from the background worker to the offscreen document.
@@ -324,6 +334,202 @@ export interface SaveResponse {
   messagesAppended?: number;
   /** Actual file name when a collision forced an alternative (issue #327) */
   savedAs?: string;
+}
+
+/**
+ * A single new block (message) sent to the Mail API companion listener for
+ * continuous sync.
+ */
+export interface ChatSyncBlock {
+  role: 'user' | 'assistant';
+  markdown: string;
+  hash: string;
+}
+
+/**
+ * Request body for `POST /api/chat/sync` against the Mail API companion
+ * listener (continuous background sync, as opposed to the manual
+ * saveToOutputs flow above).
+ */
+export interface ChatSyncRequest {
+  conversationId: string;
+  platform: AIPlatform;
+  title: string;
+  url: string;
+  manifest: string[];
+  newBlocks: ChatSyncBlock[];
+}
+
+/**
+ * A suggested related note surfaced by the companion listener (e.g. a prior
+ * transcript or topic page that may be relevant to the synced conversation).
+ */
+export interface ChatSuggestion {
+  kind: 'transcript' | 'topic';
+  title: string;
+  path: string;
+}
+
+/**
+ * Response from `POST /api/chat/sync`.
+ */
+export interface ChatSyncResponse {
+  notePath: string;
+  // 'needsFullContent': the stored blocks were produced by a different
+  // producer (e.g. a prior backfill) whose hashes cannot be compared
+  // against this manifest — the caller must resend once with `newBlocks`
+  // covering every message (see `runAutoSync` in src/content/bootstrap.ts).
+  mode: 'noop' | 'append' | 'diverge' | 'needsFullContent';
+  appended: number;
+  superseded: number;
+  suggestions: { transcripts: ChatSuggestion[]; pages: ChatSuggestion[] };
+}
+
+/**
+ * Outcome of one `flushQueue()` replay cycle (`src/lib/companion-client.ts`).
+ * Client-side bookkeeping only — never sent to the companion — so this is
+ * free to grow without touching the wire payloads above.
+ */
+export interface FlushQueueResult {
+  /** Requests the companion accepted this cycle; removed from the queue. */
+  sent: number;
+  /**
+   * Requests the companion explicitly refused this cycle: a `noop`
+   * response to a non-empty `newBlocks`, the same signal
+   * `src/content/bootstrap.ts`'s `sendChatSync` treats as a stall rather
+   * than a success (e.g. its Guard 2 rejecting a suspected virtualised
+   * window). Still queued unless this refusal exhausted the entry's
+   * attempts — see `exhausted`.
+   */
+  refused: number;
+  /** Requests that raised (network error, non-OK status, etc.) rather than resolving with a refusal. Still queued unless exhausted. */
+  failed: number;
+  /**
+   * Entries dropped this cycle after repeated failed-or-refused replays
+   * (see `MAX_REPLAY_ATTEMPTS` in `companion-client.ts`). The data those
+   * represented is gone for good — always logged loudly when this is
+   * non-zero, since nothing else surfaces it.
+   */
+  exhausted: number;
+  /** Queue length remaining after this cycle. */
+  remaining: number;
+}
+
+/**
+ * The companion replay queue's current backlog depth plus the last flush
+ * cycle's outcome, for a caller (e.g. the sync icon) that wants to reflect
+ * backlog/exhaustion without reaching into `chrome.storage.local` directly.
+ * `lastFlush` is `null` until the first flush cycle since the service worker
+ * started. Returned by `getQueueStatus()` in `companion-client.ts` — not yet
+ * behind a `chrome.runtime` message action (see that function's doc comment
+ * for why).
+ */
+export interface ChatSyncQueueStatus {
+  queued: number;
+  lastFlush: FlushQueueResult | null;
+}
+
+/**
+ * A single message within a {@link ChatBackfillRequest}. Unlike
+ * `ChatSyncBlock`, carries `sourceId` (the platform's own message id, used
+ * server-side for anchor preservation across producers) and an optional
+ * `truncated` flag — a conversation containing any truncated message is
+ * refused wholesale by the server rather than partially imported.
+ */
+export interface ChatBackfillMessage {
+  role: 'user' | 'assistant';
+  markdown: string;
+  hash: string;
+  sourceId: string;
+  truncated?: boolean;
+}
+
+/**
+ * Request body for `POST /api/chat/backfill` against the Mail API companion
+ * listener: an authoritative, whole-conversation import fetched directly
+ * from a platform's own API (see `src/content/archive/`), as opposed to
+ * `ChatSyncRequest`'s incremental diff of the live DOM. `accountId`/
+ * `accountName` are carried straight through from `ArchivedConversation`
+ * (`src/content/archive/types.ts`) and may be `null` for a platform
+ * (ChatGPT) that exposes no organization in that flow.
+ */
+export interface ChatBackfillRequest {
+  conversationId: string;
+  platform: AIPlatform;
+  title: string;
+  url: string;
+  createdAt: string;
+  messages: ChatBackfillMessage[];
+  accountId: string | null;
+  accountName: string | null;
+}
+
+/**
+ * Response from `POST /api/chat/backfill`. `notePath` and `skipped` are
+ * mutually exclusive: `skipped` carries the reason (e.g. `'truncated'`)
+ * when the server refuses the whole conversation, with `notePath: null`
+ * and nothing written to the vault.
+ */
+export interface ChatBackfillResponse {
+  notePath: string | null;
+  anchorsPreserved: number;
+  anchorsIssued: number;
+  superseded: number;
+  skipped: string | null;
+}
+
+/**
+ * Message sent from the popup directly to the active tab's content script
+ * (via `chrome.tabs.sendMessage`), never through the background worker —
+ * an archive adapter's fetches (`src/content/archive/`) use
+ * `credentials: 'include'` against the platform's own origin, which only
+ * carries the user's session cookies from a page ON that origin, so
+ * discovery must run in the content script itself. Kept separate from
+ * `ExtensionMessage`/`VALID_MESSAGE_ACTIONS`: this channel never reaches
+ * the background listener, so it carries none of that whitelist's
+ * security-review weight (see test/arch/message-senders.test.ts).
+ */
+export interface ArchiveDiscoverMessage {
+  action: 'archiveDiscover';
+}
+
+/**
+ * One conversation discovery could not convert to a backfill payload. A
+ * single malformed conversation must not cost the user the whole import,
+ * so it is reported here — named, with its reason — and skipped, rather
+ * than failing the run (see `discoverConversations`).
+ */
+export interface ArchiveDiscoverFailure {
+  conversationId: string;
+  title: string;
+  error: string;
+}
+
+/**
+ * Response to {@link ArchiveDiscoverMessage}: every conversation the
+ * adapter found, already converted to backfill payloads (see
+ * `toBackfillRequest` in `src/content/archive/to-request.ts`) so the popup
+ * can hand each one straight to a `'chatBackfill'` message without
+ * depending on any content-layer type (ADR-012: popup must not import
+ * content/). `failures` is always present (empty when nothing was skipped)
+ * so the popup is compiler-forced to surface partial results rather than
+ * silently reporting a truncated import as a clean one.
+ */
+export type ArchiveDiscoverResponse =
+  | { success: true; conversations: ChatBackfillRequest[]; failures: ArchiveDiscoverFailure[] }
+  | { success: false; error: string };
+
+/**
+ * Generic failure shape the background worker sends back when a message
+ * handler throws (see the `onMessage` listener in
+ * src/background/service-worker.ts). Message actions whose success response
+ * has no `success`/`error` fields of its own (e.g. {@link ChatSyncResponse})
+ * must union it in so callers are compiler-forced to check for failure
+ * instead of reading `undefined` off a success-shaped type.
+ */
+export interface MessageErrorResponse {
+  success: false;
+  error: string;
 }
 
 /**

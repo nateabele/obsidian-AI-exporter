@@ -8,7 +8,14 @@
  */
 
 import { getSettings, saveSettings } from '../lib/storage';
-import type { ExtensionSettings, TemplateOptions, OutputOptions } from '../lib/types';
+import type {
+  ExtensionSettings,
+  TemplateOptions,
+  OutputOptions,
+  AIPlatform,
+  ArchiveDiscoverResponse,
+  ChatBackfillRequest,
+} from '../lib/types';
 import {
   validateCalloutType,
   validateVaultPath,
@@ -18,10 +25,27 @@ import {
 import {
   DEFAULT_OBSIDIAN_URL,
   DEFAULT_MAX_CALLOUT_LINES,
+  DEFAULT_COMPANION_URL,
   VALID_MESSAGE_FORMATS,
+  ARCHIVE_SUPPORTED_PLATFORMS,
 } from '../lib/constants';
 import { getMessage } from '../lib/i18n';
 import { sendMessage } from '../lib/messaging';
+import { extractErrorMessage } from '../lib/error-utils';
+import { ALL_PLATFORMS, platformForHost } from '../lib/platform-registry';
+
+/**
+ * Per-platform auto-sync checkbox element ids, keyed by {@link AIPlatform}.
+ * Record<AIPlatform, string> forces a compile-time update here whenever a
+ * platform is added to the union (ADR-014), same as PLATFORM_REGISTRY.
+ */
+const AUTO_SYNC_CHECKBOX_IDS: Record<AIPlatform, string> = {
+  gemini: 'autoSyncGemini',
+  claude: 'autoSyncClaude',
+  chatgpt: 'autoSyncChatgpt',
+  perplexity: 'autoSyncPerplexity',
+  notebooklm: 'autoSyncNotebooklm',
+};
 
 /**
  * Initialize i18n for all elements with data-i18n attributes
@@ -102,11 +126,21 @@ function queryElements() {
     imageVaultPath: getElement<HTMLInputElement>('imageVaultPath'),
     flattenLargeCallouts: getElement<HTMLInputElement>('flattenLargeCallouts'),
     maxCalloutLines: getElement<HTMLInputElement>('maxCalloutLines'),
+    companionToken: getElement<HTMLInputElement>('companion-token'),
+    companionUrl: getElement<HTMLInputElement>('companion-url'),
+    autoSyncPlatforms: Object.fromEntries(
+      ALL_PLATFORMS.map(platform => [
+        platform,
+        getElement<HTMLInputElement>(AUTO_SYNC_CHECKBOX_IDS[platform]),
+      ])
+    ) as Record<AIPlatform, HTMLInputElement>,
     timezone: getElement<HTMLSelectElement>('timezone'),
     timezoneGroup: getElement<HTMLElement>('timezoneGroup'),
     testBtn: getElement<HTMLButtonElement>('testBtn'),
     saveBtn: getElement<HTMLButtonElement>('saveBtn'),
     status: getElement<HTMLDivElement>('status'),
+    importBtn: getElement<HTMLButtonElement>('importBtn'),
+    importResults: getElement<HTMLDivElement>('importResults'),
   };
 }
 
@@ -131,6 +165,11 @@ export async function initPopup(): Promise<void> {
     showStatus(getMessage('toast_error_connectionFailed'), 'error');
     console.error('[G2O Popup] Init error:', error);
   }
+  // Kept outside the try/catch above: the active-tab lookup is independent
+  // of settings storage, and a failure here (e.g. no active tab) should
+  // leave "Import history" disabled rather than surface as a connection
+  // error on the whole popup.
+  await setupImportHistory();
 }
 
 /**
@@ -159,6 +198,12 @@ function populateForm(settings: ExtensionSettings): void {
   elements.apiKey.value = settings.obsidianApiKey || '';
   elements.obsidianUrl.value = settings.obsidianUrl || DEFAULT_OBSIDIAN_URL;
   elements.vaultPath.value = settings.vaultPath || '';
+  elements.companionToken.value = settings.companionToken || '';
+  elements.companionUrl.value = settings.companionUrl || DEFAULT_COMPANION_URL;
+  const enabledPlatforms = new Set(settings.autoSyncPlatforms ?? []);
+  for (const platform of ALL_PLATFORMS) {
+    elements.autoSyncPlatforms[platform].checked = enabledPlatforms.has(platform);
+  }
 
   const { templateOptions } = settings;
   elements.messageFormat.value = templateOptions.messageFormat || 'callout';
@@ -381,6 +426,11 @@ function collectSettings(): ExtensionSettings {
     imageVaultPath: elements.imageVaultPath.value.trim() || 'AI/{platform}/images',
     flattenLargeCallouts: elements.flattenLargeCallouts.checked,
     maxCalloutLines: parseCalloutLines(elements.maxCalloutLines.value),
+    companionToken: elements.companionToken.value.trim(),
+    companionUrl: elements.companionUrl.value.trim() || DEFAULT_COMPANION_URL,
+    autoSyncPlatforms: ALL_PLATFORMS.filter(
+      platform => elements.autoSyncPlatforms[platform].checked
+    ),
   };
 }
 
@@ -399,6 +449,7 @@ interface ObsidianValidationResult {
   normalizedApiKey: string;
   normalizedUrl: string;
   normalizedVaultPath: string;
+  normalizedCompanionUrl: string;
 }
 
 /**
@@ -416,14 +467,21 @@ function tryValidate(
 }
 
 /**
- * Validate Obsidian-specific settings (API key, URL, vault path)
+ * Validate Obsidian-specific settings (API key, URL, vault path, companion URL)
  * Returns normalized values without mutating the input (DES-014 H-4)
+ *
+ * companionUrl reuses validateObsidianUrl rather than a parallel validator: both
+ * fields are "an http(s) origin on loopback/LAN, no path" and the companion listener
+ * is deliberately plain http (127.0.0.1:3447) since a Chrome extension can't present
+ * a client cert for mTLS — validateObsidianUrl already permits http, so no scheme
+ * override is needed here.
  */
 function validateObsidianSettings(settings: ExtensionSettings): ObsidianValidationResult {
   const defaults = {
     normalizedApiKey: settings.obsidianApiKey,
     normalizedUrl: settings.obsidianUrl,
     normalizedVaultPath: settings.vaultPath,
+    normalizedCompanionUrl: settings.companionUrl,
   };
 
   const apiKey = tryValidate(() => validateApiKey(settings.obsidianApiKey), 'Invalid API key');
@@ -442,16 +500,31 @@ function validateObsidianSettings(settings: ExtensionSettings): ObsidianValidati
     };
   }
 
+  const companionUrl = tryValidate(
+    () => validateObsidianUrl(settings.companionUrl),
+    'Invalid companion URL'
+  );
+  if (!companionUrl.ok) {
+    return {
+      error: companionUrl.error,
+      ...defaults,
+      normalizedApiKey: apiKey.value,
+      normalizedUrl: url.value,
+      normalizedVaultPath: vaultPath.value,
+    };
+  }
+
   return {
     error: null,
     normalizedApiKey: apiKey.value,
     normalizedUrl: url.value,
     normalizedVaultPath: vaultPath.value,
+    normalizedCompanionUrl: companionUrl.value,
   };
 }
 
 /**
- * Validate and normalize Obsidian settings (API key, URL, vault path).
+ * Validate and normalize Obsidian settings (API key, URL, vault path, companion URL).
  * Returns normalized settings or an error message.
  */
 function normalizeObsidianSettings(
@@ -468,6 +541,7 @@ function normalizeObsidianSettings(
       obsidianApiKey: validation.normalizedApiKey,
       obsidianUrl: validation.normalizedUrl,
       vaultPath: validation.normalizedVaultPath,
+      companionUrl: validation.normalizedCompanionUrl,
     },
   };
 }
@@ -571,4 +645,162 @@ function showStatus(message: string, type: 'success' | 'error' | 'warning' | 'in
 function clearStatus(): void {
   elements.status.textContent = '';
   elements.status.className = 'status';
+}
+
+/**
+ * Enables "Import history" only when the active tab is on a platform with
+ * a working ArchiveAdapter (see ARCHIVE_SUPPORTED_PLATFORMS) — discovery
+ * runs cookie-authenticated in that tab's content script, so an
+ * unsupported tab has nothing to discover.
+ */
+async function setupImportHistory(): Promise<void> {
+  elements.importBtn.disabled = true;
+  const tabId = await getImportTabId();
+  if (tabId === null) {
+    return;
+  }
+  elements.importBtn.disabled = false;
+  elements.importBtn.addEventListener('click', () => void handleImportHistory(tabId));
+}
+
+/**
+ * Resolves the active tab's id, but only if its hostname maps to a
+ * backfill-supported platform. Returns null (never throws) for any
+ * unsupported tab, missing tab id/url, or `chrome.tabs` failure, so a
+ * lookup problem simply leaves the button disabled.
+ */
+async function getImportTabId(): Promise<number | null> {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id || !tab.url) {
+      return null;
+    }
+    const platform = platformForHost(new URL(tab.url).hostname);
+    if (!platform || !ARCHIVE_SUPPORTED_PLATFORMS.includes(platform)) {
+      return null;
+    }
+    return tab.id;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Drives one backfill run: discovers every conversation the active tab's
+ * signed-in session can see, then imports each one in turn, reporting
+ * progress and results in `#importResults`.
+ */
+async function handleImportHistory(tabId: number): Promise<void> {
+  elements.importBtn.disabled = true;
+  elements.importResults.textContent = '';
+  appendImportLine(getMessage('popup_importDiscovering'));
+
+  try {
+    const discovery = await chrome.tabs.sendMessage<
+      { action: 'archiveDiscover' },
+      ArchiveDiscoverResponse
+    >(tabId, { action: 'archiveDiscover' });
+
+    if (!discovery.success) {
+      appendImportLine(`${getMessage('popup_importError')}: ${discovery.error}`);
+      return;
+    }
+    // Conversations discovery could not read at all (see
+    // `discoverConversations`). Reported before the import runs, using the
+    // same `title — reason` shape a failed `chatBackfill` uses below, so a
+    // partial run always names what it lost instead of quietly importing
+    // fewer conversations than the history holds.
+    for (const failure of discovery.failures) {
+      appendImportLine(`${getMessage('popup_importError')}: ${failure.title} — ${failure.error}`);
+    }
+    await importConversations(discovery.conversations);
+  } catch (error) {
+    appendImportLine(`${getMessage('popup_importError')}: ${extractErrorMessage(error)}`);
+  } finally {
+    elements.importBtn.disabled = false;
+  }
+}
+
+/**
+ * Imports every discovered conversation via one `chatBackfill` message
+ * each. A `skipped` response (no note written) is a normal outcome — the
+ * server refuses a conversation with a truncated message or no messages
+ * at all — and is reported with its reason, not as an error.
+ */
+async function importConversations(conversations: ChatBackfillRequest[]): Promise<void> {
+  if (conversations.length === 0) {
+    appendImportLine(getMessage('popup_importNoneFound'));
+    return;
+  }
+
+  // One run only ever covers one signed-in account — but Claude's session
+  // can span multiple organizations, so "one run" doesn't mean "one
+  // account": listConversations() tags each entry with its own org, and a
+  // banner naming only the first org while silently importing another
+  // defeats the whole point of this display. Show every distinct account
+  // discovered, up front, before anything is imported.
+  for (const accountName of distinctAccountNames(conversations)) {
+    appendImportLine(
+      accountName
+        ? `${getMessage('popup_importAccount')}: ${accountName}`
+        : getMessage('popup_importAccountUnknown')
+    );
+  }
+
+  let imported = 0;
+  let skipped = 0;
+  for (const conversation of conversations) {
+    const response = await sendMessage({ action: 'chatBackfill', data: conversation });
+    if ('error' in response) {
+      appendImportLine(
+        `${getMessage('popup_importError')}: ${conversation.title} — ${response.error}`
+      );
+      continue;
+    }
+    if (response.skipped) {
+      skipped += 1;
+      appendImportLine(
+        `${getMessage('popup_importSkipped')}: ${conversation.title} (${response.skipped})`
+      );
+    } else {
+      imported += 1;
+      appendImportLine(`${getMessage('popup_importSaved')}: ${conversation.title}`);
+    }
+  }
+
+  // Worded to cover only the signed-in account, never "all your
+  // conversations" — a single run cannot know about accounts the user
+  // hasn't signed into yet on this tab. The counts are passed as i18n
+  // substitutions (see toast_appended's $COUNT$ for the same pattern),
+  // never concatenated onto the translated sentence as raw English — a
+  // concatenated fragment would stay English even after a future ja pass,
+  // since default_locale fallback only helps for whole missing keys.
+  appendImportLine(getMessage('popup_importComplete', [String(imported), String(skipped)]));
+}
+
+/**
+ * The distinct set of accounts discovered across every conversation, in
+ * first-seen order. Deduped by `accountId` (falling back to `accountName`,
+ * then to a single shared bucket when a platform exposes neither) so that
+ * a Claude session spanning multiple organizations in one login surfaces
+ * every org's name, not just the first conversation's.
+ */
+function distinctAccountNames(conversations: ChatBackfillRequest[]): (string | null)[] {
+  const seen = new Set<string>();
+  const names: (string | null)[] = [];
+  for (const { accountId, accountName } of conversations) {
+    const key = accountId ?? accountName ?? '';
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    names.push(accountName);
+  }
+  return names;
+}
+
+function appendImportLine(text: string): void {
+  const line = document.createElement('div');
+  line.textContent = text;
+  elements.importResults.appendChild(line);
 }

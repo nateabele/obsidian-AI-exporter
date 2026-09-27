@@ -6,7 +6,11 @@
  * index.ts entry shim stays a DOMContentLoaded one-liner.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { ExtensionSettings } from '../../src/lib/types';
+import type {
+  ArchiveDiscoverFailure,
+  ChatBackfillRequest,
+  ExtensionSettings,
+} from '../../src/lib/types';
 
 vi.mock('../../src/lib/storage', () => ({
   getSettings: vi.fn(),
@@ -34,6 +38,9 @@ const storedSettings: ExtensionSettings = {
   enableToolContent: false,
   enableImageExport: true,
   flattenLargeCallouts: true,
+  companionToken: '',
+  companionUrl: 'http://127.0.0.1:3447',
+  autoSyncPlatforms: ['claude', 'chatgpt'],
   outputOptions: { obsidian: true, file: false, clipboard: true },
   templateOptions: {
     messageFormat: 'callout',
@@ -66,6 +73,11 @@ const SWITCH_IDS = [
   'enableToolContent',
   'enableImageExport',
   'flattenLargeCallouts',
+  'autoSyncGemini',
+  'autoSyncClaude',
+  'autoSyncChatgpt',
+  'autoSyncPerplexity',
+  'autoSyncNotebooklm',
 ];
 
 function buildPopupDom(): void {
@@ -82,6 +94,8 @@ function buildPopupDom(): void {
       <input type="text" id="vaultPath" />
       <input type="text" id="imageVaultPath" />
       <input type="number" id="maxCalloutLines" />
+      <input type="password" id="companion-token" />
+      <input type="text" id="companion-url" />
     </section>
     ${switches}
     <select id="messageFormat">
@@ -103,6 +117,8 @@ function buildPopupDom(): void {
     <button id="testBtn"></button>
     <button id="saveBtn"></button>
     <div id="status" class="status"></div>
+    <button id="importBtn"></button>
+    <div id="importResults"></div>
   `;
 }
 
@@ -351,6 +367,31 @@ describe('popup/app', () => {
       );
     });
 
+    it('populates the per-platform auto-sync toggles from the loaded settings', async () => {
+      await initWithDefaults(); // storedSettings.autoSyncPlatforms = ['claude', 'chatgpt']
+
+      expect(el<HTMLInputElement>('autoSyncGemini').checked).toBe(false);
+      expect(el<HTMLInputElement>('autoSyncClaude').checked).toBe(true);
+      expect(el<HTMLInputElement>('autoSyncChatgpt').checked).toBe(true);
+      expect(el<HTMLInputElement>('autoSyncPerplexity').checked).toBe(false);
+      expect(el<HTMLInputElement>('autoSyncNotebooklm').checked).toBe(false);
+    });
+
+    it('collects the per-platform auto-sync toggle state on save', async () => {
+      await initWithDefaults();
+      vi.mocked(saveSettings).mockResolvedValue(undefined);
+
+      // Flip Gemini on and Claude off from the loaded ['claude', 'chatgpt'].
+      el<HTMLInputElement>('autoSyncGemini').checked = true;
+      el<HTMLInputElement>('autoSyncClaude').checked = false;
+      el<HTMLButtonElement>('saveBtn').click();
+
+      await vi.waitFor(() => expect(saveSettings).toHaveBeenCalled());
+      expect(saveSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ autoSyncPlatforms: ['gemini', 'chatgpt'] })
+      );
+    });
+
     it('rejects saving when no output destination is selected', async () => {
       await initWithDefaults();
 
@@ -372,6 +413,30 @@ describe('popup/app', () => {
       await vi.waitFor(() => expect(statusEl().className).toBe('status error'));
       expect(statusEl().textContent).toContain('too short');
       expect(saveSettings).not.toHaveBeenCalled();
+    });
+
+    it('rejects an invalid companion URL scheme', async () => {
+      await initWithDefaults();
+
+      el<HTMLInputElement>('companion-url').value = 'ftp://127.0.0.1:3447';
+      el<HTMLButtonElement>('saveBtn').click();
+
+      await vi.waitFor(() => expect(statusEl().className).toBe('status error'));
+      expect(statusEl().textContent).toContain('http or https');
+      expect(saveSettings).not.toHaveBeenCalled();
+    });
+
+    it('accepts a plain-http companion URL (the companion cannot do TLS on loopback)', async () => {
+      await initWithDefaults();
+      vi.mocked(saveSettings).mockResolvedValue(undefined);
+
+      el<HTMLInputElement>('companion-url').value = 'http://127.0.0.1:3447/';
+      el<HTMLButtonElement>('saveBtn').click();
+
+      await vi.waitFor(() => expect(saveSettings).toHaveBeenCalled());
+      expect(saveSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ companionUrl: 'http://127.0.0.1:3447' })
+      );
     });
 
     it('skips Obsidian validation when Obsidian output is disabled', async () => {
@@ -450,6 +515,16 @@ describe('popup/app', () => {
       expect(sendMessage).not.toHaveBeenCalled();
     });
 
+    it('rejects an invalid companion URL before testing', async () => {
+      await initWithDefaults();
+
+      el<HTMLInputElement>('companion-url').value = 'ftp://127.0.0.1:3447';
+      el<HTMLButtonElement>('testBtn').click();
+
+      await vi.waitFor(() => expect(statusEl().className).toBe('status error'));
+      expect(sendMessage).not.toHaveBeenCalled();
+    });
+
     it('shows the thrown message when the test itself errors', async () => {
       await initWithDefaults();
       vi.mocked(saveSettings).mockResolvedValue(undefined);
@@ -461,6 +536,210 @@ describe('popup/app', () => {
       await vi.waitFor(() => expect(statusEl().textContent).toBe('port closed'));
       expect(statusEl().className).toBe('status error');
       errorSpy.mockRestore();
+    });
+  });
+
+  describe('import history', () => {
+    function stubActiveTab(url: string): void {
+      vi.mocked(chrome.tabs.query).mockResolvedValue([{ id: 7, url } as chrome.tabs.Tab]);
+    }
+
+    function stubDiscovery(
+      conversations: Partial<ChatBackfillRequest>[],
+      failures: ArchiveDiscoverFailure[] = []
+    ): void {
+      vi.mocked(chrome.tabs.sendMessage).mockResolvedValue({
+        success: true,
+        conversations,
+        failures,
+      });
+    }
+
+    function importResultsText(): string {
+      return el<HTMLDivElement>('importResults').textContent ?? '';
+    }
+
+    it('disables Import history when the active tab is not a supported platform', async () => {
+      stubActiveTab('https://example.com/');
+      await initWithDefaults();
+
+      expect(el<HTMLButtonElement>('importBtn').disabled).toBe(true);
+    });
+
+    it('enables Import history when the active tab is a supported platform', async () => {
+      stubActiveTab('https://claude.ai/chat/abc');
+      await initWithDefaults();
+
+      expect(el<HTMLButtonElement>('importBtn').disabled).toBe(false);
+    });
+
+    // A conversation discovery could not read at all must be named, not
+    // silently dropped: without this the run would import fewer
+    // conversations than the history holds and still read as a clean
+    // finish (see discoverConversations' per-entry guard).
+    it('names a conversation discovery skipped, then imports the rest', async () => {
+      stubActiveTab('https://claude.ai/chat/abc');
+      stubDiscovery(
+        [{ conversationId: 'c1', title: 'Good conv' }],
+        [{ conversationId: 'bad', title: 'Broken conv', error: 'HTTP 500' }]
+      );
+      await initWithDefaults();
+      vi.mocked(sendMessage).mockResolvedValue({
+        notePath: '/vault/note.md',
+        anchorsPreserved: 0,
+        anchorsIssued: 0,
+        superseded: 0,
+        skipped: null,
+      });
+
+      el<HTMLButtonElement>('importBtn').click();
+
+      await vi.waitFor(() => {
+        expect(importResultsText()).toContain('Broken conv');
+      });
+      expect(importResultsText()).toContain('HTTP 500');
+      expect(vi.mocked(sendMessage)).toHaveBeenCalledTimes(1);
+    });
+
+    it('dispatches one chatBackfill message per discovered conversation', async () => {
+      stubActiveTab('https://claude.ai/chat/abc');
+      stubDiscovery([{ conversationId: 'c1' }, { conversationId: 'c2' }]);
+      await initWithDefaults();
+      vi.mocked(sendMessage).mockResolvedValue({
+        notePath: '/vault/note.md',
+        anchorsPreserved: 0,
+        anchorsIssued: 0,
+        superseded: 0,
+        skipped: null,
+      });
+
+      el<HTMLButtonElement>('importBtn').click();
+
+      await vi.waitFor(() => {
+        const calls = vi
+          .mocked(sendMessage)
+          .mock.calls.filter(([message]) => message.action === 'chatBackfill');
+        expect(calls).toHaveLength(2);
+      });
+    });
+
+    it('reports a skipped conversation with its reason', async () => {
+      stubActiveTab('https://claude.ai/chat/abc');
+      stubDiscovery([{ conversationId: 'c1' }]);
+      await initWithDefaults();
+      vi.mocked(sendMessage).mockResolvedValue({
+        notePath: null,
+        anchorsPreserved: 0,
+        anchorsIssued: 0,
+        superseded: 0,
+        skipped: 'truncated',
+      });
+
+      el<HTMLButtonElement>('importBtn').click();
+
+      await vi.waitFor(() => expect(importResultsText()).toMatch(/truncated/));
+    });
+
+    it('shows the discovered account before importing anything', async () => {
+      stubActiveTab('https://claude.ai/chat/abc');
+      stubDiscovery([{ conversationId: 'c1', accountName: 'work@example.com' }]);
+      await initWithDefaults();
+      vi.mocked(sendMessage).mockResolvedValue({
+        notePath: '/vault/note.md',
+        anchorsPreserved: 0,
+        anchorsIssued: 0,
+        superseded: 0,
+        skipped: null,
+      });
+
+      el<HTMLButtonElement>('importBtn').click();
+
+      await vi.waitFor(() => expect(importResultsText()).toContain('work@example.com'));
+    });
+
+    it('words the completion summary as covering the signed-in account, not all accounts', async () => {
+      stubActiveTab('https://claude.ai/chat/abc');
+      stubDiscovery([{ conversationId: 'c1' }]);
+      await initWithDefaults();
+      vi.mocked(sendMessage).mockResolvedValue({
+        notePath: '/vault/note.md',
+        anchorsPreserved: 0,
+        anchorsIssued: 0,
+        superseded: 0,
+        skipped: null,
+      });
+      // The test-wide chrome.i18n mock just echoes the key back, so the
+      // real wording (asserted below) is supplied here for this one key.
+      vi.mocked(chrome.i18n.getMessage).mockImplementation((key: string) =>
+        key === 'popup_importComplete' ? 'Finished importing the signed-in account.' : key
+      );
+
+      el<HTMLButtonElement>('importBtn').click();
+
+      await vi.waitFor(() => expect(importResultsText()).toMatch(/signed-in account/));
+      expect(importResultsText()).not.toMatch(/all your conversations/i);
+    });
+
+    it("names every distinct account discovered, not just the first conversation's", async () => {
+      // A single Claude login can enumerate multiple organizations, so the
+      // banner must not silently speak for only conversations[0]'s org while
+      // importing another org's conversations unannounced.
+      stubActiveTab('https://claude.ai/chat/abc');
+      stubDiscovery([
+        { conversationId: 'c1', accountId: 'org-1', accountName: 'Personal' },
+        { conversationId: 'c2', accountId: 'org-2', accountName: 'Acme' },
+      ]);
+      await initWithDefaults();
+      vi.mocked(sendMessage).mockResolvedValue({
+        notePath: '/vault/note.md',
+        anchorsPreserved: 0,
+        anchorsIssued: 0,
+        superseded: 0,
+        skipped: null,
+      });
+
+      el<HTMLButtonElement>('importBtn').click();
+
+      await vi.waitFor(() => {
+        expect(importResultsText()).toContain('Personal');
+        expect(importResultsText()).toContain('Acme');
+      });
+    });
+
+    it('passes the import/skip counts to i18n as substitutions rather than concatenating raw English', async () => {
+      stubActiveTab('https://claude.ai/chat/abc');
+      stubDiscovery([{ conversationId: 'c1' }, { conversationId: 'c2' }]);
+      await initWithDefaults();
+      vi.mocked(sendMessage)
+        .mockResolvedValueOnce({
+          notePath: '/vault/note1.md',
+          anchorsPreserved: 0,
+          anchorsIssued: 0,
+          superseded: 0,
+          skipped: null,
+        })
+        .mockResolvedValueOnce({
+          notePath: null,
+          anchorsPreserved: 0,
+          anchorsIssued: 0,
+          superseded: 0,
+          skipped: 'truncated',
+        });
+
+      el<HTMLButtonElement>('importBtn').click();
+
+      // A hardcoded `${imported} imported, ${skipped} skipped.` fragment
+      // concatenated onto a translated sentence would still read correctly
+      // in English, so this asserts the mechanism (getMessage called with
+      // the counts as substitutions), not just the rendered text — the only
+      // way a future ja translation could ever localize these numbers'
+      // surrounding words.
+      await vi.waitFor(() => {
+        expect(vi.mocked(chrome.i18n.getMessage)).toHaveBeenCalledWith('popup_importComplete', [
+          '1',
+          '1',
+        ]);
+      });
     });
   });
 });

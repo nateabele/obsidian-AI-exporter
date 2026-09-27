@@ -6,11 +6,47 @@
     "message": "Gemini、Claude、ChatGPT、Perplexity、NotebookLM の AI 会話を Obsidian へエクスポート（Local REST API 経由）"
   },
 
-  "ui_syncButton": {
-    "message": "Obsidian に同期"
+  "syncIcon_ariaLabel": {
+    "message": "Obsidian 同期"
   },
-  "ui_syncing": {
-    "message": "同期中..."
+  "syncIcon_openSettings": {
+    "message": "設定を開く"
+  },
+  "syncIcon_retry": {
+    "message": "再試行"
+  },
+  "syncIcon_syncNow": {
+    "message": "今すぐ同期"
+  },
+  "syncIcon_openTranscript": {
+    "message": "会話を開く"
+  },
+  "syncIcon_syncFailed": {
+    "message": "同期に失敗しました"
+  },
+  "syncIcon_syncStalled": {
+    "message": "同期が停止しました。上にスクロールして会話全体を読み込むか、手動でエクスポートしてください"
+  },
+  "syncIcon_fullContentLoop": {
+    "message": "同期に失敗しました：サーバーが会話全体の再送を繰り返し要求しました"
+  },
+  "syncIcon_attentionDefault": {
+    "message": "この会話を同期できませんでした。ページを確認して再試行してください。"
+  },
+  "syncIcon_notOnConversationPage": {
+    "message": "このページに有効な会話が見つかりませんでした"
+  },
+  "syncIcon_extractionFailed": {
+    "message": "抽出に失敗しました"
+  },
+  "syncIcon_autoSyncDisabled": {
+    "message": "このプラットフォームの自動同期はオフです。「今すぐ同期」で手動同期するか、設定でオンにしてください"
+  },
+  "syncIcon_relatedConversations": {
+    "message": "関連する会話"
+  },
+  "syncIcon_relatedTopics": {
+    "message": "関連トピック"
   },
 
   "settings_title": {
@@ -287,5 +323,44 @@
   },
   "settings_maxCalloutLinesHelp": {
     "message": "この行数を超えるメッセージはプレーンテキストで保存されます（Obsidian のみ）。"
+  },
+  "settings_companionToken": {
+    "message": "Mail API コンパニオントークン"
+  },
+  "settings_companionTokenPlaceholder": {
+    "message": "コンパニオンリスナーのトークンを入力"
+  },
+  "settings_companionTokenHelp": {
+    "message": "ローカルの Mail API コンパニオンリスナー（継続同期）用のベアラートークン。"
+  },
+  "settings_companionUrl": {
+    "message": "コンパニオン URL"
+  },
+  "settings_companionUrlPlaceholder": {
+    "message": "http://127.0.0.1:3447"
+  },
+  "settings_companionUrlHelp": {
+    "message": "Mail API コンパニオンリスナーの URL（デフォルト: http://127.0.0.1:3447）"
+  },
+  "settings_autoSyncPlatforms": {
+    "message": "自動同期するプラットフォーム"
+  },
+  "settings_autoSyncPlatformsHelp": {
+    "message": "以下で有効にしたプラットフォームの会話を、バックグラウンドで継続的にVaultへ同期します。"
+  },
+  "settings_autoSyncGemini": {
+    "message": "Gemini"
+  },
+  "settings_autoSyncClaude": {
+    "message": "Claude"
+  },
+  "settings_autoSyncChatgpt": {
+    "message": "ChatGPT"
+  },
+  "settings_autoSyncPerplexity": {
+    "message": "Perplexity"
+  },
+  "settings_autoSyncNotebooklm": {
+    "message": "NotebookLM"
   }
 }

@@ -64,10 +64,13 @@ describe('classifyResults', () => {
   });
 
   it('returns empty arrays for empty input', () => {
-    const { pass, warn, fail, baselineBlocking, baselineAdvisory } = classifyResults([]);
+    const { pass, warn, deadMiddle, fail, baselineBlocking, baselineAdvisory } = classifyResults(
+      []
+    );
 
     expect(pass).toHaveLength(0);
     expect(warn).toHaveLength(0);
+    expect(deadMiddle).toHaveLength(0);
     expect(fail).toHaveLength(0);
     expect(baselineBlocking).toHaveLength(0);
     expect(baselineAdvisory).toHaveLength(0);
@@ -168,5 +171,65 @@ describe('classifyResults', () => {
     expect(pass).toHaveLength(1); // user
     expect(warn).toHaveLength(1); // assistant (primary failed, fallback ok)
     expect(fail).toHaveLength(1); // DR title (all failed)
+  });
+
+  it('classifies a dead middle fallback (primary alive) as deadMiddle, not warn', () => {
+    // index 0 (primary) alive, index 1 dead, index 2 alive: the group still
+    // PASSes overall (primary carries it), so this must not be silently lost —
+    // it's the exact "entry 1 of 3 dies while entry 0 is alive" case that a
+    // primary-only check misses entirely.
+    const results = [
+      makeResult({ name: 'turn', index: 0, selector: '.primary', matchCount: 5 }),
+      makeResult({ name: 'turn', index: 1, selector: '.middle', matchCount: 0 }),
+      makeResult({ name: 'turn', index: 2, selector: '.tail', matchCount: 2 }),
+    ];
+
+    const { pass, warn, deadMiddle, fail } = classifyResults(results);
+
+    expect(pass).toHaveLength(1);
+    expect(warn).toHaveLength(0);
+    expect(fail).toHaveLength(0);
+    expect(deadMiddle).toHaveLength(1);
+    expect(deadMiddle[0].dead.selector).toBe('.middle');
+    expect(deadMiddle[0].liveSibling.matchCount).toBeGreaterThan(0);
+  });
+
+  it('classifies a dead middle fallback alongside a dead primary as both warn and deadMiddle', () => {
+    // index 0 (primary) dead, index 1 dead, index 2 alive: WARN covers the
+    // dead primary (promote the fallback that carries it), and deadMiddle
+    // separately flags index 1 (repair that specific fallback) — two
+    // different remedies for two different problems in the same group.
+    const results = [
+      makeResult({ name: 'turn', index: 0, selector: '.primary', matchCount: 0 }),
+      makeResult({ name: 'turn', index: 1, selector: '.middle', matchCount: 0 }),
+      makeResult({ name: 'turn', index: 2, selector: '.tail', matchCount: 3 }),
+    ];
+
+    const { warn, deadMiddle } = classifyResults(results);
+
+    expect(warn).toHaveLength(1);
+    expect(warn[0].failedPrimary.selector).toBe('.primary');
+    expect(deadMiddle).toHaveLength(1);
+    expect(deadMiddle[0].dead.selector).toBe('.middle');
+  });
+
+  it('does not report deadMiddle when the whole group is FAIL', () => {
+    const results = [
+      makeResult({ name: 'turn', index: 0, selector: '.a', matchCount: 0 }),
+      makeResult({ name: 'turn', index: 1, selector: '.b', matchCount: 0 }),
+    ];
+
+    const { fail, deadMiddle } = classifyResults(results);
+
+    expect(fail).toHaveLength(1);
+    expect(deadMiddle).toHaveLength(0);
+  });
+
+  it('does not report deadMiddle for a single-selector group', () => {
+    const results = [makeResult({ name: 'solo', index: 0, matchCount: 1 })];
+
+    const { deadMiddle } = classifyResults(results);
+
+    expect(deadMiddle).toHaveLength(0);
   });
 });

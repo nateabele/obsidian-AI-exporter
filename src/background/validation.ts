@@ -18,7 +18,13 @@ import {
   VALID_OUTPUT_DESTINATIONS,
   VALID_SOURCES,
 } from '../lib/constants';
-import type { ExtensionMessage, ExtractedImage, ObsidianNote } from '../lib/types';
+import type {
+  ChatBackfillRequest,
+  ChatSyncRequest,
+  ExtensionMessage,
+  ExtractedImage,
+  ObsidianNote,
+} from '../lib/types';
 import { containsPathTraversal } from '../lib/path-utils';
 import { isHttpUrl } from '../lib/validation';
 
@@ -78,7 +84,87 @@ export function validateMessageContent(message: ExtensionMessage): boolean {
     }
   }
 
+  // Detailed validation for chatSync action
+  if (message.action === 'chatSync' && !validateChatSyncData(message.data)) {
+    return false;
+  }
+
+  // Detailed validation for chatBackfill action
+  if (message.action === 'chatBackfill' && !validateChatBackfillData(message.data)) {
+    return false;
+  }
+
+  // Detailed validation for openInObsidian action
+  if (message.action === 'openInObsidian' && !validateOpenInObsidianData(message.data)) {
+    return false;
+  }
+
   return true;
+}
+
+/**
+ * Validate a chatSync request body.
+ */
+function validateChatSyncData(data: ChatSyncRequest | undefined): boolean {
+  // Messages arrive as unvalidated JSON: data may be absent/malformed
+  // despite the type.
+  if (!data || typeof data !== 'object') return false;
+  if (typeof data.conversationId !== 'string' || data.conversationId.length === 0) return false;
+  if (!VALID_SOURCES.includes(data.platform as (typeof VALID_SOURCES)[number])) return false;
+  if (!Array.isArray(data.manifest) || !data.manifest.every(h => typeof h === 'string')) {
+    return false;
+  }
+  if (!Array.isArray(data.newBlocks)) return false;
+  return !data.newBlocks.some(
+    b =>
+      (b?.role !== 'user' && b?.role !== 'assistant') ||
+      typeof b.markdown !== 'string' ||
+      b.markdown.length > MAX_CONTENT_SIZE ||
+      typeof b.hash !== 'string' ||
+      b.hash.length === 0
+  );
+}
+
+/**
+ * Validate a chatBackfill request body: same per-message shape checks as
+ * `validateChatSyncData`'s `newBlocks`, plus the fields specific to a
+ * whole-conversation import (`sourceId`, optional `truncated`, and the
+ * nullable account provenance carried through from the archive adapter).
+ */
+function validateChatBackfillData(data: ChatBackfillRequest | undefined): boolean {
+  // Messages arrive as unvalidated JSON: data may be absent/malformed
+  // despite the type.
+  if (!data || typeof data !== 'object') return false;
+  if (typeof data.conversationId !== 'string' || data.conversationId.length === 0) return false;
+  if (!VALID_SOURCES.includes(data.platform as (typeof VALID_SOURCES)[number])) return false;
+  if (typeof data.title !== 'string') return false;
+  if (typeof data.url !== 'string') return false;
+  if (typeof data.createdAt !== 'string') return false;
+  if (data.accountId !== null && typeof data.accountId !== 'string') return false;
+  if (data.accountName !== null && typeof data.accountName !== 'string') return false;
+  if (!Array.isArray(data.messages)) return false;
+  return !data.messages.some(
+    m =>
+      (m?.role !== 'user' && m?.role !== 'assistant') ||
+      typeof m.markdown !== 'string' ||
+      m.markdown.length > MAX_CONTENT_SIZE ||
+      typeof m.hash !== 'string' ||
+      m.hash.length === 0 ||
+      typeof m.sourceId !== 'string' ||
+      m.sourceId.length === 0 ||
+      (m.truncated !== undefined && typeof m.truncated !== 'boolean')
+  );
+}
+
+/**
+ * Validate an openInObsidian request body: `path` must be a non-empty,
+ * non-traversing string. The companion server validates and canonicalises
+ * it further, but path traversal is rejected here (DES-014 H-1), same as
+ * `validateNoteData`'s `fileName` check.
+ */
+function validateOpenInObsidianData(data: { path: string } | undefined): boolean {
+  const path = data?.path;
+  return typeof path === 'string' && path.length > 0 && !containsPathTraversal(path);
 }
 
 /**
