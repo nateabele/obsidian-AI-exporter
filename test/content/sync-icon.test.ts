@@ -251,6 +251,46 @@ describe('setSyncState', () => {
 
     expect(getLastError()).toBeNull();
   });
+
+  it('retains the last blocked reason across calls that omit it', () => {
+    try {
+      setSyncState('attention', { blocked: 'Extraction failed' });
+      // Same retain-unless-explicit convention as the error above, for the
+      // separate `blocked` dimension. There is deliberately no
+      // getLastBlockedReason() to read it back with, so assert through the
+      // tooltip, which falls back to the retained reason when no error is
+      // retained.
+      setSyncState('attention');
+
+      expect(document.getElementById('g2o-sync-icon')?.title).toBe('Extraction failed');
+    } finally {
+      // lastBlockedReason is module-level state shared across every test in
+      // this file — restore it, exactly as the error case above does.
+      setSyncState('synced', { blocked: null });
+    }
+  });
+
+  it('clears the retained blocked reason only when a call explicitly passes null', () => {
+    setSyncState('attention', { blocked: 'Extraction failed' });
+    setSyncState('synced', { blocked: null });
+
+    // With neither an error nor a reason retained, the tooltip degrades to the
+    // state name.
+    expect(document.getElementById('g2o-sync-icon')?.title).toBe('synced');
+  });
+
+  it('shows a retained error ahead of a retained blocked reason', () => {
+    try {
+      setSyncState('attention', { blocked: 'Extraction failed' });
+      setSyncState('offline', { error: 'ECONNREFUSED' });
+
+      // Two different failure dimensions, both retained; a connectivity
+      // failure that actually happened is the more urgent of the two.
+      expect(document.getElementById('g2o-sync-icon')?.title).toBe('ECONNREFUSED');
+    } finally {
+      setSyncState('synced', { error: null, blocked: null });
+    }
+  });
 });
 
 describe('setIconContext', () => {
@@ -296,6 +336,22 @@ describe('setIconContext', () => {
 
     expect(handlers.onOpenPath).toHaveBeenCalledWith('');
     expect(handlers.onOpenPath).not.toHaveBeenCalledWith('AI/claude/conversation-a.md');
+  });
+
+  it('clears the retained blocked reason when the href changes', () => {
+    setIconContext(hrefA);
+    paintFor(hrefA, 'attention', { blocked: 'Extraction failed' });
+
+    setIconContext(hrefB);
+    // Nothing re-derives the visual state here, so re-paint under the new
+    // href: with no reason retained, the menu must fall back to the generic
+    // note rather than repeating the previous conversation's.
+    paintFor(hrefB, 'attention');
+    document.getElementById('g2o-sync-icon')?.click();
+
+    expect(document.querySelector('#g2o-sync-menu .attention-detail')?.textContent).toBe(
+      'syncIcon_attentionDefault'
+    );
   });
 
   it('is a no-op when the href has not changed, so retained detail is preserved', () => {
@@ -406,6 +462,24 @@ describe('the icon menu', () => {
       'syncIcon_openTranscript',
       'syncIcon_repair',
     ]);
+  });
+
+  it('explains the retained blocked reason while attention, without offering "Retry"', () => {
+    const handlers = makeHandlers();
+    injectSyncIcon(handlers);
+    setSyncState('attention', { blocked: 'syncIcon_conversationGrewSinceSync' });
+
+    document.getElementById('g2o-sync-icon')?.click();
+
+    expect(document.querySelector('#g2o-sync-menu .attention-detail')?.textContent).toBe(
+      'syncIcon_conversationGrewSinceSync'
+    );
+    // No "Retry": unlike `offline`, nothing was actually sent anywhere, so
+    // "Sync now" is the entry that acts on this.
+    const entries = Array.from(document.querySelectorAll('#g2o-sync-menu .entry')).map(
+      e => e.textContent
+    );
+    expect(entries).toEqual(['syncIcon_syncNow', 'syncIcon_openTranscript', 'syncIcon_repair']);
   });
 
   it('falls back to a generic message when no error detail is known', () => {
