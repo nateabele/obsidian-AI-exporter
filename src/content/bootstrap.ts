@@ -17,6 +17,7 @@ import type { IConversationExtractor } from '../lib/types';
 import { conversationToNote } from './markdown';
 import { showSuccessToast, showErrorToast, showWarningToast, showToast } from './ui';
 import {
+  attachWatermarkWatcher,
   injectSyncIcon,
   paintFor,
   deriveState,
@@ -26,6 +27,7 @@ import {
   setSuggestions,
   suggestionCount,
 } from './sync-icon';
+import type { StopWatching } from './conversation-watcher';
 import { sendMessage, isMultiOutputResponse, describeUnexpectedResponse } from '../lib/messaging';
 import {
   AUTO_SAVE_CHECK_INTERVAL,
@@ -222,6 +224,11 @@ let autoSyncObserver: MutationObserver | null = null;
 // The debounced runAutoSync callback, tracked so its pending trailing-edge
 // timer can be cancelled alongside the observer (see stopAutoSync()).
 let debouncedAutoSync: (((...args: unknown[]) => void) & { cancel: () => void }) | null = null;
+// Stops the watermark watcher armed by the last successful sync, or null when
+// none is armed. Module-level because the watcher deliberately outlives the
+// `runAutoSync()` call that started it: it exists to invalidate what that call
+// painted, once the conversation grows past it (issues #465/#468).
+let stopWatermarkWatcher: StopWatching | null = null;
 
 /**
  * Stop the continuous auto-sync observer, if one is attached.
@@ -229,13 +236,44 @@ let debouncedAutoSync: (((...args: unknown[]) => void) & { cancel: () => void })
  * Exported for test teardown: a shared jsdom document across a test file
  * would otherwise let an observer from one test fire on DOM mutations made
  * by a later, unrelated test (e.g. `clearFixture()`). Also cancels any
- * pending debounce timer so it can't fire after teardown.
+ * pending debounce timer, and disarms the watermark watcher's poll, so
+ * neither can fire after teardown.
  */
 export function stopAutoSync(): void {
   autoSyncObserver?.disconnect();
   autoSyncObserver = null;
   debouncedAutoSync?.cancel();
   debouncedAutoSync = null;
+  stopWatermarkWatch();
+}
+
+/** Disarm the watermark watcher, if one is armed. Safe to call repeatedly. */
+function stopWatermarkWatch(): void {
+  stopWatermarkWatcher?.();
+  stopWatermarkWatcher = null;
+}
+
+/** The highest turn ordinal currently mounted, or null on platforms without one. */
+function currentMessageWatermark(): number | null {
+  return getExtractor()?.getMessageWatermark() ?? null;
+}
+
+/**
+ * Arm the watermark watcher for the conversation a sync just covered, so a
+ * message arriving afterwards drops the `synced` paint instead of leaving a
+ * partial sync indistinguishable from a complete one (issues #465/#468).
+ *
+ * `syncedWatermark` comes from the extraction that was sent, never a DOM read
+ * taken after it: the auto-scroll pass ends pinned at the TOP of the
+ * conversation, where the newest turn is unmounted and its ordinal is gone.
+ *
+ * Re-armed, never stacked — the previous watcher is stopped first. Two pollers
+ * for the same signal would poll twice and paint twice, and the older one's
+ * baseline is by definition staler than this one's.
+ */
+function armWatermarkWatcher(href: string, syncedWatermark: number | null): void {
+  stopWatermarkWatch();
+  stopWatermarkWatcher = attachWatermarkWatcher(href, syncedWatermark, currentMessageWatermark);
 }
 
 /**
@@ -570,6 +608,33 @@ function buildChatSyncRequest(
 }
 
 /**
+ * Send the increment and, on a confirmed success, arm the watermark watcher
+ * for the newest turn it covered, so a message arriving afterwards drops the
+ * `synced` paint (issues #465/#468). Nothing is armed for a failed send: the
+ * icon is on `offline`, so there is no `synced` claim for a later turn to
+ * invalidate.
+ *
+ * The watermark comes from `data` — the extraction that was actually sent —
+ * never a DOM read taken here (see `armWatermarkWatcher`). Split out from
+ * `runAutoSync` purely to keep it under the line-count lint limit.
+ */
+async function sendAndWatch(
+  data: ConversationData,
+  manifest: string[],
+  blocks: ChatSyncBlock[],
+  href: string
+): Promise<ChatSyncResponse | null> {
+  const response = await sendChatSync(
+    buildChatSyncRequest(data, manifest, blocks),
+    manifest,
+    blocks,
+    href
+  );
+  if (response) armWatermarkWatcher(href, data.messageWatermark ?? null);
+  return response;
+}
+
+/**
  * Whether — and why not — the freshly-extracted manifest should actually be
  * sent:
  * - `'unchanged'`: nothing new since the last sync, the common case on a
@@ -652,6 +717,10 @@ function establishAutoSyncContext(startHref: string): void {
     previousManifest = [];
     lastHref = startHref;
     setIconContext(startHref);
+    // The watermark watcher belongs to the conversation that was synced, whose
+    // ordinals say nothing about this one. Its paints are already no-ops after
+    // setIconContext above, so leaving it polling would be pure waste.
+    stopWatermarkWatch();
   }
 }
 
@@ -718,12 +787,7 @@ export async function runAutoSync(): Promise<ChatSyncResponse | null> {
       return null;
     }
 
-    return await sendChatSync(
-      buildChatSyncRequest(result.data, manifest, blocks),
-      manifest,
-      blocks,
-      startHref
-    );
+    return await sendAndWatch(result.data, manifest, blocks, startHref);
   } catch (error) {
     settleAutoSyncFailure(startHref, error);
     return null;

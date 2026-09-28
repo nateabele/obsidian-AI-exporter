@@ -66,6 +66,10 @@
     "message": "This conversation couldn't be synced. Check the page and try again.",
     "description": "Fallback detail shown in the sync icon menu for the `attention` state when no more specific blocked reason is known"
   },
+  "syncIcon_conversationGrewSinceSync": {
+    "message": "New messages have arrived since the last sync — use Sync now to include them",
+    "description": "Blocked-reason detail when the conversation has grown past the turn the last sync covered (issue #465)"
+  },
   "syncIcon_notOnConversationPage": {
     "message": "Couldn't find an active conversation on this page",
     "description": "Blocked-reason detail when the extractor reports it can no longer handle the current page"

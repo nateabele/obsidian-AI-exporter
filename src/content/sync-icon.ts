@@ -7,6 +7,8 @@
  */
 
 import { injectStyles } from './ui';
+import { startNewMessageWatcher } from './message-watcher';
+import type { StopWatching } from './conversation-watcher';
 import { getMessage } from '../lib/i18n';
 import type { ChatSyncResponse, ChatSuggestion } from '../lib/types';
 
@@ -320,6 +322,64 @@ export function setSyncState(state: SyncIconState, detail: SyncStateDetail = {})
 export function paintFor(href: string, state: SyncIconState, detail?: SyncStateDetail): void {
   if (href !== contextHref) return;
   setSyncState(state, detail);
+}
+
+/**
+ * Paint the icon for "this conversation has grown past the sync it is
+ * showing". Derived rather than hardcoded to `attention` so the module's own
+ * precedence still holds: an unresolved connectivity `error` outranks a local
+ * "there is more to send" (see `deriveState`), and a fresh growth must not
+ * paper it over. `configured: true` is not an assumption — a watcher only
+ * exists because a sync reached the companion.
+ */
+function paintConversationGrew(href: string): void {
+  const reason = getMessage('syncIcon_conversationGrewSinceSync');
+  paintFor(
+    href,
+    deriveState({
+      configured: true,
+      syncing: false,
+      error: lastError,
+      suggestionCount: lastSuggestionCount,
+      blocked: reason,
+    }),
+    { blocked: reason }
+  );
+}
+
+/**
+ * Invalidate this conversation's painted state once the page grows past the
+ * turn the sync covered (issues #465/#468).
+ *
+ * The icon is a point-in-time record of one sync, so without this a message
+ * arriving afterwards leaves `synced` painted and a partial sync is
+ * indistinguishable from a complete one. The signal is a conversation-wide
+ * turn ordinal that is never renumbered (Claude's `data-index`, ChatGPT's
+ * `conversation-turn-N`): a value strictly above the one the sync covered
+ * proves a new turn, while scrolling can only ever surface ordinals at or
+ * below it. A turn *count* would not do — Gemini lazy-loads OLDER messages,
+ * so its count grows with nothing added (ADR-036).
+ *
+ * `syncedWatermark` must come from the extraction that was synced
+ * (`ConversationData.messageWatermark`), never a DOM read taken after it: the
+ * auto-scroll pass ends pinned at the TOP of the conversation, where the
+ * newest turn is unmounted and its ordinal is gone (issue #465).
+ *
+ * A null `syncedWatermark` is "the platform exposes no ordinal" (Gemini,
+ * Perplexity, NotebookLM) — never zero — and disarms the watcher entirely;
+ * `startNewMessageWatcher` owns that guard, so there is deliberately no second
+ * copy of it here. The returned stop is a no-op in that case.
+ */
+export function attachWatermarkWatcher(
+  href: string,
+  syncedWatermark: number | null,
+  getWatermark: () => number | null
+): StopWatching {
+  return startNewMessageWatcher({
+    syncedWatermark,
+    getWatermark,
+    onNewMessage: () => paintConversationGrew(href),
+  });
 }
 
 /**

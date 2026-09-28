@@ -36,6 +36,9 @@
   "syncIcon_attentionDefault": {
     "message": "この会話を同期できませんでした。ページを確認して再試行してください。"
   },
+  "syncIcon_conversationGrewSinceSync": {
+    "message": "前回の同期以降に新しいメッセージが届いています。「今すぐ同期」で最新の状態にしてください"
+  },
   "syncIcon_notOnConversationPage": {
     "message": "このページに有効な会話が見つかりませんでした"
   },

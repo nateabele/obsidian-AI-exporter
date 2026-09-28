@@ -12,8 +12,10 @@ import {
   clearFixture,
   createGeminiConversationDOM,
   createClaudeConversationDOM,
+  createChatGPTConversationDOM,
   setGeminiLocation,
   setClaudeLocation,
+  setChatGPTLocation,
   setNonGeminiLocation,
   resetLocation,
 } from '../fixtures/dom-helpers';
@@ -43,6 +45,10 @@ vi.mock('../../src/content/sync-icon', async () => {
   return {
     injectSyncIcon: vi.fn(),
     paintFor: vi.fn(),
+    // Must return a stop function, like the real one: bootstrap retains it and
+    // calls it to re-arm, so a bare vi.fn() (returning undefined) would throw
+    // into runAutoSync's catch and turn every successful sync into `offline`.
+    attachWatermarkWatcher: vi.fn(() => vi.fn()),
     deriveState: vi.fn(actual.deriveState),
     getSuggestionCount: vi.fn(() => 0),
     getLastError: vi.fn(() => null),
@@ -64,6 +70,7 @@ import {
   showToast,
 } from '../../src/content/ui';
 import {
+  attachWatermarkWatcher,
   injectSyncIcon,
   paintFor,
   deriveState,
@@ -1373,6 +1380,49 @@ describe('content/bootstrap', () => {
       } finally {
         vi.mocked(suggestionCount).mockReturnValue(0);
       }
+    });
+
+    it('arms the watermark watcher with the ordinal the extraction covered (issue #465)', async () => {
+      // ChatGPT numbers turns conversation-wide (`conversation-turn-N`), so its
+      // extraction reports a watermark where Gemini's reports none.
+      setChatGPTLocation('11111111-2222-3333-4444-555555555555');
+      loadFixture(
+        createChatGPTConversationDOM([
+          { role: 'user', content: 'Hello ChatGPT' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+      mockMessaging({
+        settings: { isCompanionConfigured: true, autoSyncPlatforms: ['chatgpt'] },
+      });
+
+      await runAutoSync();
+
+      // 2 is the second turn's ordinal, carried out of the extraction — never
+      // re-read from the DOM afterwards, since a scroll pass ends pinned at the
+      // TOP of the conversation where the newest turn is unmounted (#465).
+      expect(attachWatermarkWatcher).toHaveBeenCalledWith(location.href, 2, expect.any(Function));
+    });
+
+    it('arms nothing when the send failed, since there is no synced claim to invalidate', async () => {
+      setChatGPTLocation('22222222-3333-4444-5555-666666666666');
+      loadFixture(
+        createChatGPTConversationDOM([
+          { role: 'user', content: 'Hello ChatGPT' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+      mockMessaging({
+        settings: { isCompanionConfigured: true, autoSyncPlatforms: ['chatgpt'] },
+        chatSync: { error: 'Companion unreachable' },
+      });
+
+      await runAutoSync();
+
+      expect(paintFor).toHaveBeenLastCalledWith(location.href, 'offline', {
+        error: 'Companion unreachable',
+      });
+      expect(attachWatermarkWatcher).not.toHaveBeenCalled();
     });
   });
 
