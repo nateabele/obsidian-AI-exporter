@@ -145,4 +145,43 @@ describe("buildManifest over ChatGPT's 2026-09 pair turns (issue #515)", () => {
 
     expect(pairTurns.manifest).toEqual(oneMessagePerTurn.manifest);
   });
+
+  it('hashes a multi-root answer as the single root the old layout stored it as', () => {
+    // The case the single-root pin above leaves open: in 2026-09 an answer
+    // interrupted by a tool call, an image, or a search unit renders as SEVERAL
+    // `data-markdown-text-style="assistant-message"` roots inside one turn,
+    // where the layout the stored blocks were produced from put the whole
+    // answer in one. The roots must still collapse into ONE assistant block
+    // with the same hash — if they did not, every stored ChatGPT conversation
+    // with an interrupted answer would re-append from that point on.
+    setChatGPTLocation('6789abcd-ef01-2345-6789-abcdef012345');
+
+    loadFixture(
+      createChatGPT2026Page([
+        {
+          key: 'u-1',
+          user: 'First question',
+          answers: ['<p>Before the tool call</p>', '<p>After the tool call</p>'],
+        },
+      ])
+    );
+    const multiRoot = buildManifest(new ChatGPTExtractor().extractMessages());
+
+    expect(multiRoot.blocks.map(b => b.role)).toEqual(['user', 'assistant']);
+    expect(multiRoot.blocks.map(b => b.markdown)).toEqual([
+      'First question',
+      'Before the tool call\n\nAfter the tool call',
+    ]);
+
+    clearFixture();
+    loadFixture(
+      createChatGPTConversationDOM([
+        { role: 'user', content: 'First question' },
+        { role: 'assistant', content: '<p>Before the tool call</p><p>After the tool call</p>' },
+      ])
+    );
+    const singleRoot = buildManifest(new ChatGPTExtractor().extractMessages());
+
+    expect(multiRoot.manifest).toEqual(singleRoot.manifest);
+  });
 });
