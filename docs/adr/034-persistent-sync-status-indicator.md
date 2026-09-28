@@ -122,11 +122,11 @@ the failures an absent user needs to still see.
 
 | Path | Role |
 | --- | --- |
-| `src/content/sync-status.ts` | DOM-free status model and age formatting |
-| `src/content/conversation-watcher.ts` | href poll → conversation-change callback |
-| `src/content/ui-badge.ts` | Badge and detail panel rendering |
+| ~~`src/content/sync-status.ts`~~ | DOM-free status model and age formatting — **removed in this fork**, see the amendment below |
+| `src/content/conversation-watcher.ts` | href poll → conversation-change callback (no caller in this fork, see its own header) |
+| ~~`src/content/ui-badge.ts`~~ | Badge and detail panel rendering — **removed in this fork**, see the amendment below |
 | `src/content/ui.ts` | `#g2o-sync-anchor`, shared styles |
-| `src/content/bootstrap.ts` | Wiring: badge lifetime and watcher lifetime |
+| `src/content/bootstrap.ts` | Wiring: badge lifetime and watcher lifetime (now the sync icon's watcher lifetime) |
 
 ## Fork amendment (2026-09-27, upstream 2.14.5 integration)
 
@@ -137,5 +137,7 @@ detail lives in the icon's retained module state (`lastError`,
 by `paintFor()`'s `contextHref` check rather than by `isStale()`. `ui-badge.ts`
 was therefore removed when 2.14.5 was merged, and `sync-status.ts` — the
 DOM-free status model above, whose every consumer was the badge — with it,
-along with the `badge_*` messages in both locales. What survives of this ADR is
-`conversation-watcher.ts` and the reasoning for it.
+along with the `badge_*` messages in both locales. The Files table above is
+struck through in place rather than rewritten, so the original decision stays
+readable. What survives of this ADR is `conversation-watcher.ts` and the
+reasoning for it.

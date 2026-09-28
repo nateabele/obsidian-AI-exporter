@@ -52,6 +52,7 @@ vi.mock('../../src/content/sync-icon', async () => {
     deriveState: vi.fn(actual.deriveState),
     getSuggestionCount: vi.fn(() => 0),
     getLastError: vi.fn(() => null),
+    getLastBlockedReason: vi.fn(() => null),
     setIconContext: vi.fn(),
     setSuggestions: vi.fn(),
     suggestionCount: vi.fn(() => 0),
@@ -75,6 +76,7 @@ import {
   paintFor,
   deriveState,
   getLastError,
+  getLastBlockedReason,
   setIconContext,
   setSuggestions,
   suggestionCount,
@@ -421,6 +423,10 @@ describe('content/bootstrap', () => {
             expect.objectContaining({
               notePath: 'AI/claude/repaired-conversation.md',
               error: null,
+              // A confirmed success resolves the `blocked` dimension as well,
+              // or a "the conversation grew" reason from before the repair
+              // would sit in the tooltip under a tick (see sendChatSync).
+              blocked: null,
             })
           )
         );
@@ -463,6 +469,16 @@ describe('content/bootstrap', () => {
         // A skip must not land on 'offline' -- see repairConversation()'s
         // comment on why the retained `error` field is never used for it.
         expect(paintFor).not.toHaveBeenCalledWith(location.href, 'offline', expect.anything());
+        // It does still resolve both retained dimensions, the same way the
+        // non-skipped success below does: the repair ran, so a blockage a
+        // previous tick recorded is answered.
+        await vi.waitFor(() =>
+          expect(paintFor).toHaveBeenCalledWith(
+            location.href,
+            expect.any(String),
+            expect.objectContaining({ error: null, blocked: null })
+          )
+        );
       });
 
       it('paints the icon offline, visibly, when the server rejects the backfill', async () => {
@@ -1094,6 +1110,9 @@ describe('content/bootstrap', () => {
           syncing: false,
           error: 'Please select at least one output destination in settings',
           suggestionCount: 0,
+          // settleIcon passes the retained blocked reason too, so a quiet tick
+          // can't demote an unresolved local blockage to `synced` (#465/#468).
+          blocked: null,
         });
         expect(paintFor).toHaveBeenLastCalledWith(location.href, 'offline');
       } finally {
@@ -1376,6 +1395,7 @@ describe('content/bootstrap', () => {
           suggestionCount: 2,
           notePath: okChatSync.notePath,
           error: null,
+          blocked: null,
         });
       } finally {
         vi.mocked(suggestionCount).mockReturnValue(0);
@@ -1402,6 +1422,115 @@ describe('content/bootstrap', () => {
       // re-read from the DOM afterwards, since a scroll pass ends pinned at the
       // TOP of the conversation where the newest turn is unmounted (#465).
       expect(attachWatermarkWatcher).toHaveBeenCalledWith(location.href, 2, expect.any(Function));
+    });
+
+    it('keeps the icon on attention through a quiet tick while the blockage is unresolved', async () => {
+      // The #465/#468 hole: startNewMessageWatcher fires at most once and only
+      // a confirmed send re-arms it, so if the next quiet tick could derive
+      // `synced` the invalidation would be gone for good and a conversation
+      // that grew past its sync would look completely synced again. settleIcon
+      // is the one bail-out sibling that CAN claim `synced`, which is why it
+      // has to pass the retained reason through.
+      setGeminiLocation('auto-sync-retained-blockage');
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+      mockMessaging({
+        settings: { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] },
+      });
+      // Establishes previousManifest for this DOM, so the next run below takes
+      // the unchanged-manifest early return into settleIcon.
+      await runAutoSync();
+      vi.mocked(paintFor).mockClear();
+      vi.mocked(getLastBlockedReason).mockReturnValue('syncIcon_conversationGrewSinceSync');
+
+      try {
+        await runAutoSync(); // same DOM: the unchanged-manifest early return
+
+        expect(paintFor).toHaveBeenLastCalledWith(location.href, 'attention');
+      } finally {
+        vi.mocked(getLastBlockedReason).mockReturnValue(null);
+      }
+    });
+
+    it('stops the previous watermark watcher rather than stacking a second one', async () => {
+      setChatGPTLocation('33333333-4444-5555-6666-777777777777');
+      loadFixture(
+        createChatGPTConversationDOM([
+          { role: 'user', content: 'Hello ChatGPT' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+      mockMessaging({
+        settings: { isCompanionConfigured: true, autoSyncPlatforms: ['chatgpt'] },
+      });
+      await runAutoSync();
+      const stopFirst = vi.mocked(attachWatermarkWatcher).mock.results[0].value;
+
+      // The same conversation grows, so this tick really sends and arms again.
+      loadFixture(
+        createChatGPTConversationDOM([
+          { role: 'user', content: 'Hello ChatGPT' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+          { role: 'user', content: 'Second question' },
+          { role: 'assistant', content: '<p>Second answer</p>' },
+        ])
+      );
+      await runAutoSync();
+
+      // Two armed, one stopped: a second poller for the same signal would poll
+      // twice, paint twice, and keep a staler baseline alive than this one.
+      expect(attachWatermarkWatcher).toHaveBeenCalledTimes(2);
+      expect(stopFirst).toHaveBeenCalledTimes(1);
+    });
+
+    it('disarms the watermark watcher when the SPA navigates to another conversation', async () => {
+      setChatGPTLocation('44444444-5555-6666-7777-888888888888');
+      loadFixture(
+        createChatGPTConversationDOM([
+          { role: 'user', content: 'Hello ChatGPT' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+      mockMessaging({
+        settings: { isCompanionConfigured: true, autoSyncPlatforms: ['chatgpt'] },
+      });
+      await runAutoSync();
+      const stopFirst = vi.mocked(attachWatermarkWatcher).mock.results[0].value;
+
+      // Navigating to a platform the user excluded from auto-sync isolates the
+      // disarm: establishAutoSyncContext runs ahead of every bail-out, so the
+      // watcher is stopped and nothing re-arms in the same tick.
+      setGeminiLocation('watermark-after-navigation');
+      loadFixture(
+        createGeminiConversationDOM([{ role: 'user', content: 'A different conversation' }])
+      );
+      await runAutoSync();
+
+      expect(stopFirst).toHaveBeenCalledTimes(1);
+      expect(attachWatermarkWatcher).toHaveBeenCalledTimes(1);
+    });
+
+    it('disarms the watermark watcher in stopAutoSync, so its poll cannot outlive the page', async () => {
+      setChatGPTLocation('55555555-6666-7777-8888-999999999999');
+      loadFixture(
+        createChatGPTConversationDOM([
+          { role: 'user', content: 'Hello ChatGPT' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+      mockMessaging({
+        settings: { isCompanionConfigured: true, autoSyncPlatforms: ['chatgpt'] },
+      });
+      await runAutoSync();
+      const stopFirst = vi.mocked(attachWatermarkWatcher).mock.results[0].value;
+
+      stopAutoSync();
+
+      expect(stopFirst).toHaveBeenCalledTimes(1);
     });
 
     it('arms nothing when the send failed, since there is no synced claim to invalidate', async () => {
@@ -1569,6 +1698,7 @@ describe('content/bootstrap', () => {
       expect(paintFor).toHaveBeenLastCalledWith(location.href, 'synced', {
         suggestionCount: 0,
         error: null,
+        blocked: null,
       });
     });
 

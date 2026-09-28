@@ -372,8 +372,8 @@ export interface AccumulateResult<T> {
    *
    * Reported because the pass ends pinned at the *top* of the conversation, so
    * the newest turn is unmounted by then and its ordinal cannot be re-read from
-   * the DOM afterwards. The sync-status badge needs it as the baseline for
-   * "a message newer than the one I synced has appeared" (issue #465).
+   * the DOM afterwards. The sync icon needs it as the baseline for "a message
+   * newer than the one I synced has appeared" (issue #465).
    */
   maxOrder?: number;
 }

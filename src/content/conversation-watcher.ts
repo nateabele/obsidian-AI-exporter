@@ -1,5 +1,13 @@
 /**
- * Conversation-change watcher for the sync-status badge (issue #458, ADR-034).
+ * Conversation-change watcher (issue #458, ADR-034).
+ *
+ * Currently has no caller in src/: it was written for the status badge this
+ * fork replaced with the sync icon, and navigation is handled instead by
+ * `establishAutoSyncContext()` in bootstrap.ts, which resets the icon's
+ * context off the same DOM mutations that already drive auto-sync. Kept rather
+ * than deleted because the repair worker wants exactly this signal; if that
+ * does not land, delete it — knip cannot report it, since every test file is
+ * an entry (ADR-015).
  *
  * Polls `location.href` and reports when the *conversation* behind it changed.
  * See CONVERSATION_POLL_INTERVAL for why this is a poll and not an event.
@@ -17,9 +25,9 @@ export type StopWatching = () => void;
  * common case costs one string comparison per tick. A href change that leaves
  * the conversation id alone (a query parameter, a hash) is not a change.
  *
- * `initialKey` is supplied rather than read here: the caller is the badge, and
- * the conversation it belongs to is the one that was synced — not whatever the
- * DOM happens to say by the time the watcher starts.
+ * `initialKey` is supplied rather than read here: the conversation the
+ * caller's state belongs to is the one that was synced — not whatever the DOM
+ * happens to say by the time the watcher starts.
  */
 export function startConversationWatcher(params: {
   /** Conversation the caller's state belongs to. */

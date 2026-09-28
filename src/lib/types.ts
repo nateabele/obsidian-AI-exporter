@@ -68,8 +68,8 @@ export interface ConversationData {
    * expose a conversation-wide monotonic ordinal (Claude's `data-index`,
    * ChatGPT's `conversation-turn-N`). Undefined elsewhere.
    *
-   * The sync-status badge compares it against the live DOM to tell "a message
-   * newer than the sync has appeared" from "the user scrolled" (issue #465).
+   * The sync icon compares it against the live DOM to tell "a message newer
+   * than the sync has appeared" from "the user scrolled" (issue #465).
    */
   messageWatermark?: number;
 }

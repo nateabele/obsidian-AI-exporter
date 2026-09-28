@@ -91,6 +91,29 @@ describe('attachWatermarkWatcher', () => {
     );
   });
 
+  it('stops claiming growth once a confirmed success has answered it', () => {
+    paintFor(HREF, 'synced');
+    let current = 12;
+    stop = attachWatermarkWatcher(HREF, 12, () => current);
+
+    current = 13;
+    vi.advanceTimersByTime(5000);
+    expect(state()).toBe('attention');
+
+    // What runAutoSync's confirmed-success paint passes (see sendChatSync).
+    // This ordering is the norm, not the exception: the watcher polls every
+    // 1000 ms (NEW_MESSAGE_POLL_INTERVAL) while auto-sync is debounced by
+    // 4000 ms (AUTO_SYNC_DEBOUNCE), so on Claude and ChatGPT the growth fires
+    // before the sync that answers it on essentially every turn. Without the
+    // explicit `blocked: null` the reason outlives that sync — `setSyncState`
+    // leaves an absent one alone — and the tooltip reads "new messages have
+    // arrived" under a tick for the rest of the conversation.
+    paintFor(HREF, 'synced', { suggestionCount: 0, error: null, blocked: null });
+
+    expect(state()).toBe('synced');
+    expect(document.getElementById('g2o-sync-icon')?.title).toBe('synced');
+  });
+
   it('never invalidates on a platform with no ordinal', () => {
     // Gemini, Perplexity and NotebookLM return null from getMessageWatermark():
     // null is "no signal", never zero, and an icon that cleared itself for a

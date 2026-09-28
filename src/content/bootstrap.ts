@@ -23,6 +23,7 @@ import {
   deriveState,
   getSuggestionCount,
   getLastError,
+  getLastBlockedReason,
   setIconContext,
   setSuggestions,
   suggestionCount,
@@ -352,8 +353,13 @@ async function sendChatSync(
       notePath: response.notePath,
       // This is a real, confirmed success — resolve any error a previous
       // attempt left behind, rather than leaving it retained for a later
-      // bail-out to reassert.
+      // bail-out to reassert. `blocked` is resolved for the same reason and
+      // must be passed explicitly: `setSyncState` leaves an absent one alone,
+      // so without this the watermark watcher's "the conversation grew"
+      // reason would outlive the very sync that answered it and sit in the
+      // tooltip under a tick for the rest of the conversation.
       error: null,
+      blocked: null,
     }
   );
   return response;
@@ -381,6 +387,14 @@ function settleIcon(configured: boolean, href: string): void {
   // immediately overwritten by the next quiet background tick). Passing no
   // `detail` to paintFor below leaves the retained error untouched either
   // way.
+  //
+  // The retained `blocked` reason is passed for exactly the same reason, and
+  // it is load-bearing rather than defensive: omitting it makes `deriveState`
+  // read "nothing is blocking" and fall through to the quiet `synced`
+  // default, so an unchanged-manifest tick would repaint `synced` over a
+  // conversation the watermark watcher had just invalidated (#465/#468) — the
+  // one sibling of this function that CAN claim `synced`. Only a confirmed
+  // success clears the reason (see `sendChatSync`).
   paintFor(
     href,
     deriveState({
@@ -388,6 +402,7 @@ function settleIcon(configured: boolean, href: string): void {
       syncing: false,
       error: getLastError(),
       suggestionCount: getSuggestionCount(),
+      blocked: getLastBlockedReason(),
     })
   );
 }
@@ -525,12 +540,17 @@ async function repairConversation(href: string, conversationId: string): Promise
       if (isStillCurrent(href)) {
         showToast(getMessage('syncIcon_repairSkipped', [response.skipped]), 'info');
       }
-      paintFor(href, settledState, { error: null, suggestionCount: suggestionCountAfter });
+      paintFor(href, settledState, {
+        error: null,
+        blocked: null,
+        suggestionCount: suggestionCountAfter,
+      });
       return;
     }
     paintFor(href, settledState, {
       notePath: response.notePath ?? undefined,
       error: null,
+      blocked: null,
       suggestionCount: suggestionCountAfter,
     });
   } catch (error) {
@@ -1021,8 +1041,10 @@ function reportSyncOutcome(errorMessage: string | null, href: string): void {
   paintFor(href, deriveState({ configured: true, syncing: false, error: null, suggestionCount }), {
     suggestionCount,
     // A real, confirmed success — resolve any error a previous attempt
-    // left behind rather than leaving it retained.
+    // left behind rather than leaving it retained, and the `blocked`
+    // dimension with it (see sendChatSync for why it must be explicit).
     error: null,
+    blocked: null,
   });
 }
 

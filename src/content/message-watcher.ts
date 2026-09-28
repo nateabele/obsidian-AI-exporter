@@ -1,5 +1,5 @@
 /**
- * New-message watcher for the sync-status badge (issue #465, ADR-036).
+ * New-message watcher for the sync icon (issue #465, ADR-036).
  *
  * Answers one question: has the conversation grown past what the last sync
  * covered? On Claude and ChatGPT every turn carries a conversation-wide ordinal
@@ -8,8 +8,12 @@
  * constantly, can only ever surface ordinals at or below it.
  *
  * Platforms without such an ordinal supply no baseline, and this watcher then
- * does nothing at all: a badge that clears itself for a scroll would be worse
+ * does nothing at all: an icon that clears itself for a scroll would be worse
  * than one that lingers.
+ *
+ * Driven from `attachWatermarkWatcher()` in sync-icon.ts. Upstream drove it
+ * from the status badge this fork replaced with the icon (see the fork
+ * amendments on ADR-034/036); the mechanism is unchanged.
  */
 
 import { NEW_MESSAGE_POLL_INTERVAL } from '../lib/constants';
@@ -23,7 +27,9 @@ import type { StopWatching } from './conversation-watcher';
  * from a DOM read after the sync: the auto-scroll pass ends pinned at the top
  * of the conversation, where the newest turn is unmounted.
  *
- * Fires at most once, then stops polling — the badge it invalidates is gone.
+ * Fires at most once, then stops polling: the state it invalidates has been
+ * invalidated, and only the next confirmed sync re-arms it (see
+ * `armWatermarkWatcher` in bootstrap.ts).
  */
 export function startNewMessageWatcher(params: {
   /** Ordinal the sync covered. Null/undefined disarms the watcher entirely. */

@@ -110,17 +110,27 @@ screen, and it stops permanently the first time it fires.
 | `src/content/extractors/claude.ts` | highest mounted `data-index` |
 | `src/content/extractors/chatgpt.ts` | highest mounted `conversation-turn-N` |
 | `src/lib/scroll-manager.ts` | `AccumulateResult.maxOrder` |
-| `src/content/sync-status.ts` | `SyncStatus.messageWatermark` |
-| `src/content/bootstrap.ts` | both watchers share one composed lifetime |
+| `src/content/sync-icon.ts` | `attachWatermarkWatcher()`, the paint it invalidates (fork; was `sync-status.ts`'s `SyncStatus.messageWatermark`) |
+| `src/content/bootstrap.ts` | arms one watcher per confirmed sync; disarms on navigation and teardown |
 
 ## Fork amendment (2026-09-27, upstream 2.14.5 integration)
 
-The mechanism below is unchanged and still the decision of record; only its
+The mechanism above is unchanged and still the decision of record; only its
 consumer moved. The badge it invalidated is gone (see the amendment to
 ADR-034), so `startNewMessageWatcher` is now driven from
 `attachWatermarkWatcher()` in `src/content/sync-icon.ts`, armed by
 `runAutoSync()` on each confirmed send with the watermark **from the extraction
 that was sent**, and it invalidates by painting `attention` with a blocked
 reason (`syncIcon_conversationGrewSinceSync`) rather than by clearing a badge.
-`SyncStatus.messageWatermark` no longer exists; the baseline is passed directly.
-The null-means-no-signal rule for Gemini, Perplexity and Notebook is unchanged.
+`SyncStatus.messageWatermark` no longer exists; the baseline is passed directly,
+and the Files table above has been updated in place to match. The
+null-means-no-signal rule for Gemini, Perplexity and Notebook is unchanged.
+
+Two lifetime details this fork adds, neither contemplated upstream because a
+dismissible badge covered them: the watcher fires **once** and only a confirmed
+send re-arms it, so the paint it invalidates must not be silently re-derived by
+a later quiet tick — `settleIcon()` therefore passes the retained blocked reason
+through `deriveState`, and only a confirmed success clears it (`blocked: null`).
+And because NEW_MESSAGE_POLL_INTERVAL (1 s) is shorter than AUTO_SYNC_DEBOUNCE
+(4 s), the growth normally fires *before* the sync that answers it; that is
+intended, and the explicit clear on success is what keeps it from sticking.

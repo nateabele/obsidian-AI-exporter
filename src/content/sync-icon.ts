@@ -180,11 +180,26 @@ export function getLastError(): string | null {
   return lastError;
 }
 
-// There is deliberately no `getLastBlockedReason()` counterpart to
-// `getLastError()`: `setSyncState` treats an absent `blocked` as "leave the
-// retained reason alone" (see `paintFor`), so a caller deriving a follow-up
-// state never has to read it back to avoid clearing it. One existed and was
-// never called; knip reported it as dead in the 2.14.5 merge.
+/**
+ * The last known blocked reason, as last reported via `setSyncState`, or
+ * `null` once something that actually resolved (a confirmed success) cleared
+ * it. The `blocked` counterpart to `getLastError()`, and needed for the same
+ * reason: a bail-out that derives a follow-up state without it silently
+ * *demotes* an unresolved local blockage, because `deriveState` reads a
+ * missing `blocked` as "nothing is blocking" and falls through to the quiet
+ * `synced` default (see `settleIcon`, which is how a conversation that grew
+ * past its sync could be repainted `synced` by the next quiet tick).
+ *
+ * Retaining it is not enough on its own: `setSyncState` leaves an absent
+ * `blocked` alone, so the reason survives, but the STATE derived alongside it
+ * does not — which is exactly the asymmetry this getter closes.
+ *
+ * This existed in upstream 2.14.5 with no caller at all and was removed as
+ * dead in that merge; it is back because `settleIcon()` now reads it.
+ */
+export function getLastBlockedReason(): string | null {
+  return lastBlockedReason;
+}
 
 // The href of the conversation the retained detail above belongs to, or
 // `null` before any conversation has been established. This is the single
