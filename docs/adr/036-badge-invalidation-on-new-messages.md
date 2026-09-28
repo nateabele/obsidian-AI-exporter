@@ -112,3 +112,15 @@ screen, and it stops permanently the first time it fires.
 | `src/lib/scroll-manager.ts` | `AccumulateResult.maxOrder` |
 | `src/content/sync-status.ts` | `SyncStatus.messageWatermark` |
 | `src/content/bootstrap.ts` | both watchers share one composed lifetime |
+
+## Fork amendment (2026-09-27, upstream 2.14.5 integration)
+
+The mechanism below is unchanged and still the decision of record; only its
+consumer moved. The badge it invalidated is gone (see the amendment to
+ADR-034), so `startNewMessageWatcher` is now driven from
+`attachWatermarkWatcher()` in `src/content/sync-icon.ts`, armed by
+`runAutoSync()` on each confirmed send with the watermark **from the extraction
+that was sent**, and it invalidates by painting `attention` with a blocked
+reason (`syncIcon_conversationGrewSinceSync`) rather than by clearing a badge.
+`SyncStatus.messageWatermark` no longer exists; the baseline is passed directly.
+The null-means-no-signal rule for Gemini, Perplexity and Notebook is unchanged.

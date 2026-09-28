@@ -127,3 +127,15 @@ the failures an absent user needs to still see.
 | `src/content/ui-badge.ts` | Badge and detail panel rendering |
 | `src/content/ui.ts` | `#g2o-sync-anchor`, shared styles |
 | `src/content/bootstrap.ts` | Wiring: badge lifetime and watcher lifetime |
+
+## Fork amendment (2026-09-27, upstream 2.14.5 integration)
+
+This fork ships the seven-state sync **icon** (`src/content/sync-icon.ts`)
+instead of a separate badge: state lives in `data-state` on one button, its
+detail lives in the icon's retained module state (`lastError`,
+`lastBlockedReason`, `lastNotePath`, `lastSuggestionCount`) and is invalidated
+by `paintFor()`'s `contextHref` check rather than by `isStale()`. `ui-badge.ts`
+was therefore removed when 2.14.5 was merged, and `sync-status.ts` — the
+DOM-free status model above, whose every consumer was the badge — with it,
+along with the `badge_*` messages in both locales. What survives of this ADR is
+`conversation-watcher.ts` and the reasoning for it.
