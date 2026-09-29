@@ -48,6 +48,67 @@
   "syncIcon_autoSyncDisabled": {
     "message": "このプラットフォームの自動同期はオフです。「今すぐ同期」で手動同期するか、設定でオンにしてください"
   },
+  "syncIcon_attemptNote": {
+    "message": "前回の試行 $WHEN$: $OUTCOME$（$TRIGGER$）",
+    "placeholders": {
+      "when": {
+        "content": "$1"
+      },
+      "outcome": {
+        "content": "$2"
+      },
+      "trigger": {
+        "content": "$3"
+      }
+    }
+  },
+  "syncIcon_attemptCounts": {
+    "message": "送信 $SENT$ 件 · 追記 $APPENDED$ 件 · 置換 $SUPERSEDED$ 件",
+    "placeholders": {
+      "sent": {
+        "content": "$1"
+      },
+      "appended": {
+        "content": "$2"
+      },
+      "superseded": {
+        "content": "$3"
+      }
+    }
+  },
+  "syncIcon_attemptOutcome_sent": {
+    "message": "同期しました"
+  },
+  "syncIcon_attemptOutcome_noop": {
+    "message": "送信するものはありません"
+  },
+  "syncIcon_attemptOutcome_blocked": {
+    "message": "同期できませんでした"
+  },
+  "syncIcon_attemptOutcome_error": {
+    "message": "失敗しました"
+  },
+  "syncIcon_attemptOutcome_needsFullContent": {
+    "message": "会話全体を再送しています"
+  },
+  "syncIcon_attemptTrigger_mutation": {
+    "message": "ページ更新"
+  },
+  "syncIcon_attemptTrigger_navigation": {
+    "message": "ページ遷移"
+  },
+  "syncIcon_attemptTrigger_manual": {
+    "message": "手動"
+  },
+  "syncIcon_attemptTrigger_repair": {
+    "message": "ソースからの修復"
+  },
+  "syncIcon_notConfigured": {
+    "message": "コンパニオンが未設定です。拡張機能の設定でトークンを追加してください"
+  },
+  "syncIcon_transcriptUnavailable": {
+    "message": "会話を開けませんでした。このノートはまだ作成されていません"
+  },
   "syncIcon_relatedConversations": {
     "message": "関連する会話"
   },

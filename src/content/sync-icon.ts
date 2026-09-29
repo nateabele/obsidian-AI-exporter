@@ -50,6 +50,17 @@ export interface SyncIconHandlers {
   onSyncNow: () => void;
   onOpenPath: (path: string) => void;
   /**
+   * Sync this conversation and then open whatever note the response names,
+   * for the "Open transcript" entry when no sync has reported a path yet
+   * (see `openTranscript`). Required rather than optional — unlike
+   * `onRepair`, which is omitted on a platform that can't support it — since
+   * an absent handler would put that entry straight back into the silent
+   * no-op it exists to fix. Reporting why it couldn't produce a path
+   * (unconfigured, offline, blocked) is the handler's own job: it must never
+   * resolve silently.
+   */
+  onSyncAndOpenTranscript: () => void;
+  /**
    * Repair the current conversation from source (re-import authoritatively
    * via the platform's own API). Optional and omitted entirely — rather
    * than provided as a no-op — on a platform with no working
@@ -134,6 +145,79 @@ let lastBlockedReason: string | null = null;
 let currentSuggestions: ChatSyncResponse['suggestions'] = { transcripts: [], pages: [] };
 
 /**
+ * What set a sync attempt in motion. `'mutation'` is the debounced
+ * MutationObserver tick (today's common case), `'manual'` an icon-menu entry
+ * the user clicked, and `'repair'` the authoritative re-import from the
+ * platform's own API.
+ *
+ * `'navigation'` is deliberately part of the type while NOTHING produces it
+ * yet: navigation-driven auto-sync is a later stage of this feature, and the
+ * question it makes unanswerable — "did this fire because I navigated, or
+ * because the page mutated?" — can only be answered if the record could
+ * already tell the two apart before that trigger existed.
+ */
+export type SyncAttemptTrigger = 'mutation' | 'navigation' | 'manual' | 'repair';
+
+/**
+ * How an attempt ended:
+ * - `'sent'`: reached the companion, which stored something.
+ * - `'noop'`: reached the companion, which had nothing to store.
+ * - `'blocked'`: never left the page — the local-blockage dimension
+ *   `SyncStateInput.blocked` describes (nothing was attempted).
+ * - `'error'`: a genuine transport/companion failure from an attempt that
+ *   did reach the network.
+ * - `'needsFullContent'`: the server asked for every block; retained only
+ *   while that resend is in flight, since the resend's own outcome
+ *   overwrites it.
+ */
+export type SyncAttemptOutcome = 'sent' | 'noop' | 'blocked' | 'error' | 'needsFullContent';
+
+/**
+ * One attempt's record, rendered as a note at the top of the menu (see
+ * `appendAttemptNote`). Deliberately ONE record rather than a log: it is
+ * reset per conversation like the rest of the retained detail below, and a
+ * durable event log is a separate piece of work.
+ */
+export interface LastAttempt {
+  /** `Date.now()` when the attempt resolved. */
+  at: number;
+  trigger: SyncAttemptTrigger;
+  outcome: SyncAttemptOutcome;
+  /** Blocks in the request — 0 for an attempt that never sent one. */
+  sent: number;
+  /**
+   * Blocks the companion actually stored (`ChatSyncResponse.appended`).
+   * `sent` against this is what tells "the companion already had these
+   * messages" from "it stored them all over again", which is the whole
+   * reason the counts are surfaced rather than merely logged.
+   */
+  appended: number;
+  /** Blocks the companion replaced (`ChatSyncResponse.superseded`). */
+  superseded: number;
+  /**
+   * The full failure/blocked text, never truncated — an error that reaches
+   * the user only as a one-line tooltip is the problem this record solves.
+   * `null` when there is nothing to explain.
+   */
+  detail: string | null;
+}
+
+/**
+ * What a call site supplies to `recordSyncAttempt()`: the two things every
+ * attempt knows, plus whichever of the counts/detail it actually has.
+ * `at` is never passed — the recorder stamps it, so no caller can record a
+ * time that isn't the time it recorded.
+ */
+export type SyncAttemptInput = Pick<LastAttempt, 'trigger' | 'outcome'> &
+  Partial<Pick<LastAttempt, 'sent' | 'appended' | 'superseded' | 'detail'>>;
+
+// The last sync attempt for this conversation, or null before one has
+// resolved. Retained detail like the state above — cleared in
+// `setIconContext()`, so an attempt belonging to a previous conversation
+// can never be read as this one's.
+let lastAttempt: LastAttempt | null = null;
+
+/**
  * Record the suggestions returned by the latest sync, for the menu to
  * render on next open. Does not itself repaint anything — call alongside
  * `setSyncState`/`paintFor` with the matching `suggestionCount`.
@@ -201,6 +285,38 @@ export function getLastBlockedReason(): string | null {
   return lastBlockedReason;
 }
 
+/**
+ * Record how a sync attempt resolved, for the menu to render on next open.
+ *
+ * `href` is the conversation the attempt began under and is checked against
+ * the current context exactly like `paintFor()`/`setSuggestions()`: an
+ * attempt for a conversation the user has since navigated away from must not
+ * be read as the current one's. Omitted counts are 0 and an omitted detail
+ * is `null`, so a call site only states what it actually knows.
+ */
+export function recordSyncAttempt(href: string, attempt: SyncAttemptInput): void {
+  if (href !== contextHref) return;
+  lastAttempt = {
+    at: Date.now(),
+    trigger: attempt.trigger,
+    outcome: attempt.outcome,
+    sent: attempt.sent ?? 0,
+    appended: attempt.appended ?? 0,
+    superseded: attempt.superseded ?? 0,
+    detail: attempt.detail ?? null,
+  };
+}
+
+/**
+ * The last recorded sync attempt for the current conversation, or `null` if
+ * none has resolved since the context was established. Read by callers that
+ * need to explain a failure outside the menu — e.g. "Open transcript"
+ * reporting why it could not produce a note path.
+ */
+export function getLastAttempt(): LastAttempt | null {
+  return lastAttempt;
+}
+
 // The href of the conversation the retained detail above belongs to, or
 // `null` before any conversation has been established. This is the single
 // mechanism a stale async result is checked against before it's allowed to
@@ -211,7 +327,7 @@ let contextHref: string | null = null;
 /**
  * Establish (or confirm) the conversation the icon's retained detail
  * belongs to. When `href` differs from the current context, the retained
- * error/note path/suggestion count/suggestion list are cleared — they
+ * error/note path/suggestion count/suggestion list/last attempt are cleared — they
  * described the previous conversation and must not leak into the new one —
  * and every paint captured under the old href becomes a no-op via
  * `paintFor()` from this point on. A no-op when `href` already matches.
@@ -230,6 +346,7 @@ export function setIconContext(href: string): void {
   lastNotePath = null;
   lastSuggestionCount = 0;
   lastBlockedReason = null;
+  lastAttempt = null;
   currentSuggestions = { transcripts: [], pages: [] };
 }
 
@@ -460,6 +577,97 @@ function appendStateNote(menu: HTMLElement, state: SyncIconState): void {
 }
 
 /**
+ * The menu class for an attempt's `detail` line: a genuine failure reads as
+ * an error (red), a local blockage as `attention`'s amber, and anything else
+ * as a plain note — the same three treatments `appendStateNote` uses, so the
+ * attempt record never introduces a fourth look for the same three
+ * meanings.
+ */
+function attemptDetailClass(outcome: SyncAttemptOutcome): string {
+  if (outcome === 'error' || outcome === 'needsFullContent') return 'error-detail';
+  if (outcome === 'blocked') return 'attention-detail';
+  return 'note-detail';
+}
+
+const ATTEMPT_OUTCOME_KEYS: Record<SyncAttemptOutcome, string> = {
+  sent: 'syncIcon_attemptOutcome_sent',
+  noop: 'syncIcon_attemptOutcome_noop',
+  blocked: 'syncIcon_attemptOutcome_blocked',
+  error: 'syncIcon_attemptOutcome_error',
+  needsFullContent: 'syncIcon_attemptOutcome_needsFullContent',
+};
+
+const ATTEMPT_TRIGGER_KEYS: Record<SyncAttemptTrigger, string> = {
+  mutation: 'syncIcon_attemptTrigger_mutation',
+  navigation: 'syncIcon_attemptTrigger_navigation',
+  manual: 'syncIcon_attemptTrigger_manual',
+  repair: 'syncIcon_attemptTrigger_repair',
+};
+
+/**
+ * Append the last attempt's record as non-interactive note lines at the top
+ * of the menu, in the same shape `appendStateNote` uses below it — when it
+ * resolved, what it did, what started it, and (whenever anything was sent)
+ * the sent/appended/superseded counts.
+ *
+ * A no-op before anything has been attempted for this conversation: a menu
+ * claiming an attempt that never happened would be worse than one that says
+ * nothing.
+ *
+ * `detail` is printed in FULL, never truncated — but skipped when
+ * `appendStateNote` is about to print the same sentence verbatim (the usual
+ * case for `offline`/`attention`, whose retained detail IS this attempt's),
+ * since saying it twice makes the menu noisier rather than clearer.
+ */
+function appendAttemptNote(menu: HTMLElement, attempt: LastAttempt): void {
+  appendMenuDetail(
+    menu,
+    'note-detail',
+    getMessage('syncIcon_attemptNote', [
+      new Date(attempt.at).toLocaleTimeString(),
+      getMessage(ATTEMPT_OUTCOME_KEYS[attempt.outcome]),
+      getMessage(ATTEMPT_TRIGGER_KEYS[attempt.trigger]),
+    ])
+  );
+  if (attempt.sent > 0 || attempt.appended > 0 || attempt.superseded > 0) {
+    appendMenuDetail(
+      menu,
+      'note-detail',
+      getMessage('syncIcon_attemptCounts', [
+        String(attempt.sent),
+        String(attempt.appended),
+        String(attempt.superseded),
+      ])
+    );
+  }
+  const { detail } = attempt;
+  if (detail && detail !== lastError && detail !== lastBlockedReason) {
+    appendMenuDetail(menu, attemptDetailClass(attempt.outcome), detail);
+  }
+}
+
+/**
+ * Activate the menu's "Open transcript" entry.
+ *
+ * With a note path from a successful sync in this page session, this is a
+ * plain open. Without one it syncs FIRST and opens whatever note the
+ * response names, because `ChatSyncResponse.notePath` is the only source of
+ * that path — the entry used to pass `''` into a handler that returns early
+ * on a falsy path, so it rendered, was clickable, and did nothing at all.
+ *
+ * Resolving the path locally from the user's vault-path template is
+ * deliberately NOT the fix: it would duplicate logic the server already owns
+ * and the two would drift.
+ */
+function openTranscript(handlers: SyncIconHandlers): void {
+  if (lastNotePath) {
+    handlers.onOpenPath(lastNotePath);
+    return;
+  }
+  handlers.onSyncAndOpenTranscript();
+}
+
+/**
  * Populate the menu's entries for the given state:
  * - `unconfigured`: only "Open settings".
  * - `offline`: the last error plus "Retry".
@@ -475,6 +683,11 @@ function appendStateNote(menu: HTMLElement, state: SyncIconState): void {
  *   omitted so neither can be re-triggered mid-request. `attention` and
  *   `disabled` both fall through to this shared block too — neither
  *   prevents a manual sync, so both still offer it.
+ *
+ * The last attempt's record (see `appendAttemptNote`) precedes all of it,
+ * including in the `unconfigured` case: "nothing was attempted, because
+ * there is no companion token" is exactly the kind of thing the user opened
+ * this menu to find out.
  *
  * Suggestion groups (related transcripts, then related topics) follow the
  * fixed entries, one heading plus one entry per item, each group omitted
@@ -496,6 +709,8 @@ export function buildMenuEntries(
     menu.appendChild(entry);
   };
 
+  if (lastAttempt) appendAttemptNote(menu, lastAttempt);
+
   if (state === 'unconfigured') {
     addEntry(getMessage('syncIcon_openSettings'), handlers.onOpenOptions);
     return;
@@ -508,7 +723,7 @@ export function buildMenuEntries(
   if (state !== 'syncing') {
     addEntry(getMessage('syncIcon_syncNow'), handlers.onSyncNow);
   }
-  addEntry(getMessage('syncIcon_openTranscript'), () => handlers.onOpenPath(lastNotePath ?? ''));
+  addEntry(getMessage('syncIcon_openTranscript'), () => openTranscript(handlers));
   // Omitted while a sync is already in flight, same as "Sync now" above —
   // a repair started mid-sync would race it on the icon's paint state.
   // canRepair() is consulted fresh here (not cached from injectSyncIcon

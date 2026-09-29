@@ -53,6 +53,8 @@ vi.mock('../../src/content/sync-icon', async () => {
     getSuggestionCount: vi.fn(() => 0),
     getLastError: vi.fn(() => null),
     getLastBlockedReason: vi.fn(() => null),
+    recordSyncAttempt: vi.fn(),
+    getLastAttempt: vi.fn(() => null),
     setIconContext: vi.fn(),
     setSuggestions: vi.fn(),
     suggestionCount: vi.fn(() => 0),
@@ -77,6 +79,8 @@ import {
   deriveState,
   getLastError,
   getLastBlockedReason,
+  getLastAttempt,
+  recordSyncAttempt,
   setIconContext,
   setSuggestions,
   suggestionCount,
@@ -340,6 +344,90 @@ describe('content/bootstrap', () => {
 
         await vi.waitFor(() => expect(showErrorToast).toHaveBeenCalled());
         expect(showErrorToast).toHaveBeenCalledWith('Extension context invalidated');
+      });
+    });
+
+    describe('onSyncAndOpenTranscript handler', () => {
+      /**
+       * The real onSyncAndOpenTranscript closure injectSyncIcon() was called
+       * with. A fresh conversation id per test: previousManifest is module
+       * state, so reusing an href another test already synced would make the
+       * sync here a no-op with no note path to open.
+       */
+      async function getHandler(conversationId: string): Promise<() => void> {
+        setGeminiLocation(conversationId);
+        loadFixture(
+          createGeminiConversationDOM([
+            { role: 'user', content: 'Hello Gemini' },
+            { role: 'assistant', content: '<p>Hi there!</p>' },
+          ])
+        );
+        await initialize();
+        return vi.mocked(injectSyncIcon).mock.calls[0][0].onSyncAndOpenTranscript;
+      }
+
+      // vi.clearAllMocks() (test/setup.ts) clears recorded calls but keeps a
+      // queued return value, so a getLastAttempt stub set below would
+      // otherwise leak into the next test's fallback assertion.
+      afterEach(() => {
+        vi.mocked(getLastAttempt).mockReturnValue(null);
+      });
+
+      it('syncs for a path, then opens the note the response names', async () => {
+        mockMessaging({
+          settings: { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] },
+          chatSync: { ...okChatSync, notePath: 'AI/gemini/named-by-the-response.md' },
+        });
+        const onSyncAndOpenTranscript = await getHandler('open-transcript-via-sync');
+
+        onSyncAndOpenTranscript();
+
+        await vi.waitFor(() =>
+          expect(sendMessage).toHaveBeenCalledWith({
+            action: 'openInObsidian',
+            data: { path: 'AI/gemini/named-by-the-response.md' },
+          })
+        );
+      });
+
+      it('reports why it cannot, rather than silently doing nothing', async () => {
+        // Unconfigured, so runAutoSync bails before any request and no
+        // response can name a path. The record that bail-out leaves behind is
+        // what the user gets told.
+        mockMessaging({ settings: { isCompanionConfigured: false } });
+        vi.mocked(getLastAttempt).mockReturnValue({
+          at: Date.now(),
+          trigger: 'manual',
+          outcome: 'blocked',
+          sent: 0,
+          appended: 0,
+          superseded: 0,
+          detail: 'syncIcon_notConfigured',
+        });
+        const onSyncAndOpenTranscript = await getHandler('open-transcript-unconfigured');
+
+        onSyncAndOpenTranscript();
+
+        await vi.waitFor(() =>
+          expect(showErrorToast).toHaveBeenCalledWith('syncIcon_notConfigured')
+        );
+        expect(sendMessage).not.toHaveBeenCalledWith(
+          expect.objectContaining({ action: 'openInObsidian' })
+        );
+      });
+
+      it('falls back to a generic reason when the bail-out left none', async () => {
+        // getLastAttempt/getLastError/getLastBlockedReason are all null here,
+        // which is the one case with nothing specific to say — it must still
+        // say something.
+        mockMessaging({ settings: { isCompanionConfigured: false } });
+        const onSyncAndOpenTranscript = await getHandler('open-transcript-no-reason');
+
+        onSyncAndOpenTranscript();
+
+        await vi.waitFor(() =>
+          expect(showErrorToast).toHaveBeenCalledWith('syncIcon_transcriptUnavailable')
+        );
       });
     });
 
@@ -752,6 +840,99 @@ describe('content/bootstrap', () => {
         stub.restore();
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe('sync attempt records', () => {
+    /** A fresh conversation per test — previousManifest is module state. */
+    function loadConversation(conversationId: string): void {
+      setGeminiLocation(conversationId);
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+    }
+
+    const configured = { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] };
+
+    it('records the trigger and the appended-vs-sent counts of a sync the companion accepted', async () => {
+      loadConversation('attempt-record-sent');
+      mockMessaging({
+        settings: configured,
+        chatSync: { ...okChatSync, appended: 2, superseded: 1 },
+      });
+
+      await runAutoSync();
+
+      expect(recordSyncAttempt).toHaveBeenCalledWith(location.href, {
+        trigger: 'mutation',
+        outcome: 'sent',
+        sent: 2,
+        appended: 2,
+        superseded: 1,
+      });
+    });
+
+    it('records the full failure text when the send fails', async () => {
+      loadConversation('attempt-record-error');
+      mockMessaging({
+        settings: configured,
+        chatSync: { success: false, error: 'network blip' },
+      });
+
+      await runAutoSync();
+
+      expect(recordSyncAttempt).toHaveBeenCalledWith(location.href, {
+        trigger: 'mutation',
+        outcome: 'error',
+        sent: 2,
+        detail: 'network blip',
+      });
+    });
+
+    it('records why nothing was attempted when the companion is not configured', async () => {
+      loadConversation('attempt-record-unconfigured');
+      mockMessaging({ settings: { isCompanionConfigured: false } });
+
+      await runAutoSync();
+
+      expect(recordSyncAttempt).toHaveBeenCalledWith(location.href, {
+        trigger: 'mutation',
+        outcome: 'blocked',
+        detail: 'syncIcon_notConfigured',
+      });
+    });
+
+    it('records a quiet tick as a no-op rather than another send', async () => {
+      loadConversation('attempt-record-noop');
+      mockMessaging({ settings: configured });
+      await runAutoSync();
+      vi.mocked(recordSyncAttempt).mockClear();
+
+      await runAutoSync(); // same DOM, nothing new to send
+
+      expect(recordSyncAttempt).toHaveBeenCalledWith(location.href, {
+        trigger: 'mutation',
+        outcome: 'noop',
+      });
+    });
+
+    it("records 'manual' for a sync the menu started, not 'mutation'", async () => {
+      loadConversation('attempt-record-manual');
+      mockMessaging({ settings: configured });
+      await initialize();
+      const handlers = vi.mocked(injectSyncIcon).mock.calls[0][0];
+
+      handlers.onRetry();
+
+      await vi.waitFor(() =>
+        expect(recordSyncAttempt).toHaveBeenCalledWith(
+          location.href,
+          expect.objectContaining({ trigger: 'manual', outcome: 'sent' })
+        )
+      );
     });
   });
 

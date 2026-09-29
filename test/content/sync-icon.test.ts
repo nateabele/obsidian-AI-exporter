@@ -10,8 +10,10 @@ import {
   setSuggestions,
   suggestionCount,
   buildMenuEntries,
+  recordSyncAttempt,
+  getLastAttempt,
 } from '../../src/content/sync-icon';
-import type { SyncIconHandlers } from '../../src/content/sync-icon';
+import type { SyncIconHandlers, SyncAttemptOutcome } from '../../src/content/sync-icon';
 import { setClaudeLocation, resetLocation } from '../fixtures/dom-helpers';
 
 // `contextHref` is module-level state, shared across every test in this
@@ -76,6 +78,7 @@ function makeHandlers(overrides: Partial<SyncIconHandlers> = {}): SyncIconHandle
     onRetry: vi.fn(),
     onSyncNow: vi.fn(),
     onOpenPath: vi.fn(),
+    onSyncAndOpenTranscript: vi.fn(),
     onRepair: vi.fn(),
     ...overrides,
   };
@@ -334,8 +337,11 @@ describe('setIconContext', () => {
     );
     openTranscript?.dispatchEvent(new Event('click'));
 
-    expect(handlers.onOpenPath).toHaveBeenCalledWith('');
-    expect(handlers.onOpenPath).not.toHaveBeenCalledWith('AI/claude/conversation-a.md');
+    // With no path retained for THIS conversation, the entry syncs to find
+    // one (onSyncAndOpenTranscript) rather than opening anything — and in
+    // particular never the previous conversation's note.
+    expect(handlers.onSyncAndOpenTranscript).toHaveBeenCalledTimes(1);
+    expect(handlers.onOpenPath).not.toHaveBeenCalled();
   });
 
   it('clears the retained blocked reason when the href changes', () => {
@@ -552,10 +558,14 @@ describe('the icon menu', () => {
       'syncIcon_syncFailed'
     );
     // "Open transcript" is second-to-last: "Repair this conversation from
-    // source" (from the default makeHandlers()) follows it.
+    // source" (from the default makeHandlers()) follows it. The stale path
+    // was cleared with the rest of the detail, so the entry syncs for a
+    // fresh one instead of opening the previous conversation's note — and
+    // never passes the empty path that used to make it do nothing at all.
     const entries = Array.from(document.querySelectorAll('#g2o-sync-menu .entry'));
     entries[entries.length - 2].dispatchEvent(new Event('click'));
-    expect(handlers.onOpenPath).toHaveBeenCalledWith('');
+    expect(handlers.onSyncAndOpenTranscript).toHaveBeenCalledTimes(1);
+    expect(handlers.onOpenPath).not.toHaveBeenCalled();
   });
 });
 
@@ -957,5 +967,228 @@ describe('suggestion groups in the menu', () => {
     // Conversation A's suggestion must not leak into B's menu.
     expect(document.querySelectorAll('#g2o-sync-menu .group')).toHaveLength(0);
     expect(document.querySelector('#g2o-sync-menu .entry')?.textContent).not.toBe('A related chat');
+  });
+});
+
+// Drives buildMenuEntries() directly, like the repair-entry block above.
+//
+// `lastAttempt` is module state and setIconContext() is a no-op for an
+// unchanged href, so each test here brackets itself with a real context
+// switch: without that, a record written by one test would still be in the
+// menu of the next one (and its `.error-detail` line would shadow the state
+// note every other test in this file asserts against).
+describe('the last-attempt note in the menu', () => {
+  let menu: HTMLElement;
+
+  function dropAttempt(): void {
+    setIconContext('https://claude.ai/chat/attempt-note-bracket');
+    setIconContext(location.href);
+  }
+
+  /**
+   * Make the i18n stub interpolate instead of returning the bare key, so the
+   * substitutions the note is built from (time, outcome, trigger, counts) are
+   * actually asserted rather than swallowed.
+   */
+  function interpolateMessages(): void {
+    vi.mocked(chrome.i18n.getMessage).mockImplementation((key: string, subs?: string | string[]) =>
+      subs === undefined ? key : `${key}(${(Array.isArray(subs) ? subs : [subs]).join('|')})`
+    );
+  }
+
+  const notes = (): (string | null)[] =>
+    Array.from(menu.querySelectorAll('.note-detail, .error-detail, .attention-detail')).map(
+      e => e.textContent
+    );
+
+  beforeEach(() => {
+    dropAttempt();
+    document.body.innerHTML = '';
+    menu = document.createElement('div');
+    document.body.appendChild(menu);
+  });
+
+  afterEach(() => {
+    dropAttempt();
+    document.body.innerHTML = '';
+    vi.mocked(chrome.i18n.getMessage).mockImplementation((key: string) => key);
+  });
+
+  it('shows nothing before anything has been attempted for this conversation', () => {
+    buildMenuEntries(menu, 'synced', makeHandlers());
+
+    expect(notes()).toEqual([]);
+  });
+
+  it('says when the attempt resolved, how it ended, and what started it', () => {
+    interpolateMessages();
+    recordSyncAttempt(location.href, { trigger: 'mutation', outcome: 'sent', sent: 2 });
+
+    buildMenuEntries(menu, 'synced', makeHandlers());
+
+    // The timestamp is read back off the record rather than hardcoded: the
+    // assertion is that the note renders THIS attempt's time in the user's
+    // own locale, not that the suite runs in any particular time zone.
+    const at = getLastAttempt()?.at ?? 0;
+    expect(notes()[0]).toBe(
+      `syncIcon_attemptNote(${new Date(at).toLocaleTimeString()}` +
+        '|syncIcon_attemptOutcome_sent|syncIcon_attemptTrigger_mutation)'
+    );
+  });
+
+  it('shows the counts, so blocks the companion already had read as not-appended', () => {
+    interpolateMessages();
+    recordSyncAttempt(location.href, {
+      trigger: 'mutation',
+      outcome: 'sent',
+      sent: 141,
+      appended: 0,
+      superseded: 0,
+    });
+
+    buildMenuEntries(menu, 'synced', makeHandlers());
+
+    expect(notes()).toContain('syncIcon_attemptCounts(141|0|0)');
+  });
+
+  it('omits the counts line entirely when nothing was sent', () => {
+    recordSyncAttempt(location.href, { trigger: 'mutation', outcome: 'noop' });
+
+    buildMenuEntries(menu, 'synced', makeHandlers());
+
+    expect(notes()).toEqual(['syncIcon_attemptNote']);
+  });
+
+  it('prints the whole failure detail, never truncated', () => {
+    // The failure this record exists for: a multi-sentence companion error
+    // that previously reached the user only as a one-line title attribute.
+    const detail =
+      'Companion sync failed (500): the listener could not write ' +
+      'AI/claude/a-very-long-conversation-title.md because the vault path ' +
+      'resolved outside the configured root, and the request was refused.';
+    recordSyncAttempt(location.href, { trigger: 'manual', outcome: 'error', sent: 4, detail });
+
+    buildMenuEntries(menu, 'synced', makeHandlers());
+
+    expect(notes()).toContain(detail);
+  });
+
+  it('does not repeat a detail the state note below already prints verbatim', () => {
+    injectSyncIcon(makeHandlers());
+    setSyncState('offline', { error: 'ECONNREFUSED' });
+    menu = document.createElement('div');
+    document.body.appendChild(menu);
+    recordSyncAttempt(location.href, {
+      trigger: 'mutation',
+      outcome: 'error',
+      sent: 2,
+      detail: 'ECONNREFUSED',
+    });
+
+    buildMenuEntries(menu, 'offline', makeHandlers());
+
+    expect(notes().filter(text => text === 'ECONNREFUSED')).toHaveLength(1);
+  });
+
+  it("gives each outcome's detail the same treatment as the state note for that meaning", () => {
+    const expected: Record<SyncAttemptOutcome, string> = {
+      sent: 'note-detail',
+      noop: 'note-detail',
+      blocked: 'attention-detail',
+      error: 'error-detail',
+      needsFullContent: 'error-detail',
+    };
+
+    for (const [outcome, className] of Object.entries(expected) as [SyncAttemptOutcome, string][]) {
+      menu.innerHTML = '';
+      recordSyncAttempt(location.href, { trigger: 'mutation', outcome, detail: `why ${outcome}` });
+
+      buildMenuEntries(menu, 'synced', makeHandlers());
+
+      const line = Array.from(menu.querySelectorAll('div')).find(
+        e => e.textContent === `why ${outcome}`
+      );
+      expect(line?.className, `detail line for ${outcome}`).toBe(className);
+    }
+  });
+
+  it('leads the menu, even while unconfigured — "nothing was attempted, and why" is the answer', () => {
+    recordSyncAttempt(location.href, {
+      trigger: 'mutation',
+      outcome: 'blocked',
+      detail: 'syncIcon_notConfigured',
+    });
+
+    buildMenuEntries(menu, 'unconfigured', makeHandlers());
+
+    expect(Array.from(menu.children).map(child => child.className)).toEqual([
+      'note-detail',
+      'attention-detail',
+      'entry',
+    ]);
+  });
+
+  it('ignores a record for a conversation the user has already navigated away from', () => {
+    recordSyncAttempt('https://claude.ai/chat/somewhere-else', {
+      trigger: 'mutation',
+      outcome: 'error',
+      detail: 'a failure belonging to another conversation',
+    });
+
+    expect(getLastAttempt()).toBeNull();
+  });
+
+  it('is dropped on a conversation switch, like the rest of the retained detail', () => {
+    recordSyncAttempt(location.href, { trigger: 'mutation', outcome: 'error', detail: 'boom' });
+    expect(getLastAttempt()?.detail).toBe('boom');
+
+    setIconContext('https://claude.ai/chat/the-next-conversation');
+
+    expect(getLastAttempt()).toBeNull();
+  });
+});
+
+describe('the "Open transcript" entry', () => {
+  let menu: HTMLElement;
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    menu = document.createElement('div');
+    document.body.appendChild(menu);
+    injectSyncIcon(makeHandlers());
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  const clickOpenTranscript = (handlers: SyncIconHandlers): void => {
+    buildMenuEntries(menu, 'synced', handlers);
+    Array.from(menu.querySelectorAll<HTMLButtonElement>('.entry'))
+      .find(e => e.textContent === 'syncIcon_openTranscript')!
+      .click();
+  };
+
+  it('opens the note a sync reported, without syncing again', () => {
+    setSyncState('synced', { notePath: 'AI/gemini/hello.md' });
+    const handlers = makeHandlers();
+
+    clickOpenTranscript(handlers);
+
+    expect(handlers.onOpenPath).toHaveBeenCalledWith('AI/gemini/hello.md');
+    expect(handlers.onSyncAndOpenTranscript).not.toHaveBeenCalled();
+  });
+
+  it('syncs for a path when none is known, instead of opening nothing at all', () => {
+    // The bug this pins: the entry used to pass `''` to onOpenPath, whose
+    // handler returns early on a falsy path — it rendered, it clicked, and
+    // it did nothing, with no toast and no log.
+    setIconContext('https://claude.ai/chat/never-synced-this-session');
+    const handlers = makeHandlers();
+
+    clickOpenTranscript(handlers);
+
+    expect(handlers.onSyncAndOpenTranscript).toHaveBeenCalledTimes(1);
+    expect(handlers.onOpenPath).not.toHaveBeenCalled();
   });
 });

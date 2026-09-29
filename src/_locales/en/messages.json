@@ -82,6 +82,86 @@
     "message": "Auto-sync is off for this platform — use Sync now to sync manually, or turn it on in settings",
     "description": "Note shown in the sync icon menu's `disabled` state, when the current platform is excluded from autoSyncPlatforms"
   },
+  "syncIcon_attemptNote": {
+    "message": "Last attempt $WHEN$: $OUTCOME$ ($TRIGGER$)",
+    "description": "Note at the top of the sync icon menu: when the last sync attempt resolved, how it ended, and what started it",
+    "placeholders": {
+      "when": {
+        "content": "$1",
+        "example": "2:35:07 PM"
+      },
+      "outcome": {
+        "content": "$2",
+        "example": "synced"
+      },
+      "trigger": {
+        "content": "$3",
+        "example": "page update"
+      }
+    }
+  },
+  "syncIcon_attemptCounts": {
+    "message": "$SENT$ sent · $APPENDED$ appended · $SUPERSEDED$ superseded",
+    "description": "Second line of the sync icon menu's attempt note: how many blocks were sent, stored, and replaced. Sent against appended is what shows whether the companion already had these messages",
+    "placeholders": {
+      "sent": {
+        "content": "$1",
+        "example": "141"
+      },
+      "appended": {
+        "content": "$2",
+        "example": "0"
+      },
+      "superseded": {
+        "content": "$3",
+        "example": "0"
+      }
+    }
+  },
+  "syncIcon_attemptOutcome_sent": {
+    "message": "synced",
+    "description": "Attempt outcome: the companion accepted the request and stored something"
+  },
+  "syncIcon_attemptOutcome_noop": {
+    "message": "nothing new to send",
+    "description": "Attempt outcome: the conversation was unchanged, or the companion had nothing to store"
+  },
+  "syncIcon_attemptOutcome_blocked": {
+    "message": "couldn't sync",
+    "description": "Attempt outcome: nothing was attempted — a local blockage the network was never involved in"
+  },
+  "syncIcon_attemptOutcome_error": {
+    "message": "failed",
+    "description": "Attempt outcome: a genuine transport or companion failure"
+  },
+  "syncIcon_attemptOutcome_needsFullContent": {
+    "message": "resending the full conversation",
+    "description": "Attempt outcome: the companion asked for every block, and that resend has not resolved yet"
+  },
+  "syncIcon_attemptTrigger_mutation": {
+    "message": "page update",
+    "description": "Attempt trigger: the page changed and the background observer fired"
+  },
+  "syncIcon_attemptTrigger_navigation": {
+    "message": "navigation",
+    "description": "Attempt trigger: moving to another conversation started the sync"
+  },
+  "syncIcon_attemptTrigger_manual": {
+    "message": "manual",
+    "description": "Attempt trigger: the user clicked an entry in the sync icon menu"
+  },
+  "syncIcon_attemptTrigger_repair": {
+    "message": "repair from source",
+    "description": "Attempt trigger: an authoritative re-import via the platform's own API"
+  },
+  "syncIcon_notConfigured": {
+    "message": "The companion isn't configured yet — add your token in the extension settings",
+    "description": "Attempt detail recorded when a sync is skipped because no companion token is configured"
+  },
+  "syncIcon_transcriptUnavailable": {
+    "message": "Couldn't open the transcript: no note has been written for this conversation yet",
+    "description": "Error toast when \"Open transcript\" syncs to find the note path and the sync produces none, with no more specific reason available"
+  },
   "syncIcon_relatedConversations": {
     "message": "Related conversations",
     "description": "Sync icon menu group heading: suggested related transcripts"

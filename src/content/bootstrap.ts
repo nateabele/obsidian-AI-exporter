@@ -24,10 +24,13 @@ import {
   getSuggestionCount,
   getLastError,
   getLastBlockedReason,
+  getLastAttempt,
+  recordSyncAttempt,
   setIconContext,
   setSuggestions,
   suggestionCount,
 } from './sync-icon';
+import type { SyncAttemptTrigger } from './sync-icon';
 import type { StopWatching } from './conversation-watcher';
 import { sendMessage, isMultiOutputResponse, describeUnexpectedResponse } from '../lib/messaging';
 import {
@@ -39,6 +42,7 @@ import {
 } from '../lib/constants';
 import type {
   AIPlatform,
+  ChatBackfillResponse,
   ChatSyncBlock,
   ChatSyncRequest,
   ChatSyncResponse,
@@ -284,6 +288,65 @@ function armWatermarkWatcher(href: string, syncedWatermark: number | null): void
 }
 
 /**
+ * Paint `offline` and record the attempt for a sync that resolved as a
+ * genuine failure — the three failure exits of `sendChatSync` below, plus a
+ * failed repair, differ only in their message. Split out both to keep those
+ * functions under the line-count lint limit and so the icon's retained error
+ * and the attempt record can never disagree about what happened.
+ */
+function failSync(href: string, trigger: SyncAttemptTrigger, sent: number, detail: string): void {
+  paintFor(href, 'offline', { error: detail });
+  recordSyncAttempt(href, { trigger, outcome: 'error', sent, detail });
+}
+
+/**
+ * Paint and record a chatSync the companion accepted. Split out of
+ * `sendChatSync` purely to keep it under the line-count lint limit; this is
+ * the one confirmed-success path, and so the only one allowed to clear the
+ * retained error/blocked detail a previous attempt left behind.
+ */
+function settleSyncSuccess(
+  href: string,
+  trigger: SyncAttemptTrigger,
+  sent: number,
+  response: ChatSyncResponse
+): void {
+  // setSuggestions() first so suggestionCount() below reflects this
+  // response, not whatever the previous sync (or conversation) left behind.
+  // Pass href so a slow response for a conversation the user has since left
+  // no-ops instead of clobbering the current conversation's suggestions.
+  setSuggestions(href, response.suggestions);
+  const count = suggestionCount();
+  paintFor(
+    href,
+    deriveState({ configured: true, syncing: false, error: null, suggestionCount: count }),
+    {
+      suggestionCount: count,
+      notePath: response.notePath,
+      // This is a real, confirmed success — resolve any error a previous
+      // attempt left behind, rather than leaving it retained for a later
+      // bail-out to reassert. `blocked` is resolved for the same reason and
+      // must be passed explicitly: `setSyncState` leaves an absent one alone,
+      // so without this the watermark watcher's "the conversation grew"
+      // reason would outlive the very sync that answered it and sit in the
+      // tooltip under a tick for the rest of the conversation.
+      error: null,
+      blocked: null,
+    }
+  );
+  // A `noop` mode is recorded as such rather than as `sent`: the companion
+  // accepted the request and stored nothing, and claiming a write that never
+  // happened is exactly the kind of thing this record exists to catch.
+  recordSyncAttempt(href, {
+    trigger,
+    outcome: response.mode === 'noop' ? 'noop' : 'sent',
+    sent,
+    appended: response.appended,
+    superseded: response.superseded,
+  });
+}
+
+/**
  * Send the chatSync request and update the sync icon to reflect the
  * outcome. Returns the response on success (and advances the manifest
  * baseline), or null on failure — the icon is already left in the
@@ -308,13 +371,15 @@ async function sendChatSync(
   manifest: string[],
   blocks: ChatSyncBlock[],
   href: string,
+  trigger: SyncAttemptTrigger,
   isRetry = false
 ): Promise<ChatSyncResponse | null> {
   paintFor(href, 'syncing');
+  const sent = data.newBlocks.length;
   const response = await sendMessage({ action: 'chatSync', data });
   if ('error' in response) {
     console.warn('[G2O] Auto-sync failed:', response.error);
-    paintFor(href, 'offline', { error: response.error });
+    failSync(href, trigger, sent, response.error);
     return null;
   }
   if (response.mode === 'needsFullContent') {
@@ -322,10 +387,14 @@ async function sendChatSync(
       console.warn(
         '[G2O] Auto-sync failed: server asked for full content twice in the same attempt'
       );
-      paintFor(href, 'offline', { error: getMessage('syncIcon_fullContentLoop') });
+      failSync(href, trigger, sent, getMessage('syncIcon_fullContentLoop'));
       return null;
     }
-    return sendChatSync({ ...data, newBlocks: blocks }, manifest, blocks, href, true);
+    // Recorded before the resend, not instead of it: the resend's own
+    // outcome overwrites this a moment later, so the record only shows
+    // `needsFullContent` when that resend never resolved.
+    recordSyncAttempt(href, { trigger, outcome: 'needsFullContent', sent });
+    return sendChatSync({ ...data, newBlocks: blocks }, manifest, blocks, href, trigger, true);
   }
   // A non-empty `newBlocks` means the client expected the server to append
   // or diverge. A `noop` response to that is not a genuine "nothing
@@ -336,38 +405,16 @@ async function sendChatSync(
   // diffing the next sync against it would skip real content), and surface
   // an error so the user knows to scroll up or run a manual export instead
   // of trusting a silently-green icon.
-  if (data.newBlocks.length > 0 && response.mode === 'noop') {
+  if (sent > 0 && response.mode === 'noop') {
     console.warn('[G2O] Auto-sync stalled: server reported no-op for a non-empty delta');
-    paintFor(href, 'offline', { error: getMessage('syncIcon_syncStalled') });
+    failSync(href, trigger, sent, getMessage('syncIcon_syncStalled'));
     return null;
   }
   // Only advance the baseline on confirmed success: advancing on a failed
   // send would mean the next successful sync diffs against blocks the
   // server never actually received, permanently losing them.
   previousManifest = manifest;
-  // setSuggestions() first so suggestionCount() below reflects this
-  // response, not whatever the previous sync (or conversation) left behind.
-  // Pass href so a slow response for a conversation the user has since left
-  // no-ops instead of clobbering the current conversation's suggestions.
-  setSuggestions(href, response.suggestions);
-  const count = suggestionCount();
-  paintFor(
-    href,
-    deriveState({ configured: true, syncing: false, error: null, suggestionCount: count }),
-    {
-      suggestionCount: count,
-      notePath: response.notePath,
-      // This is a real, confirmed success — resolve any error a previous
-      // attempt left behind, rather than leaving it retained for a later
-      // bail-out to reassert. `blocked` is resolved for the same reason and
-      // must be passed explicitly: `setSyncState` leaves an absent one alone,
-      // so without this the watermark watcher's "the conversation grew"
-      // reason would outlive the very sync that answered it and sit in the
-      // tooltip under a tick for the rest of the conversation.
-      error: null,
-      blocked: null,
-    }
-  );
+  settleSyncSuccess(href, trigger, sent, response);
   return response;
 }
 
@@ -386,7 +433,7 @@ async function sendChatSync(
  * `settleBlocked`, for a bail-out that DOES know something specific went
  * wrong this tick.
  */
-function settleIcon(configured: boolean, href: string): void {
+function settleIcon(configured: boolean, href: string, trigger: SyncAttemptTrigger): void {
   // A bail-out never checked whether the last attempt actually failed, so
   // it must not assert `error: null` — that would silently clear a real,
   // still-unresolved error off the icon (e.g. a failed manual sync,
@@ -411,6 +458,17 @@ function settleIcon(configured: boolean, href: string): void {
       blocked: getLastBlockedReason(),
     })
   );
+  // The bail-outs this serves are two different things to report: an
+  // unchanged manifest genuinely had nothing to send (`noop`), while an
+  // unconfigured companion means nothing was even attempted — and saying so
+  // is what lets "Open transcript" explain itself instead of going quiet
+  // (see `openTranscriptViaSync`).
+  recordSyncAttempt(
+    href,
+    configured
+      ? { trigger, outcome: 'noop' }
+      : { trigger, outcome: 'blocked', detail: getMessage('syncIcon_notConfigured') }
+  );
 }
 
 /**
@@ -427,7 +485,7 @@ function settleIcon(configured: boolean, href: string): void {
  * outrank a same-tick local blockage rather than being silently papered
  * over by it (see `deriveState`'s precedence comment).
  */
-function settleBlocked(href: string, reason: string): void {
+function settleBlocked(href: string, reason: string, trigger: SyncAttemptTrigger): void {
   paintFor(
     href,
     deriveState({
@@ -439,6 +497,7 @@ function settleBlocked(href: string, reason: string): void {
     }),
     { blocked: reason }
   );
+  recordSyncAttempt(href, { trigger, outcome: 'blocked', detail: reason });
 }
 
 /**
@@ -449,7 +508,7 @@ function settleBlocked(href: string, reason: string): void {
  * `syncIcon_autoSyncDisabled`) is fixed, not derived from what happened this
  * tick — so there is nothing here to pass as `detail`.
  */
-function settleDisabled(href: string): void {
+function settleDisabled(href: string, trigger: SyncAttemptTrigger): void {
   paintFor(
     href,
     deriveState({
@@ -460,6 +519,14 @@ function settleDisabled(href: string): void {
       disabled: true,
     })
   );
+  // Recorded as `blocked` carrying the fixed note as its detail: nothing was
+  // attempted, and the menu's own `disabled` note only renders while that
+  // state is still painted — the record has to carry the reason itself.
+  recordSyncAttempt(href, {
+    trigger,
+    outcome: 'blocked',
+    detail: getMessage('syncIcon_autoSyncDisabled'),
+  });
 }
 
 /**
@@ -476,10 +543,10 @@ function settleDisabled(href: string): void {
  * paints, so it reuses `offline` rather than inventing a third failure state
  * for what is, from the user's side, the same "a sync attempt failed" story.
  */
-function settleAutoSyncFailure(href: string, error: unknown): void {
+function settleAutoSyncFailure(href: string, error: unknown, trigger: SyncAttemptTrigger): void {
   const message = extractErrorMessage(error);
   console.error('[G2O] Auto-sync failed:', error);
-  paintFor(href, 'offline', { error: message });
+  failSync(href, trigger, 0, message);
 }
 
 /**
@@ -493,6 +560,56 @@ function settleAutoSyncFailure(href: string, error: unknown): void {
  */
 function isStillCurrent(href: string): boolean {
   return href === location.href;
+}
+
+/**
+ * Paint and record the outcome of a repair the companion answered, returning
+ * whether it actually stored the conversation (what `maybeAutoRepair` reads).
+ * Split out of `repairConversation` purely to keep it under the line-count
+ * lint limit.
+ *
+ * A `skipped` response records as `blocked`, not `error`, for the same reason
+ * it toasts instead of setting the icon's retained error: nothing was
+ * written, but nothing failed either.
+ *
+ * The counts are translated from the backfill response's own vocabulary —
+ * every anchor the server preserved or issued is a block this repair sent,
+ * and the issued ones are what it actually added — so the menu reads the
+ * same way for a repair as for a sync.
+ */
+function settleRepairOutcome(href: string, response: ChatBackfillResponse): boolean {
+  const suggestionCountAfter = getSuggestionCount();
+  const settledState = deriveState({
+    configured: true,
+    syncing: false,
+    error: null,
+    suggestionCount: suggestionCountAfter,
+  });
+  if (response.skipped) {
+    const skipped = getMessage('syncIcon_repairSkipped', [response.skipped]);
+    if (isStillCurrent(href)) showToast(skipped, 'info');
+    paintFor(href, settledState, {
+      error: null,
+      blocked: null,
+      suggestionCount: suggestionCountAfter,
+    });
+    recordSyncAttempt(href, { trigger: 'repair', outcome: 'blocked', detail: skipped });
+    return false;
+  }
+  paintFor(href, settledState, {
+    notePath: response.notePath ?? undefined,
+    error: null,
+    blocked: null,
+    suggestionCount: suggestionCountAfter,
+  });
+  recordSyncAttempt(href, {
+    trigger: 'repair',
+    outcome: 'sent',
+    sent: response.anchorsPreserved + response.anchorsIssued,
+    appended: response.anchorsIssued,
+    superseded: response.superseded,
+  });
+  return true;
 }
 
 /**
@@ -531,40 +648,15 @@ async function repairConversation(href: string, conversationId: string): Promise
     if ('error' in response) {
       console.warn('[G2O] Repair failed:', response.error);
       if (isStillCurrent(href)) showErrorToast(response.error);
-      paintFor(href, 'offline', { error: response.error });
+      failSync(href, 'repair', 0, response.error);
       return false;
     }
-
-    const suggestionCountAfter = getSuggestionCount();
-    const settledState = deriveState({
-      configured: true,
-      syncing: false,
-      error: null,
-      suggestionCount: suggestionCountAfter,
-    });
-    if (response.skipped) {
-      if (isStillCurrent(href)) {
-        showToast(getMessage('syncIcon_repairSkipped', [response.skipped]), 'info');
-      }
-      paintFor(href, settledState, {
-        error: null,
-        blocked: null,
-        suggestionCount: suggestionCountAfter,
-      });
-      return false;
-    }
-    paintFor(href, settledState, {
-      notePath: response.notePath ?? undefined,
-      error: null,
-      blocked: null,
-      suggestionCount: suggestionCountAfter,
-    });
-    return true;
+    return settleRepairOutcome(href, response);
   } catch (error) {
     const message = extractErrorMessage(error);
     console.error('[G2O] Repair failed:', error);
     if (isStillCurrent(href)) showErrorToast(message);
-    paintFor(href, 'offline', { error: message });
+    failSync(href, 'repair', 0, message);
     return false;
   }
 }
@@ -593,7 +685,12 @@ function handleRepairClick(): void {
   const startHref = location.href;
   const conversationId = getExtractor()?.getConversationId();
   if (!conversationId) {
-    paintFor(startHref, 'offline', { error: getMessage('syncIcon_repairNoConversationId') });
+    const reason = getMessage('syncIcon_repairNoConversationId');
+    paintFor(startHref, 'offline', { error: reason });
+    // `blocked`, not `error`: the click never reached the network, it just
+    // had nothing to name. The icon still paints `offline` (unchanged
+    // behaviour) because a repair the user asked for did not happen.
+    recordSyncAttempt(startHref, { trigger: 'repair', outcome: 'blocked', detail: reason });
     return;
   }
   void repairConversation(startHref, conversationId);
@@ -650,13 +747,15 @@ async function sendAndWatch(
   data: ConversationData,
   manifest: string[],
   blocks: ChatSyncBlock[],
-  href: string
+  href: string,
+  trigger: SyncAttemptTrigger
 ): Promise<ChatSyncResponse | null> {
   const response = await sendChatSync(
     buildChatSyncRequest(data, manifest, blocks),
     manifest,
     blocks,
-    href
+    href,
+    trigger
   );
   if (response) armWatermarkWatcher(href, data.messageWatermark ?? null);
   return response;
@@ -756,7 +855,8 @@ async function maybeAutoRepair(
   extractor: IConversationExtractor,
   decision: ManifestSendDecision,
   manifest: string[],
-  href: string
+  href: string,
+  trigger: SyncAttemptTrigger
 ): Promise<boolean> {
   if (!ARCHIVE_SUPPORTED_PLATFORMS.includes(extractor.platform)) return false;
   const conversationId = extractor.getConversationId();
@@ -764,7 +864,7 @@ async function maybeAutoRepair(
 
   if (decision === 'headShifted' && autoRepaired.has(conversationId)) {
     previousManifest = manifest;
-    settleIcon(true, href);
+    settleIcon(true, href, trigger);
     return true;
   }
 
@@ -791,6 +891,13 @@ async function maybeAutoRepair(
  * `initialize()`), debounced by AUTO_SYNC_DEBOUNCE. Only sends an increment
  * when the manifest actually changed, so idle pages and unrelated DOM churn
  * cost nothing beyond a settings read and an extraction.
+ *
+ * `trigger` is recorded alongside the outcome (see `recordSyncAttempt`) and
+ * defaults to `'mutation'`, which is exactly what the debounced observer
+ * callback passes by calling this with no argument at all. An icon-menu entry
+ * the user clicked passes `'manual'` instead, so the menu can answer "did
+ * this fire because of me, or on its own?" rather than leaving the two
+ * indistinguishable.
  */
 // SPAs navigate between conversations without a reload, so a manifest built
 // for the previous conversation must never be sent under the new one's id.
@@ -811,7 +918,9 @@ function establishAutoSyncContext(startHref: string): void {
   }
 }
 
-export async function runAutoSync(): Promise<ChatSyncResponse | null> {
+export async function runAutoSync(
+  trigger: SyncAttemptTrigger = 'mutation'
+): Promise<ChatSyncResponse | null> {
   const startHref = location.href;
   establishAutoSyncContext(startHref);
 
@@ -824,7 +933,7 @@ export async function runAutoSync(): Promise<ChatSyncResponse | null> {
   try {
     const settings = await getSettings();
     if (!settings.isCompanionConfigured) {
-      settleIcon(false, startHref);
+      settleIcon(false, startHref, trigger);
       return null;
     }
 
@@ -840,7 +949,7 @@ export async function runAutoSync(): Promise<ChatSyncResponse | null> {
       // tell those apart, and the harm of wrongly claiming `synced` is worse
       // than the harm of an occasional false `attention`, treat it as
       // blocked rather than assume the benign case.
-      settleBlocked(startHref, getMessage('syncIcon_notOnConversationPage'));
+      settleBlocked(startHref, getMessage('syncIcon_notOnConversationPage'), trigger);
       return null;
     }
     if (!settings.autoSyncPlatforms.includes(extractor.platform)) {
@@ -848,7 +957,7 @@ export async function runAutoSync(): Promise<ChatSyncResponse | null> {
       // user deliberately excluded this platform from auto-sync in
       // settings. Genuinely nothing was attempted, on purpose — that's
       // `disabled`, not `attention`.
-      settleDisabled(startHref);
+      settleDisabled(startHref, trigger);
       return null;
     }
 
@@ -859,25 +968,27 @@ export async function runAutoSync(): Promise<ChatSyncResponse | null> {
     extractor.applySettings({ ...settings, enableAutoScroll: false });
     const result = await extractor.extract();
     if (!result.data) {
-      settleBlocked(startHref, extractionFailureReason(result));
+      settleBlocked(startHref, extractionFailureReason(result), trigger);
       return null;
     }
 
     const { manifest, blocks } = buildManifest(result.data.messages);
     const manifestDecision = decideManifestSend(manifest);
     if (manifestDecision === 'unchanged') {
-      settleIcon(true, startHref);
+      settleIcon(true, startHref, trigger);
       return null;
     }
-    if (await maybeAutoRepair(extractor, manifestDecision, manifest, startHref)) return null;
+    if (await maybeAutoRepair(extractor, manifestDecision, manifest, startHref, trigger)) {
+      return null;
+    }
     if (manifestDecision === 'windowed' || manifestDecision === 'headShifted') {
-      settleBlocked(startHref, getMessage('syncIcon_syncStalled'));
+      settleBlocked(startHref, getMessage('syncIcon_syncStalled'), trigger);
       return null;
     }
 
-    return await sendAndWatch(result.data, manifest, blocks, startHref);
+    return await sendAndWatch(result.data, manifest, blocks, startHref, trigger);
   } catch (error) {
-    settleAutoSyncFailure(startHref, error);
+    settleAutoSyncFailure(startHref, error, trigger);
     return null;
   } finally {
     autoSyncInFlight = false;
@@ -900,6 +1011,77 @@ export function startContentScript(): void {
   } else {
     startInit();
   }
+}
+
+/**
+ * Open `path` in Obsidian through the companion, reporting a failure as an
+ * error toast. A falsy path is ignored: the menu's suggestion entries always
+ * carry one, so nothing to open means nothing to say.
+ *
+ * sendMessage() resolves (never rejects) for both real failure modes — a
+ * thrown fetch (companion offline) and a validation/404 response are both
+ * turned into a resolved `{ success: false, error }` by the service worker's
+ * listener — so the resolved value, not just a rejection, must be inspected
+ * to surface a failed open.
+ */
+function openNoteInObsidian(path: string): void {
+  if (!path) return;
+  void sendMessage({ action: 'openInObsidian', data: { path } })
+    .then(response => {
+      if (!response.success) {
+        console.error('[G2O] Failed to open note in Obsidian:', response.error);
+        showErrorToast(response.error);
+      }
+    })
+    .catch(error => {
+      console.error('[G2O] Failed to open note in Obsidian:', error);
+      showErrorToast(extractErrorMessage(error));
+    });
+}
+
+/**
+ * Why the sync just run could not name a note to open. Prefers the record the
+ * attempt itself left behind — every bail-out in `runAutoSync` writes one —
+ * then the icon's retained error/blocked detail, and only then a generic
+ * message: a reason the user can act on beats a correct but useless one.
+ */
+function transcriptUnavailableReason(): string {
+  return (
+    getLastAttempt()?.detail ??
+    getLastError() ??
+    getLastBlockedReason() ??
+    getMessage('syncIcon_transcriptUnavailable')
+  );
+}
+
+/**
+ * Handle the icon menu's "Open transcript" entry when no sync in this page
+ * session has reported a note path (`SyncIconHandlers.onSyncAndOpenTranscript`).
+ *
+ * `ChatSyncResponse.notePath` is the only thing that knows where the note
+ * lives, so the honest reading of "open THIS conversation" is to sync first
+ * and open whatever the response names. Resolving the path locally from the
+ * vault-path template is deliberately not the fix — it would duplicate
+ * server-side logic and the two would drift.
+ *
+ * Whatever prevents a path from existing (an unconfigured companion, a failed
+ * send, a blocked extraction) is reported through the same error toast a
+ * failed open uses. It must never resolve silently: the entry used to pass
+ * `''` into a handler that returns early on a falsy path, so it rendered, it
+ * clicked, and it did nothing at all.
+ */
+async function openTranscriptViaSync(): Promise<void> {
+  const startHref = location.href;
+  const response = await runAutoSync('manual');
+  // An in-app navigation mid-sync means the user is no longer looking at the
+  // conversation whose transcript they asked for: opening it now would take
+  // them somewhere they didn't ask to go, and a toast about it would be noise.
+  if (!isStillCurrent(startHref)) return;
+  if (response?.notePath) {
+    openNoteInObsidian(response.notePath);
+    return;
+  }
+  showErrorToast(transcriptUnavailableReason());
 }
 
 /**
@@ -927,31 +1109,14 @@ export async function initialize(): Promise<void> {
   await waitForConversationContainer();
 
   // Apply throttle to sync handler (NEW-06)
-  const throttledSyncNow = throttle(() => void runAutoSync(), EVENT_THROTTLE_DELAY);
+  const throttledSyncNow = throttle(() => void runAutoSync('manual'), EVENT_THROTTLE_DELAY);
   injectSyncIcon({
     onOpenOptions: () =>
       showToast('Open the extension icon in the toolbar to add your companion token', 'info'),
-    onRetry: () => void runAutoSync(),
+    onRetry: () => void runAutoSync('manual'),
     onSyncNow: () => throttledSyncNow(),
-    onOpenPath: path => {
-      if (!path) return;
-      // sendMessage() resolves (never rejects) for both real failure modes —
-      // a thrown fetch (companion offline) and a validation/404 response are
-      // both turned into a resolved `{ success: false, error }` by the
-      // service worker's listener — so the resolved value, not just a
-      // rejection, must be inspected to surface a failed open.
-      void sendMessage({ action: 'openInObsidian', data: { path } })
-        .then(response => {
-          if (!response.success) {
-            console.error('[G2O] Failed to open note in Obsidian:', response.error);
-            showErrorToast(response.error);
-          }
-        })
-        .catch(error => {
-          console.error('[G2O] Failed to open note in Obsidian:', error);
-          showErrorToast(extractErrorMessage(error));
-        });
-    },
+    onOpenPath: openNoteInObsidian,
+    onSyncAndOpenTranscript: () => void openTranscriptViaSync(),
     // Only offered on a platform with a working ArchiveAdapter —
     // ARCHIVE_SUPPORTED_PLATFORMS doesn't change for the life of this
     // content-script instance, unlike the conversation id itself. Omitted
@@ -979,7 +1144,10 @@ export async function initialize(): Promise<void> {
   // DOM continuously, and a leading-edge throttle would sync the first
   // partial token as if it were the finished message.
   stopAutoSync();
-  const debounced = debounce(runAutoSync, AUTO_SYNC_DEBOUNCE);
+  // Wrapped rather than passed directly now that runAutoSync takes a trigger:
+  // debounce() forwards its own arguments, and the observer callback has none
+  // to give — being explicit here keeps the recorded trigger honest.
+  const debounced = debounce(() => void runAutoSync('mutation'), AUTO_SYNC_DEBOUNCE);
   debouncedAutoSync = debounced;
   autoSyncObserver = new MutationObserver(records => {
     // Never let our own icon repaint retrigger a sync -- see
@@ -1102,7 +1270,7 @@ function displaySaveResults(
 function reportSyncOutcome(errorMessage: string | null, href: string): void {
   if (autoSyncInFlight) return;
   if (errorMessage) {
-    paintFor(href, 'offline', { error: errorMessage });
+    failSync(href, 'manual', 0, errorMessage);
     return;
   }
   const suggestionCount = getSuggestionCount();
@@ -1114,6 +1282,11 @@ function reportSyncOutcome(errorMessage: string | null, href: string): void {
     error: null,
     blocked: null,
   });
+  // No counts: this path writes the whole note through saveToOutputs rather
+  // than sending blocks to the companion, so there is no sent/appended split
+  // to report — recording zeros would be honest but `appendAttemptNote` omits
+  // the counts line entirely, which says the same thing more quietly.
+  recordSyncAttempt(href, { trigger: 'manual', outcome: 'sent' });
 }
 
 /**
