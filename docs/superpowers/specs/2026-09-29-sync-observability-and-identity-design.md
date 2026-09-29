@@ -16,12 +16,45 @@ cross-producer alignment tiers failed:
 | tier | why it failed |
 |---|---|
 | 1 — `source_id` | live ChatGPT blocks carry **0** source ids; backfill carries **9,317 / 9,317** |
-| 3 — exact text | the DOM extractor drops the `- ` bullet prefixes the API markdown carries |
-| 4 — exact suffix | `blockAlignment.js:229,235` require one text to *be* a suffix of the other; bullet divergence is mid-text |
+| 3 — exact text | **one character.** See below. |
+| 4 — exact suffix | `blockAlignment.js:229,235` require one text to *be* a suffix of the other; the divergence is mid-text |
 
-The duplicates are **not** byte-identical — they differ by exactly the bullet
-markers that broke alignment — so the duplicate report cannot see them. The
-safety net does not cover this failure mode.
+**Corrected 2026-09-29, after measurement.** This spec originally asserted that
+tier 3 failed because the DOM extractor drops the `- ` bullet prefixes the API
+markdown carries. **That was wrong.** Bullet counts are identical on both
+copies (4 and 4), and `normalizeForIdentity` already collapses `[ \t]+ → ' '`.
+
+Running the real `normalizeForIdentity` (not a reimplementation of it) against
+the real rows:
+
+```
+m-12 vs m-142   normalized 1621 vs 1622   ← ONE character
+  @1464  backfill "practices.\n\n"   live "practices.\n\n\n"
+m-18 vs m-143   normalized 1768 vs 1769
+  @1425  backfill "farmers.\n\n"     live "farmers.\n\n\n"
+```
+
+The raw live markdown carries a whitespace-only line where backfill has none.
+Normalization trims each line, turning that into an empty line — so the live
+copy ends up with three consecutive newlines where backfill has two. Tier 3
+misses on blank-line count alone.
+
+**Consequence for this spec's priorities:** collapsing `\n{3,}` → `\n\n` in
+`normalizeForIdentity` makes both pairs exact tier-3 matches. That one line is
+the actual fix. `sourceId` (§6) remains worth doing — tier 1 is strictly
+stronger than text comparison, and it is the only tier immune to *any* future
+whitespace or rendering drift — but it is **not** what broke these, and this
+spec should not have implied it was.
+
+A corpus scan by the concurrent session (14,073 live blocks, 2,185
+conversations, 36,300 same-role pairs, word-5-shingle Jaccard) found exactly
+**2** cross-producer near-duplicate pairs — both of these, both J=1.0, both
+closed by the collapse. Thirteen same-producer pairs at J≥0.98 are genuine
+repeats (resent prompts), so similarity alone must not be the duplicate signal;
+**cross-producer is the discriminator**.
+
+The duplicates are **not** byte-identical, so the duplicate report cannot see
+them. The safety net does not cover this failure mode.
 
 **Why that gates a feature.** Request 2 (auto-sync on navigation) is the same
 code path that produced the duplicates. Shipping it before tier 1 works would
