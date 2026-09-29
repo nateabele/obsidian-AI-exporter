@@ -146,15 +146,14 @@ let currentSuggestions: ChatSyncResponse['suggestions'] = { transcripts: [], pag
 
 /**
  * What set a sync attempt in motion. `'mutation'` is the debounced
- * MutationObserver tick (today's common case), `'manual'` an icon-menu entry
+ * MutationObserver tick, `'navigation'` an SPA move to another conversation
+ * (`attachNavigationWatcher()` in bootstrap.ts), `'manual'` an icon-menu entry
  * the user clicked, and `'repair'` the authoritative re-import from the
  * platform's own API.
  *
- * `'navigation'` is deliberately part of the type while NOTHING produces it
- * yet: navigation-driven auto-sync is a later stage of this feature, and the
- * question it makes unanswerable — "did this fire because I navigated, or
- * because the page mutated?" — can only be answered if the record could
- * already tell the two apart before that trigger existed.
+ * The distinction earns its keep on the two background triggers: "did this
+ * fire because I navigated, or because the page mutated?" is unanswerable
+ * from the outcome alone, and both write the same kind of record.
  */
 export type SyncAttemptTrigger = 'mutation' | 'navigation' | 'manual' | 'repair';
 

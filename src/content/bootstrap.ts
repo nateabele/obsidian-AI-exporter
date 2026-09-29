@@ -31,6 +31,7 @@ import {
   suggestionCount,
 } from './sync-icon';
 import type { SyncAttemptTrigger } from './sync-icon';
+import { startConversationWatcher } from './conversation-watcher';
 import type { StopWatching } from './conversation-watcher';
 import { sendMessage, isMultiOutputResponse, describeUnexpectedResponse } from '../lib/messaging';
 import {
@@ -240,6 +241,11 @@ let debouncedAutoSync: (((...args: unknown[]) => void) & { cancel: () => void })
 // `runAutoSync()` call that started it: it exists to invalidate what that call
 // painted, once the conversation grows past it (issues #465/#468).
 let stopWatermarkWatcher: StopWatching | null = null;
+// Stops the navigation watcher attached by `initialize()`, or null when none
+// is attached. Module-level for the same reason as the observer above: a
+// re-run of initialize() must replace the previous watcher rather than leave a
+// second interval polling for the life of the page (issue #458).
+let stopNavigationWatcher: StopWatching | null = null;
 
 /**
  * Stop the continuous auto-sync observer, if one is attached.
@@ -256,6 +262,13 @@ export function stopAutoSync(): void {
   debouncedAutoSync?.cancel();
   debouncedAutoSync = null;
   stopWatermarkWatch();
+  stopNavigationWatch();
+}
+
+/** Disarm the navigation watcher, if one is attached. Safe to call repeatedly. */
+function stopNavigationWatch(): void {
+  stopNavigationWatcher?.();
+  stopNavigationWatcher = null;
 }
 
 /** Disarm the watermark watcher, if one is armed. Safe to call repeatedly. */
@@ -918,6 +931,48 @@ function establishAutoSyncContext(startHref: string): void {
   }
 }
 
+/** The conversation id the page carries right now, or null off a conversation. */
+function currentConversationKey(): string | null {
+  return getExtractor()?.getConversationId() ?? null;
+}
+
+/**
+ * Attach the watcher that makes an SPA navigation *cause* a sync.
+ *
+ * `establishAutoSyncContext` above only ever *reconciled* a navigation with
+ * whatever sync happened next, and the sole trigger was the debounced
+ * MutationObserver — so navigating to a conversation that then sat still
+ * produced no sync and no icon update at all (spec section 7, issue #458).
+ *
+ * An additional trigger, not a replacement for that reconciliation: a
+ * navigation landing while a previous run is still in flight is dropped here
+ * by `autoSyncInFlight`, and picked up by the next run's own
+ * `establishAutoSyncContext` regardless.
+ *
+ * Re-attached, never stacked — the previous watcher is stopped first, since a
+ * second interval for the same signal would poll for the life of the page.
+ */
+function attachNavigationWatcher(): void {
+  stopNavigationWatch();
+  stopNavigationWatcher = startConversationWatcher({
+    // Read once at attach time, which in `initialize()` is the same moment the
+    // icon's context was set for this href — so the first tick reports a
+    // genuine move away from the conversation the state belongs to, not the
+    // page it was already on.
+    initialKey: currentConversationKey(),
+    getKey: currentConversationKey,
+    onChanged: key => {
+      // A null key is a page with no conversation behind it (Gemini's bare
+      // `/app`, a brand-new ChatGPT chat before its URL gains an id): there is
+      // nothing to extract, so syncing would only settle the icon as blocked.
+      // The watcher still records the null, so navigating on FROM such a page
+      // is a change and fires normally.
+      if (key === null) return;
+      void runAutoSync('navigation');
+    },
+  });
+}
+
 export async function runAutoSync(
   trigger: SyncAttemptTrigger = 'mutation'
 ): Promise<ChatSyncResponse | null> {
@@ -1159,7 +1214,11 @@ export async function initialize(): Promise<void> {
     debounced();
   });
   autoSyncObserver.observe(getObservationRoot(), { childList: true, subtree: true });
-  console.info('[G2O] Auto-sync observer attached');
+  // Mutations are not the only thing that should start a sync: an SPA move to
+  // another conversation need not mutate the observed root at all, so without
+  // this a conversation that sits still after navigation never syncs.
+  attachNavigationWatcher();
+  console.info('[G2O] Auto-sync observer and navigation watcher attached');
 }
 
 /**

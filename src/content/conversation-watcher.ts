@@ -1,13 +1,11 @@
 /**
  * Conversation-change watcher (issue #458, ADR-034).
  *
- * Currently has no caller in src/: it was written for the status badge this
- * fork replaced with the sync icon, and navigation is handled instead by
- * `establishAutoSyncContext()` in bootstrap.ts, which resets the icon's
- * context off the same DOM mutations that already drive auto-sync. Kept rather
- * than deleted because the repair worker wants exactly this signal; if that
- * does not land, delete it — knip cannot report it, since every test file is
- * an entry (ADR-015).
+ * Drives navigation-driven auto-sync from `attachNavigationWatcher()` in
+ * bootstrap.ts: an SPA move between conversations is a sync trigger of its own,
+ * not merely something `establishAutoSyncContext()` reconciles the next time
+ * the DOM happens to mutate. There is exactly one watcher per page — a second
+ * interval for the same signal would poll for the life of the tab.
  *
  * Polls `location.href` and reports when the *conversation* behind it changed.
  * See CONVERSATION_POLL_INTERVAL for why this is a poll and not an event.

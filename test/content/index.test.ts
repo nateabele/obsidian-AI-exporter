@@ -17,6 +17,7 @@ import {
   setClaudeLocation,
   setChatGPTLocation,
   setNonGeminiLocation,
+  defineLocation,
   resetLocation,
 } from '../fixtures/dom-helpers';
 
@@ -61,6 +62,21 @@ vi.mock('../../src/content/sync-icon', async () => {
   };
 });
 
+vi.mock('../../src/content/conversation-watcher', async importOriginal => {
+  // Wrapped around the REAL watcher rather than stubbed: the navigation tests
+  // need its actual href/id comparison to decide when to fire, while the
+  // teardown test needs to see that bootstrap called the stop function it was
+  // handed back — so that stop is itself a spy. A stub would pin neither.
+  const actual = await importOriginal<typeof import('../../src/content/conversation-watcher')>();
+  return {
+    ...actual,
+    startConversationWatcher: vi.fn(
+      (params: Parameters<typeof actual.startConversationWatcher>[0]) =>
+        vi.fn(actual.startConversationWatcher(params))
+    ),
+  };
+});
+
 vi.mock('../../src/lib/messaging', async importOriginal => ({
   ...(await importOriginal<typeof import('../../src/lib/messaging')>()),
   sendMessage: vi.fn(),
@@ -87,7 +103,8 @@ import {
 } from '../../src/content/sync-icon';
 import { sendMessage } from '../../src/lib/messaging';
 import { fetchConversationForRepair } from '../../src/content/archive/discover';
-import { AUTO_SYNC_DEBOUNCE } from '../../src/lib/constants';
+import { startConversationWatcher } from '../../src/content/conversation-watcher';
+import { AUTO_SYNC_DEBOUNCE, CONVERSATION_POLL_INTERVAL } from '../../src/lib/constants';
 import type {
   ChatSyncRequest,
   ChatSyncResponse,
@@ -838,6 +855,151 @@ describe('content/bootstrap', () => {
         expect(chatSyncCalls).toHaveLength(0);
       } finally {
         stub.restore();
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe('auto-sync (navigation watcher)', () => {
+    /** The chatSync requests sent so far. */
+    function chatSyncCalls(): unknown[] {
+      return vi
+        .mocked(sendMessage)
+        .mock.calls.filter(([message]) => (message as { action: string }).action === 'chatSync');
+    }
+
+    /** A fresh conversation per test — previousManifest is module state. */
+    function loadConversation(conversationId: string): void {
+      setGeminiLocation(conversationId);
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+    }
+
+    const configured = { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] };
+
+    it('syncs a conversation it was navigated to, with no DOM mutation at all', async () => {
+      vi.useFakeTimers();
+      try {
+        loadConversation('aaa111');
+        mockMessaging({ settings: configured });
+        await initialize();
+        // Nothing has synced yet: initialize() attaches the triggers, it does
+        // not fire one.
+        expect(chatSyncCalls()).toHaveLength(0);
+
+        // Navigation ONLY: the URL moves to another conversation and the DOM is
+        // left byte-identical, so nothing the MutationObserver watches happens.
+        setGeminiLocation('bbb222');
+        await vi.advanceTimersByTimeAsync(CONVERSATION_POLL_INTERVAL);
+
+        expect(chatSyncCalls()).toHaveLength(1);
+        expect(recordSyncAttempt).toHaveBeenCalledWith(
+          location.href,
+          expect.objectContaining({ trigger: 'navigation' })
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not sync when navigation lands on a page with no conversation', async () => {
+      vi.useFakeTimers();
+      try {
+        loadConversation('ccc333');
+        mockMessaging({ settings: configured });
+        await initialize();
+
+        // Gemini's bare /app. An extractor still exists here and canExtract()
+        // is still true (it only re-checks the hostname), so the null
+        // conversation id is the only thing that can stop the sync.
+        defineLocation('gemini.google.com', '/app');
+        await vi.advanceTimersByTimeAsync(CONVERSATION_POLL_INTERVAL * 3);
+
+        expect(chatSyncCalls()).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('stops the navigation watcher on teardown', async () => {
+      vi.useFakeTimers();
+      try {
+        loadConversation('ddd444');
+        mockMessaging({ settings: configured });
+        await initialize();
+
+        stopAutoSync();
+
+        // Pinned on the stop function bootstrap was actually handed back, not
+        // merely on the absence of a later sync: a stop call that was never
+        // wired up passed this entire suite once already.
+        expect(vi.mocked(startConversationWatcher).mock.results[0].value).toHaveBeenCalledTimes(1);
+
+        setGeminiLocation('eee555');
+        await vi.advanceTimersByTimeAsync(CONVERSATION_POLL_INTERVAL * 3);
+        expect(chatSyncCalls()).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('drops a navigation that arrives while a sync is still in flight', async () => {
+      vi.useFakeTimers();
+      try {
+        loadConversation('ccc888');
+        let releaseSync: (response: ChatSyncResponse) => void = () => {};
+        vi.mocked(sendMessage).mockImplementation(message => {
+          switch ((message as { action: string }).action) {
+            case 'getSettings':
+              return Promise.resolve({ ...baseSettings, ...configured });
+            case 'chatSync':
+              return new Promise<ChatSyncResponse>(resolve => {
+                releaseSync = resolve;
+              });
+            default:
+              return Promise.reject(new Error('unexpected action'));
+          }
+        });
+        await initialize();
+
+        // A sync parked on its chatSync round trip, so autoSyncInFlight is set.
+        const inFlight = runAutoSync('manual');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(chatSyncCalls()).toHaveLength(1);
+
+        setGeminiLocation('ccc999');
+        await vi.advanceTimersByTimeAsync(CONVERSATION_POLL_INTERVAL);
+
+        // The navigation must not race previousManifest with the run that owns
+        // it; the next mutation re-triggers once this one finishes.
+        expect(chatSyncCalls()).toHaveLength(1);
+        releaseSync(okChatSync);
+        await inFlight;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('replaces the previous watcher instead of stacking a second interval', async () => {
+      vi.useFakeTimers();
+      try {
+        loadConversation('fff666');
+        mockMessaging({ settings: configured });
+        await initialize();
+        await initialize();
+
+        expect(startConversationWatcher).toHaveBeenCalledTimes(2);
+        expect(vi.mocked(startConversationWatcher).mock.results[0].value).toHaveBeenCalledTimes(1);
+
+        // One watcher left running, so one sync — not two.
+        setGeminiLocation('fff777');
+        await vi.advanceTimersByTimeAsync(CONVERSATION_POLL_INTERVAL);
+        expect(chatSyncCalls()).toHaveLength(1);
+      } finally {
         vi.useRealTimers();
       }
     });
