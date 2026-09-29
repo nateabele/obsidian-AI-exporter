@@ -3,6 +3,7 @@ import {
   extractIdSuffix,
   lookupExistingFile,
   buildAppendContent,
+  FRONTMATTER_SCAN_MAX_CANDIDATES,
 } from '../../src/lib/append-utils';
 import type { ObsidianNote, ExtensionSettings, NoteFrontmatter } from '../../src/lib/types';
 
@@ -256,6 +257,130 @@ describe('lookupExistingFile', () => {
     // getFile must have been called exactly once (the direct check at step 1).
     expect(mockClient.getFile).toHaveBeenCalledTimes(1);
     expect(result.found).toBe(false);
+  });
+
+  // ----- Unsuffixed (human-readable) filenames: frontmatter-verify fallback -----
+
+  it('still narrows by id suffix and never opens every file when the filename has a suffix', async () => {
+    // Cheap path regression guard: with a suffix present, only the suffix-matching
+    // file should ever be opened, even when the folder has many other candidates.
+    mockClient.getFile.mockResolvedValueOnce(null); // direct miss
+    mockClient.listFiles.mockResolvedValue([
+      'unrelated-one.md',
+      'unrelated-two.md',
+      'old-title-abc12345.md', // the only name ending in -abc12345.md
+      'unrelated-three.md',
+    ]);
+    mockClient.getFile.mockResolvedValueOnce('---\nid: claude_abc-def-123\n---\nBody');
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/my-chat-abc12345.md',
+      'AI/claude',
+      testNote
+    );
+
+    expect(result.found).toBe(true);
+    expect(result.matchType).toBe('id-scan');
+    // Direct check + exactly one suffix-matching candidate — never the other 3 files.
+    expect(mockClient.getFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('finds an existing note by frontmatter id when the filename has no id suffix', async () => {
+    const unsuffixedNote = createTestNote({ fileName: 'Test Conversation.md' });
+    const existingContent = '---\nid: claude_test-id\n---\nBody';
+
+    mockClient.getFile.mockResolvedValueOnce(null); // direct miss
+    mockClient.listFiles.mockResolvedValue([
+      'Unrelated Note.md',
+      'Old Test Conversation.md', // pre-retitle name; still shares every title word
+      'Another Note.md',
+    ]);
+    // Ranked first (full title-token overlap), so it's the first (and only) read.
+    mockClient.getFile.mockResolvedValueOnce(existingContent);
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/Test Conversation.md',
+      'AI/claude',
+      unsuffixedNote
+    );
+
+    expect(result.found).toBe(true);
+    expect(result.matchType).toBe('frontmatter-scan');
+    expect(result.path).toBe('AI/claude/Old Test Conversation.md');
+    expect(mockClient.getFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns a distinguishable not-found result when no unsuffixed candidate matches', async () => {
+    const unsuffixedNote = createTestNote({ fileName: 'Test Conversation.md' });
+
+    mockClient.getFile.mockResolvedValueOnce(null); // direct miss
+    mockClient.listFiles.mockResolvedValue(['Some Other Chat.md', 'Yet Another Chat.md']);
+    mockClient.getFile.mockResolvedValue('---\nid: not-a-match\n---\nBody');
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/Test Conversation.md',
+      'AI/claude',
+      unsuffixedNote
+    );
+
+    expect(result.found).toBe(false);
+    expect(result.matchType).toBe('none');
+    // A real (if unsuccessful) scan happened — not a silent skip.
+    expect(mockClient.getFile).toHaveBeenCalledTimes(1 + 2);
+  });
+
+  it('caps the number of frontmatter reads during an unsuffixed scan', async () => {
+    const unsuffixedNote = createTestNote({ fileName: 'Test Conversation.md' });
+    // None of these share a title token with "Test Conversation", so ranking leaves
+    // them in listing order and every one is an equally-plausible candidate.
+    const files = Array.from(
+      { length: FRONTMATTER_SCAN_MAX_CANDIDATES + 5 },
+      (_, i) => `file-${i}.md`
+    );
+
+    mockClient.getFile.mockResolvedValueOnce(null); // direct miss
+    mockClient.listFiles.mockResolvedValue(files);
+    mockClient.getFile.mockResolvedValue('---\nid: not-a-match\n---\nBody');
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/Test Conversation.md',
+      'AI/claude',
+      unsuffixedNote
+    );
+
+    expect(result.found).toBe(false);
+    // 1 direct GET + exactly the capped number of fallback GETs — never all 45 files.
+    expect(mockClient.getFile).toHaveBeenCalledTimes(1 + FRONTMATTER_SCAN_MAX_CANDIDATES);
+  });
+
+  it('finds a retitled note across a date-rollover folder when the filename has no id suffix', async () => {
+    // Save target: AI/claude/2026/06/Test Conversation.md (June)
+    // Existing file lives in AI/claude/2026/05/Old Title.md (May), retitled since.
+    const unsuffixedNote = createTestNote({ fileName: 'Test Conversation.md' });
+    const existingContent = '---\nid: claude_test-id\n---\nBody';
+
+    mockClient.getFile.mockResolvedValueOnce(null); // direct miss (June folder)
+    mockClient.listEntries.mockResolvedValueOnce(['2026/']);
+    mockClient.listEntries.mockResolvedValueOnce(['05/', '06/']);
+    mockClient.listEntries.mockResolvedValueOnce(['Old Title.md']); // May folder
+    mockClient.listEntries.mockResolvedValueOnce([]); // June folder, empty so far
+    mockClient.getFile.mockResolvedValueOnce(existingContent);
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/2026/06/Test Conversation.md',
+      'AI/claude/2026/06',
+      unsuffixedNote,
+      'AI/claude'
+    );
+
+    expect(result.found).toBe(true);
+    expect(result.matchType).toBe('frontmatter-scan');
+    expect(result.path).toBe('AI/claude/2026/05/Old Title.md');
   });
 });
 
