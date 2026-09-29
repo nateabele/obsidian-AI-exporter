@@ -203,17 +203,28 @@ export class ClaudeExtractor extends BaseExtractor {
    * mean a turn was added — scrolling up mounts *smaller* indices, never larger.
    */
   getMessageWatermark(): number | null {
+    const indices = this.mountedRowIndices();
+    return indices.length > 0 ? Math.max(...indices) : null;
+  }
+
+  /**
+   * Lowest `data-index` currently mounted. Above 0 means the thread is
+   * virtualized and earlier turns are not in the DOM, so an extraction taken
+   * now is a tail window, not the whole conversation.
+   */
+  getLowestMountedIndex(): number | null {
+    const indices = this.mountedRowIndices();
+    return indices.length > 0 ? Math.min(...indices) : null;
+  }
+
+  private mountedRowIndices(): number[] {
     // Scoped to the thread scroller: `[data-index]` is a bare attribute
     // selector and Claude's own chrome virtualizes lists too, so a sidebar row
     // would otherwise raise the watermark and clear the badge for a scroll.
     const root = this.queryWithFallback<HTMLElement>(SELECTORS.scrollContainer) ?? document;
-    let highest: number | null = null;
-    this.queryAllWithFallback<HTMLElement>(SELECTORS.conversationRow, root).forEach(row => {
-      const index = Number(row.getAttribute('data-index'));
-      if (!Number.isFinite(index)) return;
-      if (highest === null || index > highest) highest = index;
-    });
-    return highest;
+    return this.queryAllWithFallback<HTMLElement>(SELECTORS.conversationRow, root)
+      .map(row => Number(row.getAttribute('data-index')))
+      .filter(index => Number.isFinite(index));
   }
 
   /**

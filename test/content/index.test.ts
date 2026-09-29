@@ -1553,6 +1553,158 @@ describe('content/bootstrap', () => {
       });
       expect(attachWatermarkWatcher).not.toHaveBeenCalled();
     });
+
+    describe('auto-repair of a virtualized window', () => {
+      const settings = { isCompanionConfigured: true, autoSyncPlatforms: ['claude', 'gemini'] };
+      const okBackfill: ChatBackfillResponse = {
+        notePath: 'AI/claude/full.md',
+        anchorsPreserved: 0,
+        anchorsIssued: 4,
+        superseded: 0,
+        skipped: null,
+      };
+
+      /** Claude thread whose mounted rows start at `first` (Claude's data-index is conversation-wide). */
+      function loadClaudeWindow(id: string, first: number, texts: string[]): void {
+        setClaudeLocation(id);
+        const rows = texts.map((text, i) => {
+          const role = (first + i) % 2 === 0 ? 'user' : 'assistant';
+          const inner = createClaudeConversationDOM([{ role, content: text }]);
+          return `<div data-index="${first + i}">${inner}</div>`;
+        });
+        loadFixture(`<div>${rows.join('')}</div>`);
+      }
+
+      function backfillFor(id: string): ChatBackfillRequest {
+        return {
+          conversationId: id,
+          platform: 'claude',
+          title: 'Full',
+          url: `https://claude.ai/chat/${id}`,
+          createdAt: '2026-01-01T00:00:00Z',
+          accountId: 'org-1',
+          accountName: 'Personal',
+          messages: [{ role: 'user', markdown: 'q', hash: 'h1', sourceId: 'm1' }],
+        };
+      }
+
+      function backfillCallsOf(): unknown[] {
+        return vi
+          .mocked(sendMessage)
+          .mock.calls.filter(([m]) => (m as { action: string }).action === 'chatBackfill');
+      }
+
+      it('repairs instead of sending when the first sync sees a window that starts above turn 0', async () => {
+        const id = '11111111-aaaa-4bbb-8ccc-000000000001';
+        loadClaudeWindow(id, 5, ['tail five', 'tail six']);
+        vi.mocked(fetchConversationForRepair).mockResolvedValue(backfillFor(id));
+        mockMessaging({ settings, chatBackfill: okBackfill });
+
+        await runAutoSync();
+
+        expect(fetchConversationForRepair).toHaveBeenCalledWith(id);
+        expect(backfillCallsOf()).toHaveLength(1);
+        expect(chatSyncCallsOf()).toHaveLength(0);
+
+        // The window was adopted as the baseline: the next quiet tick is a no-op.
+        await runAutoSync();
+        expect(chatSyncCallsOf()).toHaveLength(0);
+        expect(backfillCallsOf()).toHaveLength(1);
+      });
+
+      it('syncs normally on the first sync when the window starts at turn 0', async () => {
+        const id = '11111111-aaaa-4bbb-8ccc-000000000002';
+        loadClaudeWindow(id, 0, ['first', 'second']);
+        mockMessaging({ settings });
+
+        await runAutoSync();
+
+        expect(fetchConversationForRepair).not.toHaveBeenCalled();
+        expect(chatSyncCallsOf()).toHaveLength(1);
+      });
+
+      it('repairs when earlier turns appear (head shift), then absorbs further shifts without stalling', async () => {
+        const id = '11111111-aaaa-4bbb-8ccc-000000000003';
+        loadClaudeWindow(id, 0, ['first', 'second']);
+        mockMessaging({ settings, chatBackfill: okBackfill });
+        vi.mocked(fetchConversationForRepair).mockResolvedValue(backfillFor(id));
+        await runAutoSync();
+        expect(chatSyncCallsOf()).toHaveLength(1);
+
+        // Same conversation; a different, earlier-starting window mounts.
+        loadClaudeWindow(id, 0, ['zeroth', 'first', 'second']);
+        await runAutoSync();
+        expect(backfillCallsOf()).toHaveLength(1);
+        expect(chatSyncCallsOf()).toHaveLength(1);
+
+        // Repaired: a further head shift is absorbed, not painted as stalled.
+        vi.mocked(paintFor).mockClear();
+        loadClaudeWindow(id, 0, ['minus one', 'zeroth', 'first']);
+        await runAutoSync();
+        expect(backfillCallsOf()).toHaveLength(1);
+        expect(chatSyncCallsOf()).toHaveLength(1);
+        expect(paintFor).not.toHaveBeenCalledWith(location.href, 'attention', expect.anything());
+      });
+
+      it('attempts at most once per conversation: a failed repair falls back to the blocked state', async () => {
+        const id = '11111111-aaaa-4bbb-8ccc-000000000004';
+        loadClaudeWindow(id, 0, ['first', 'second']);
+        mockMessaging({ settings, chatBackfill: { error: 'boom' } });
+        vi.mocked(fetchConversationForRepair).mockResolvedValue(backfillFor(id));
+        await runAutoSync();
+
+        loadClaudeWindow(id, 0, ['zeroth', 'first', 'second']);
+        await runAutoSync(); // repair attempted, fails
+        expect(backfillCallsOf()).toHaveLength(1);
+
+        vi.mocked(paintFor).mockClear();
+        loadClaudeWindow(id, 0, ['minus one', 'zeroth', 'first', 'second']);
+        await runAutoSync(); // guard spent: today's behaviour
+        expect(backfillCallsOf()).toHaveLength(1);
+        expect(paintFor).toHaveBeenLastCalledWith(location.href, 'attention', {
+          blocked: expect.any(String),
+        });
+      });
+
+      it('leaves tail truncation on the blocked path without repairing', async () => {
+        const id = '11111111-aaaa-4bbb-8ccc-000000000005';
+        loadClaudeWindow(id, 0, ['first', 'second', 'third']);
+        mockMessaging({ settings, chatBackfill: okBackfill });
+        await runAutoSync();
+
+        loadClaudeWindow(id, 0, ['first', 'second']);
+        vi.mocked(paintFor).mockClear();
+        await runAutoSync();
+
+        expect(fetchConversationForRepair).not.toHaveBeenCalled();
+        expect(paintFor).toHaveBeenLastCalledWith(location.href, 'attention', {
+          blocked: expect.any(String),
+        });
+      });
+
+      it('never repairs on a platform without an archive adapter (Gemini head shift)', async () => {
+        setGeminiLocation('auto-repair-unsupported');
+        loadFixture(
+          createGeminiConversationDOM([
+            { role: 'user', content: 'Original first message' },
+            { role: 'assistant', content: '<p>reply</p>' },
+          ])
+        );
+        mockMessaging({ settings });
+        await runAutoSync();
+        loadFixture(
+          createGeminiConversationDOM([
+            { role: 'user', content: 'A completely different first message' },
+            { role: 'assistant', content: '<p>reply</p>' },
+          ])
+        );
+
+        await runAutoSync();
+
+        expect(fetchConversationForRepair).not.toHaveBeenCalled();
+        expect(chatSyncCallsOf()).toHaveLength(1);
+      });
+    });
   });
 
   describe('startContentScript', () => {

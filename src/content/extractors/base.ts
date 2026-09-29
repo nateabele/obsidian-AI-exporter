@@ -255,6 +255,14 @@ export abstract class BaseExtractor implements IConversationExtractor {
     return null;
   }
 
+  /**
+   * Hook: lowest conversation-wide turn ordinal currently mounted, or null when
+   * the platform exposes none. Above 0 means earlier turns are virtualized away.
+   */
+  getLowestMountedIndex(): number | null {
+    return null;
+  }
+
   /** {@link getMessageWatermark} as the optional field callers store. */
   private currentWatermark(): number | undefined {
     return this.getMessageWatermark() ?? undefined;

@@ -217,6 +217,12 @@ let lastHref = location.href;
 // invocations overlap and race on previousManifest. The next mutation
 // re-triggers a fresh run once the in-flight one finishes.
 let autoSyncInFlight = false;
+// Conversation ids auto-repair has already been tried for, and the subset it
+// stored successfully. Content-script lifetime, never cleared: the first set
+// makes a failing or skipped repair impossible to loop, the second lets a
+// repaired conversation absorb later scroll-window shifts (see maybeAutoRepair).
+const autoRepairAttempted = new Set<string>();
+const autoRepaired = new Set<string>();
 
 // The auto-sync observer, tracked so a re-run of initialize() (or a test
 // harness that drives it repeatedly against a shared document) disconnects
@@ -517,7 +523,7 @@ function isStillCurrent(href: string): boolean {
  * quietly doing nothing is the exact failure mode it exists to correct, and
  * an icon tooltip alone is too easy to miss.
  */
-async function repairConversation(href: string, conversationId: string): Promise<void> {
+async function repairConversation(href: string, conversationId: string): Promise<boolean> {
   paintFor(href, 'syncing');
   try {
     const request = await fetchConversationForRepair(conversationId);
@@ -526,7 +532,7 @@ async function repairConversation(href: string, conversationId: string): Promise
       console.warn('[G2O] Repair failed:', response.error);
       if (isStillCurrent(href)) showErrorToast(response.error);
       paintFor(href, 'offline', { error: response.error });
-      return;
+      return false;
     }
 
     const suggestionCountAfter = getSuggestionCount();
@@ -545,7 +551,7 @@ async function repairConversation(href: string, conversationId: string): Promise
         blocked: null,
         suggestionCount: suggestionCountAfter,
       });
-      return;
+      return false;
     }
     paintFor(href, settledState, {
       notePath: response.notePath ?? undefined,
@@ -553,11 +559,13 @@ async function repairConversation(href: string, conversationId: string): Promise
       blocked: null,
       suggestionCount: suggestionCountAfter,
     });
+    return true;
   } catch (error) {
     const message = extractErrorMessage(error);
     console.error('[G2O] Repair failed:', error);
     if (isStillCurrent(href)) showErrorToast(message);
     paintFor(href, 'offline', { error: message });
+    return false;
   }
 }
 
@@ -665,12 +673,16 @@ async function sendAndWatch(
  *   the client no longer has any record of. Not routine: `runAutoSync`
  *   settles the icon via `settleBlocked`, surfacing it rather than staying
  *   silently green.
+ * - `'headShifted'`: the head-shift flavour of `'windowed'` — the manifest no
+ *   longer starts where the last one did, i.e. earlier turns mounted (the user
+ *   scrolled up). Handled like `'windowed'` unless `maybeAutoRepair` can
+ *   recover it from the platform API. Tail truncation stays `'windowed'`.
  * - `'send'`: safe to diff and send.
  *
  * Split out from `runAutoSync` purely to keep it under the line-count lint
  * limit.
  */
-type ManifestSendDecision = 'send' | 'unchanged' | 'windowed';
+type ManifestSendDecision = 'send' | 'unchanged' | 'windowed' | 'headShifted';
 
 function decideManifestSend(manifest: string[]): ManifestSendDecision {
   const unchanged =
@@ -689,7 +701,7 @@ function decideManifestSend(manifest: string[]): ManifestSendDecision {
       '[G2O] Auto-sync skipped: manifest no longer starts where the previous one did ' +
         '(likely a virtualized window, not a true prefix) — not sending'
     );
-    return 'windowed';
+    return 'headShifted';
   }
 
   // The sibling truncation: the window narrowed from the TAIL instead of
@@ -715,6 +727,61 @@ function decideManifestSend(manifest: string[]): ManifestSendDecision {
   }
 
   return 'send';
+}
+
+/**
+ * Claude (and ChatGPT) virtualize the thread, so the first auto-sync after a
+ * page load can only see the mounted tail; sent as-is it would be stored as the
+ * whole conversation, and scrolling up later prepends turns that no diff can
+ * recover (`'headShifted'`, forever). This recovers from the platform API
+ * instead, via the same path as the icon menu's "Repair from source".
+ *
+ * Fires, at most once per conversation per content-script lifetime, when the
+ * platform has an archive adapter, a conversation id resolves, and either:
+ * - this is the first sync for the href and the window does not start at turn 0
+ *   (nothing is sent first — the partial chatSync is exactly what to avoid), or
+ * - earlier turns appeared (`'headShifted'`).
+ *
+ * After a stored repair the server holds the full conversation, so the current
+ * window is adopted as the baseline WITHOUT sending: sending it would trip the
+ * server's backfill-agreement guard (`needsFullContent`) for no gain, and a
+ * later scroll shifts the head again. Once repaired, a further `'headShifted'`
+ * is therefore absorbed the same way instead of stalling the icon.
+ *
+ * Resolves `true` when it consumed the tick (the caller returns), `false` to
+ * fall through to the normal handling — which is today's behaviour, including
+ * once the once-only guard is spent.
+ */
+async function maybeAutoRepair(
+  extractor: IConversationExtractor,
+  decision: ManifestSendDecision,
+  manifest: string[],
+  href: string
+): Promise<boolean> {
+  if (!ARCHIVE_SUPPORTED_PLATFORMS.includes(extractor.platform)) return false;
+  const conversationId = extractor.getConversationId();
+  if (!conversationId) return false;
+
+  if (decision === 'headShifted' && autoRepaired.has(conversationId)) {
+    previousManifest = manifest;
+    settleIcon(true, href);
+    return true;
+  }
+
+  const lowest = extractor.getLowestMountedIndex();
+  const firstPartialWindow =
+    decision === 'send' && previousManifest.length === 0 && lowest !== null && lowest > 0;
+  if (!firstPartialWindow && decision !== 'headShifted') return false;
+  if (autoRepairAttempted.has(conversationId)) return false;
+  autoRepairAttempted.add(conversationId);
+
+  if (await repairConversation(href, conversationId)) {
+    autoRepaired.add(conversationId);
+    // An in-app navigation mid-repair has already reset the baseline for the
+    // new conversation; writing this one's manifest would poison it.
+    if (isStillCurrent(href)) previousManifest = manifest;
+  }
+  return true;
 }
 
 /**
@@ -802,7 +869,8 @@ export async function runAutoSync(): Promise<ChatSyncResponse | null> {
       settleIcon(true, startHref);
       return null;
     }
-    if (manifestDecision === 'windowed') {
+    if (await maybeAutoRepair(extractor, manifestDecision, manifest, startHref)) return null;
+    if (manifestDecision === 'windowed' || manifestDecision === 'headShifted') {
       settleBlocked(startHref, getMessage('syncIcon_syncStalled'));
       return null;
     }

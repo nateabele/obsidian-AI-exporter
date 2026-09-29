@@ -647,4 +647,10 @@ export interface IConversationExtractor {
    * against {@link ConversationData.messageWatermark} (issue #465).
    */
   getMessageWatermark(): number | null;
+  /**
+   * Lowest conversation-wide turn ordinal currently mounted, or null when the
+   * platform exposes none. Above 0 means earlier turns are virtualized away,
+   * so an extraction taken now is a window rather than the whole conversation.
+   */
+  getLowestMountedIndex(): number | null;
 }
