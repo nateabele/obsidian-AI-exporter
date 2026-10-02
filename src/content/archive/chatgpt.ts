@@ -28,7 +28,8 @@ interface ChatGptSession {
 interface ChatGptConversationSummary {
   id: string;
   title: string;
-  create_time: number;
+  create_time: number | string;
+  update_time?: number | string;
   is_temporary_chat?: boolean;
 }
 
@@ -61,10 +62,40 @@ interface ChatGptNode {
 
 interface ChatGptConversationDetail {
   title: string;
-  create_time: number;
+  create_time: number | string;
   current_node: string;
   mapping: Record<string, ChatGptNode>;
   is_temporary_chat?: boolean;
+}
+
+/** Raised when a ChatGPT timestamp is neither epoch seconds nor a parseable date string. */
+class ChatGptTimestampError extends Error {
+  constructor(value: unknown) {
+    super(`Unrecognized ChatGPT timestamp: ${JSON.stringify(value) ?? String(value)}`);
+    this.name = 'ChatGptTimestampError';
+  }
+}
+
+/**
+ * Normalizes a ChatGPT timestamp to an ISO string. The two endpoints disagree:
+ * `/backend-api/conversations` (list) now returns ISO strings, while
+ * `/backend-api/conversation/<id>` (detail) still returns epoch seconds.
+ * Both forms are accepted deliberately so neither endpoint's format can break
+ * the other (`string * 1000` is NaN, and `toISOString()` then throws).
+ */
+function toIsoTimestamp(value: unknown): string {
+  // Round to whole milliseconds: seconds * 1000 can land a hair under the
+  // intended millisecond (1673037595.742 * 1000), which toISOString truncates.
+  const date =
+    typeof value === 'number' && Number.isFinite(value)
+      ? new Date(Math.round(value * 1000))
+      : typeof value === 'string' && value.trim() !== ''
+        ? new Date(value)
+        : null;
+  if (!date || Number.isNaN(date.getTime())) {
+    throw new ChatGptTimestampError(value);
+  }
+  return date.toISOString();
 }
 
 async function fetchJson<T>(url: string, token?: string): Promise<T> {
@@ -176,18 +207,34 @@ export class ChatGptArchiveAdapter implements ArchiveAdapter {
     const summaries = await fetchConversationList(token);
     return summaries
       .filter(conv => !conv.is_temporary_chat)
-      .map(conv => ({
-        conversationId: conv.id,
-        title: conv.title,
-        createdAt: new Date(conv.create_time * 1000).toISOString(),
-        url: `https://chatgpt.com/c/${conv.id}`,
-        // ChatGPT exposes no organization/account concept in this flow
-        // (unlike Claude, which can span multiple orgs) — both fields are
-        // set explicitly to null rather than omitted, so a future reader
-        // doesn't mistake the absence for an oversight.
-        accountId: null,
-        accountName: null,
-      }));
+      .flatMap((conv): ArchiveEntry[] => {
+        let createdAt: string;
+        try {
+          createdAt = toIsoTimestamp(conv.create_time);
+        } catch {
+          // One malformed entry must not discard the whole history.
+          console.warn(
+            '[G2O] Skipping conversation with unreadable create_time',
+            conv.id,
+            conv.create_time
+          );
+          return [];
+        }
+        return [
+          {
+            conversationId: conv.id,
+            title: conv.title,
+            createdAt,
+            url: `https://chatgpt.com/c/${conv.id}`,
+            // ChatGPT exposes no organization/account concept in this flow
+            // (unlike Claude, which can span multiple orgs) — both fields are
+            // set explicitly to null rather than omitted, so a future reader
+            // doesn't mistake the absence for an oversight.
+            accountId: null,
+            accountName: null,
+          },
+        ];
+      });
   }
 
   async fetchConversation(entry: ArchiveEntry): Promise<ArchivedConversation> {
