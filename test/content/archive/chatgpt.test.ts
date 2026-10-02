@@ -123,6 +123,52 @@ describe('ChatGptArchiveAdapter', () => {
     expect(entries[0].accountName).toBeNull();
   });
 
+  describe('create_time forms in the listing', () => {
+    function stubList(items: Array<{ id: string; title: string; create_time: unknown }>) {
+      stubFetch({
+        '/api/auth/session': { accessToken: 'tok' },
+        '/backend-api/conversations': { items, total: items.length, limit: 20, offset: 0 },
+      });
+    }
+
+    it('maps an ISO-string create_time (the live list endpoint) to createdAt', async () => {
+      stubList([{ id: 'c1', title: 'A', create_time: '2026-08-11T16:57:03.722Z' }]);
+      const entries = await new ChatGptArchiveAdapter().listConversations();
+      expect(entries[0].createdAt).toBe('2026-08-11T16:57:03.722Z');
+    });
+
+    it('still maps numeric seconds', async () => {
+      stubList([{ id: 'c1', title: 'A', create_time: 1673037595.742 }]);
+      const entries = await new ChatGptArchiveAdapter().listConversations();
+      expect(entries[0].createdAt).toBe('2023-01-06T20:39:55.742Z');
+    });
+
+    it('yields an identical createdAt for the same instant as seconds and as ISO string', async () => {
+      stubList([
+        { id: 'num', title: 'N', create_time: 1673037595.742 },
+        { id: 'iso', title: 'I', create_time: '2023-01-06T20:39:55.742Z' },
+      ]);
+      const entries = await new ChatGptArchiveAdapter().listConversations();
+      expect(entries[0].createdAt).toBe(entries[1].createdAt);
+    });
+
+    it.each([['garbage'], [null], [Number.NaN], [undefined], [{}]])(
+      'skips only the entry with an unusable create_time (%j) and warns',
+      async (bad) => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        stubList([
+          { id: 'ok1', title: 'A', create_time: 1700000000 },
+          { id: 'bad', title: 'B', create_time: bad },
+          { id: 'ok2', title: 'C', create_time: '2023-01-06T20:39:55.742Z' },
+        ]);
+        const entries = await new ChatGptArchiveAdapter().listConversations();
+        expect(entries.map((e) => e.conversationId)).toEqual(['ok1', 'ok2']);
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('[G2O]'), 'bad', bad);
+        warn.mockRestore();
+      }
+    );
+  });
+
   it('walks mapping from current_node and skips the null-message root', async () => {
     const conv = {
       title: 'T',
