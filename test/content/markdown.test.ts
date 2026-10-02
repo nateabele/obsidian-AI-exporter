@@ -543,57 +543,122 @@ describe('escapeAngleBrackets', () => {
 });
 
 describe('generateFileName', () => {
-  it('creates filename from title and ID', () => {
-    expect(generateFileName('Hello World', 'abc123def456')).toBe('hello-world-abc123de.md');
+  it('creates filename from the title alone — no id suffix', () => {
+    expect(generateFileName('Hello World', 'abc123def456')).toBe('Hello World.md');
   });
 
-  it('preserves Japanese characters', () => {
-    const result = generateFileName('日本語テスト', 'abc123def456');
-    expect(result).toContain('日本語テスト');
-    expect(result.endsWith('.md')).toBe(true);
+  it('preserves Japanese characters and case, with no suffix', () => {
+    expect(generateFileName('日本語テスト', 'abc123def456')).toBe('日本語テスト.md');
   });
 
-  it('preserves Korean characters', () => {
-    const result = generateFileName('한글테스트', 'abc123def456');
-    expect(result).toContain('한글테스트');
+  it('preserves Korean characters and case, with no suffix', () => {
+    expect(generateFileName('한글테스트', 'abc123def456')).toBe('한글테스트.md');
   });
 
-  it('removes special characters', () => {
-    expect(generateFileName('Test: Special!', 'abc123def456')).toBe('test-special-abc123de.md');
+  it('strips only forbidden characters (:) — non-forbidden punctuation (!) survives', () => {
+    expect(generateFileName('Test: Special!', 'abc123def456')).toBe('Test Special!.md');
   });
 
-  it('truncates long titles to 50 characters', () => {
-    const longTitle = 'a'.repeat(100);
+  it('truncates long titles to 100 characters, not 50', () => {
+    const longTitle = 'a'.repeat(200);
     const result = generateFileName(longTitle, 'abc123def456');
-    // 50 chars title + '-' + 8 char ID suffix + '.md'
-    expect(result.length).toBeLessThanOrEqual(50 + 1 + 8 + 3);
+    expect(result).toBe(`${'a'.repeat(100)}.md`);
   });
 
   it('handles empty title with fallback', () => {
-    expect(generateFileName('', 'abc123def456')).toBe('conversation-abc123de.md');
+    expect(generateFileName('', 'abc123def456')).toBe('conversation.md');
   });
 
-  it('handles title with only special characters', () => {
-    expect(generateFileName('!!!@@@###', 'abc123def456')).toBe('conversation-abc123de.md');
+  it('falls back to "conversation" only when every character is forbidden', () => {
+    expect(generateFileName('/\\:*?"<>|#^[]', 'abc123def456')).toBe('conversation.md');
   });
+
+  it('preserves non-forbidden punctuation instead of hyphenating it away', () => {
+    expect(generateFileName('!!!@@@', 'abc123def456')).toBe('!!!@@@.md');
+  });
+});
+
+/**
+ * Cross-repo agreement table (mirrors mail-api's FILENAME_CASES in
+ * tests/chat/chatSyncService.test.js, minus the 'AI/claude/' path prefix
+ * notePathFor() adds — the expected filenames themselves must be identical).
+ * This is the test that catches a drift between generateFileName() (manual
+ * export, here) and notePathFor() (auto-sync, mail-api) — a drift would
+ * silently fork every future conversation into two notes instead of one.
+ * The conversationId argument is deliberately irrelevant under the
+ * 'title-id' scheme (kept only for call-site compatibility), so every case
+ * below uses the same placeholder id.
+ */
+const FILENAME_CASES: Array<{ name: string; title: string; expected: string }> = [
+  { name: 'plain ASCII title', title: 'Hello World', expected: 'Hello World.md' },
+  { name: 'Japanese title (non-Latin preserved)', title: '正常な会話', expected: '正常な会話.md' },
+  {
+    name: 'Korean title with a space (non-Latin + spaces preserved)',
+    title: '한글 테스트',
+    expected: '한글 테스트.md',
+  },
+  {
+    name: 'repeated spaces collapse to one',
+    title: 'Multiple   spaces   here',
+    expected: 'Multiple spaces here.md',
+  },
+  {
+    name: 'newline and tab collapse to a single space, not deletion',
+    title: 'Line1\nLine2\tEnd',
+    expected: 'Line1 Line2 End.md',
+  },
+  {
+    name: '../ traversal sequences never survive',
+    title: '../../../etc/passwd',
+    expected: 'etcpasswd.md',
+  },
+  {
+    name: 'a leading absolute-path slash never survives',
+    title: '/Users/nate/secret',
+    expected: 'Usersnatesecret.md',
+  },
+  {
+    name: 'a title of only forbidden characters falls back to "conversation"',
+    title: '/\\:*?"<>|#^[]',
+    expected: 'conversation.md',
+  },
+  { name: 'non-forbidden punctuation is preserved, not hyphenated', title: '!!!@@@', expected: '!!!@@@.md' },
+  {
+    name: 'a several-hundred-character title truncates at 100, not 50',
+    title: 'A'.repeat(300),
+    expected: `${'A'.repeat(100)}.md`,
+  },
+  { name: 'a title of only dots falls back to "conversation"', title: '.......', expected: 'conversation.md' },
+  { name: 'an empty title falls back to "conversation"', title: '', expected: 'conversation.md' },
+  {
+    name: 'a realistic corpus duplicate ("New chat") gets no suffix',
+    title: 'New chat',
+    expected: 'New chat.md',
+  },
+];
+
+describe('generateFileName — cross-repo agreement table', () => {
+  for (const { name, title, expected } of FILENAME_CASES) {
+    it(name, () => {
+      expect(generateFileName(title, 'abcdefgh12345678')).toBe(expected);
+    });
+  }
 });
 
 describe('generateFileName — naming scheme (#328)', () => {
   const DATE = new Date(2026, 6, 5); // 2026-07-05, local time
 
   it('defaults to the title-id scheme when scheme is omitted', () => {
-    expect(generateFileName('Hello World', 'abc123def456')).toBe('hello-world-abc123de.md');
+    expect(generateFileName('Hello World', 'abc123def456')).toBe('Hello World.md');
   });
 
-  it("'title-id' scheme uses the 8-char conversation id suffix", () => {
-    expect(generateFileName('Hello World', 'abc123def456', 'title-id')).toBe(
-      'hello-world-abc123de.md'
-    );
+  it("'title-id' scheme carries no suffix — identity lives in frontmatter, not the filename", () => {
+    expect(generateFileName('Hello World', 'abc123def456', 'title-id')).toBe('Hello World.md');
   });
 
-  it("'title-date' scheme uses the local YYYY-MM-DD suffix instead of the id", () => {
+  it("'title-date' scheme uses the local YYYY-MM-DD suffix instead of an id", () => {
     expect(generateFileName('Top 5 Headlines', 'abc123def456', 'title-date', DATE)).toBe(
-      'top-5-headlines-2026-07-05.md'
+      'Top 5 Headlines-2026-07-05.md'
     );
   });
 
@@ -602,7 +667,7 @@ describe('generateFileName — naming scheme (#328)', () => {
       'conversation-2026-07-05.md'
     );
     expect(generateFileName('Test: Special!', 'abc123def456', 'title-date', DATE)).toBe(
-      'test-special-2026-07-05.md'
+      'Test Special!-2026-07-05.md'
     );
   });
 });
@@ -680,12 +745,12 @@ describe('conversationToNote', () => {
 
   it('uses the title-id filename scheme by default (#328)', () => {
     const note = conversationToNote(mockData, defaultOptions);
-    expect(note.fileName).toBe('test-conversation-conv123.md');
+    expect(note.fileName).toBe('Test Conversation.md');
   });
 
   it('uses the title-date filename scheme when configured (#328)', () => {
     const note = conversationToNote(mockData, { ...defaultOptions, filenameScheme: 'title-date' });
-    expect(note.fileName).toMatch(/^test-conversation-\d{4}-\d{2}-\d{2}\.md$/);
+    expect(note.fileName).toMatch(/^Test Conversation-\d{4}-\d{2}-\d{2}\.md$/);
   });
 
   it('never leaks a DOM-derived per-message id into the filename or frontmatter id', () => {
@@ -740,7 +805,7 @@ describe('conversationToNote', () => {
 
   it('generates fileName', () => {
     const note = conversationToNote(mockData, defaultOptions);
-    expect(note.fileName).toBe('test-conversation-conv123.md');
+    expect(note.fileName).toBe('Test Conversation.md');
   });
 
   it('formats as blockquote when specified', () => {

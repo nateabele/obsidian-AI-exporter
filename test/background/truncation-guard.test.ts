@@ -136,4 +136,26 @@ describe('truncated capture vs a longer note on disk (issue #449)', () => {
     expect(result.error).toMatch(/446/);
     expect(mockClient.putFile).not.toHaveBeenCalled();
   });
+
+  it('refuses a note reached only by the suffix-less frontmatter scan', async () => {
+    // The two protections have to compose: a human-readable file name gives the
+    // lookup no id suffix to narrow on, so the complete note is found only by
+    // the frontmatter scan — and once found it must still be refused. If the
+    // scan were lost the save would fork a duplicate; if the guard were lost
+    // the scan would hand 446 messages to a 27-message overwrite.
+    mockClient.getFile.mockImplementation((path: string) =>
+      Promise.resolve(path === 'AI/Claude/Old long thread.md' ? existingNote() : null)
+    );
+    mockClient.listFiles.mockResolvedValue(['Unrelated.md', 'Old long thread.md']);
+
+    const result = await handleSave(
+      settings({ enableAppendMode: true }),
+      note({ fileName: 'Long thread.md', truncated: true })
+    );
+
+    expect(mockClient.listFiles).toHaveBeenCalledWith('AI/Claude');
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/446/);
+    expect(mockClient.putFile).not.toHaveBeenCalled();
+  });
 });

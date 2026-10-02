@@ -1,12 +1,14 @@
 /**
  * Filename collision helpers (issue #327).
  *
- * Conversations with identical titles can produce identical file names —
- * notably Perplexity repeating tasks, whose conversation ids start with the
- * title slug, so the id-prefix suffix in generateFileName() repeats too.
- * When a save would land on a file holding a DIFFERENT conversation
- * (frontmatter id mismatch), the handler probes deterministic alternatives
- * instead of overwriting.
+ * Conversations with identical titles produce identical file names: under the
+ * `title-id` scheme generateFileName() returns the sanitized title alone, since
+ * identity is carried by frontmatter rather than by a name suffix. (It was
+ * already possible when that suffix existed — notably Perplexity repeating
+ * tasks, whose conversation ids start with the title slug, so the id-prefix
+ * repeated along with the title.) When a save would land on a file holding a
+ * DIFFERENT conversation (frontmatter id mismatch), the handler probes
+ * deterministic alternatives instead of overwriting.
  */
 
 import { generateHash } from './hash';

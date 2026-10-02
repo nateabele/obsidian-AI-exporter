@@ -20,23 +20,23 @@ import { formatDateWithTimezone } from './date-utils';
  * the wild this is the single most useful thing to know. Reported, never acted
  * on — the lookup's behaviour is unchanged.
  *
- * - `no-candidate-suffix` — a `title-id` file name with no id suffix, so no
- *   directory scan is possible at all.
  * - `empty-directory` — the listing returned nothing. `listEntries()` maps a
  *   404 to `[]`, and the Local REST API documents both "directory does not
  *   exist" (404) and that empty directories are not returned, so a missing
  *   folder, an empty one and a swallowed error all look identical here.
- * - `no-candidate-file` — the folder had files, none carrying our id suffix.
- * - `candidate-id-mismatch` — same-suffix files existed but none were ours.
+ * - `no-candidate-file` — the folder had files, none of them a candidate.
+ * - `candidate-id-mismatch` — candidate files existed but none were ours.
  * - `budget-exhausted` — the scan hit {@link SCAN_MAX_REQUESTS} first, so the
  *   note may well exist beyond the point the scan stopped.
+ *
+ * There is deliberately no "no scan was possible" reason any more. It used to
+ * exist (`no-candidate-suffix`) for a `title-id` name carrying no id suffix —
+ * the shape human-readable filenames now always have, so refusing to scan
+ * there is exactly the bug that forked a duplicate per conversation. Such a
+ * name now scans by frontmatter instead; see {@link createCandidateScan}.
  */
 type LookupMissReason =
-  | 'no-candidate-suffix'
-  | 'empty-directory'
-  | 'no-candidate-file'
-  | 'candidate-id-mismatch'
-  | 'budget-exhausted';
+  'empty-directory' | 'no-candidate-file' | 'candidate-id-mismatch' | 'budget-exhausted';
 
 /**
  * Result of file lookup for append mode
@@ -45,7 +45,7 @@ interface FileLookupResult {
   found: boolean;
   path: string;
   content: string;
-  matchType: 'direct' | 'memo' | 'id-scan' | 'none';
+  matchType: 'direct' | 'memo' | 'id-scan' | 'frontmatter-scan' | 'none';
   /** Only on a miss: which negative occurred (issue #365). */
   missReason?: LookupMissReason;
   /** What the direct-path GET saw. Absent when a memo hit short-circuited it. */
@@ -109,7 +109,7 @@ export interface LookupOptions {
   hintPath?: string;
   /**
    * File-naming scheme in effect. Decides how scan candidates are pre-filtered;
-   * see {@link createCandidateMatcher}. Defaults to `'title-id'`.
+   * see {@link createCandidateScan}. Defaults to `'title-id'`.
    */
   filenameScheme?: FilenameScheme;
 }
@@ -149,8 +149,8 @@ function notFound(
  * What a directory scan saw, so the caller can name the miss.
  *
  * `entries`/`candidates` are counts, not data: they separate "the folder was
- * empty or unreadable" from "the folder had files but none carried our id
- * suffix" from "same-suffix files existed but none were ours".
+ * empty or unreadable" from "the folder had files but none were candidates"
+ * from "candidate files existed but none were ours".
  */
 interface ScanResult {
   hit: FileLookupResult | null;
@@ -170,28 +170,64 @@ function scanMissReason(scan: ScanResult, budget: ScanBudget): LookupMissReason 
 }
 
 /**
- * Build the file-name pre-filter used to pick scan candidates.
+ * How a directory scan picks and orders the files it is willing to open.
  *
- * `title-id` names end in `-{idPrefix}.md`, so the suffix narrows the candidate
- * set to (usually) a single file. `title-date` names end in the SAVE date and
- * carry no conversation identity at all — a note written on the 3rd and
- * re-saved on the 10th shares no file-name component beyond the title slug — so
- * every markdown file must be considered. In both cases the frontmatter id
- * comparison performed by the scan is what actually decides a match; this
- * predicate only avoids reading files that cannot possibly match.
- *
- * Returns null when no scan is possible (a `title-id` name with no suffix).
+ * In every case the frontmatter id comparison performed by the scan is what
+ * actually decides a match; this only avoids — and orders — reads.
  */
-function createCandidateMatcher(
-  fileName: string,
-  scheme: FilenameScheme
-): ((entry: string) => boolean) | null {
+interface CandidateScan {
+  /** Pre-filter: directory entries that could possibly be our note. */
+  matches: (entry: string) => boolean;
+  /** Order one directory's candidates before reading them. */
+  order: (entries: string[]) => string[];
+  /** Match type to report on a hit. */
+  matchType: 'id-scan' | 'frontmatter-scan';
+}
+
+/** Candidates in listing order; nothing to rank them by. */
+const LISTING_ORDER = (entries: string[]): string[] => entries;
+
+/**
+ * Decide how to scan for the conversation's existing note.
+ *
+ * Three shapes, by what the file name itself can narrow:
+ *
+ * - `title-id` WITH an `-{idPrefix}.md` suffix — still produced for legacy and
+ *   pre-migration notes. The suffix narrows the candidate set to (usually) a
+ *   single file, so this is the cheap path: one listing plus a read or two.
+ * - `title-id` with NO suffix — what human-readable file names always look
+ *   like. Nothing in the name carries conversation identity, so every markdown
+ *   file is a candidate and only frontmatter can decide. Returning "no scan is
+ *   possible" here (as this did before human-readable names existed) is what
+ *   made a retitled or migrated note unfindable and forked a duplicate on every
+ *   save, so instead the candidates are ranked by title plausibility — see
+ *   {@link rankByTitlePlausibility} — and read until the shared
+ *   {@link ScanBudget} runs out.
+ * - `title-date` — names end in the SAVE date, so a note written on the 3rd and
+ *   re-saved on the 10th shares no file-name component beyond the title slug;
+ *   every markdown file must be considered, in listing order as before.
+ */
+function createCandidateScan(note: ObsidianNote, scheme: FilenameScheme): CandidateScan {
+  const everyNote = (entry: string): boolean => entry.endsWith('.md');
   if (scheme === 'title-date') {
-    return entry => entry.endsWith('.md');
+    return { matches: everyNote, order: LISTING_ORDER, matchType: 'id-scan' };
   }
-  const idSuffix = extractIdSuffix(fileName);
-  if (!idSuffix) return null;
-  return entry => entry.endsWith(`-${idSuffix}.md`);
+
+  const idSuffix = extractIdSuffix(note.fileName);
+  if (idSuffix) {
+    return {
+      matches: entry => entry.endsWith(`-${idSuffix}.md`),
+      order: LISTING_ORDER,
+      matchType: 'id-scan',
+    };
+  }
+
+  const { title } = note.frontmatter;
+  return {
+    matches: everyNote,
+    order: entries => rankByTitlePlausibility(entries, title),
+    matchType: 'frontmatter-scan',
+  };
 }
 
 /**
@@ -203,12 +239,54 @@ async function readCandidate(
   client: ObsidianApiClient,
   candidatePath: string,
   expectedId: string,
-  budget: ScanBudget
+  budget: ScanBudget,
+  matchType: CandidateScan['matchType']
 ): Promise<FileLookupResult | null> {
   if (!budget.spend()) return null;
   const content = await client.getFile(candidatePath);
   if (!isSameConversation(classifyNoteProbe(content, expectedId))) return null;
-  return { found: true, path: candidatePath, content: content as string, matchType: 'id-scan' };
+  return { found: true, path: candidatePath, content: content as string, matchType };
+}
+
+/**
+ * Lowercase word tokens of a title or file-name stem, for plausibility ranking
+ * only — never for correctness. `.md` is stripped so a file name and a title
+ * tokenize the same way.
+ */
+function titleTokens(value: string): Set<string> {
+  return new Set(
+    value
+      .replace(/\.md$/i, '')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/i)
+      .filter(token => token.length > 0)
+  );
+}
+
+/**
+ * Order scan candidates by how many word-tokens their file name shares with the
+ * note's current title, most-plausible first (ties keep directory-listing
+ * order). An edited title still shares most of its words with the old one, so
+ * this makes a real match likely to land near the front of a budget-capped
+ * scan — which matters: a single platform folder holds notes in the thousands,
+ * and the budget reads far fewer than that. It is a ranking heuristic only;
+ * every candidate opened is still verified against frontmatter id by
+ * {@link readCandidate} before it is accepted.
+ */
+function rankByTitlePlausibility(entries: string[], title: string): string[] {
+  const targetTokens = titleTokens(title);
+  if (targetTokens.size === 0) return entries;
+
+  return entries
+    .map((entry, index) => {
+      let shared = 0;
+      for (const token of titleTokens(entry)) {
+        if (targetTokens.has(token)) shared++;
+      }
+      return { entry, index, shared };
+    })
+    .sort((a, b) => b.shared - a.shared || a.index - b.index)
+    .map(ranked => ranked.entry);
 }
 
 /**
@@ -231,21 +309,23 @@ async function tryHintPath(
  * Look up an existing file for a conversation.
  *
  * Strategy (ordered by cost):
- * 1. Direct path: GET fullPath → verify frontmatter ID
- * 2a. ID scan (flat): listFiles(resolvedPath) → filter by ID suffix → verify frontmatter ID
- * 2b. ID scan (recursive): when {@link searchBasePath} differs from resolvedPath
- *     (i.e. the vault-path template contains date variables), walk subdirectories
- *     from searchBasePath looking for `-{idSuffix}.md` matches. This lets append-mode
- *     find a previous-month file even when the current resolved path points at a
- *     not-yet-existing folder.
- * 3. Not found
+ * 0. Caller-memoized {@link LookupOptions.hintPath}: GET → verify frontmatter id
+ * 1. Direct path: GET fullPath → verify frontmatter id
+ * 2. Directory scan, over the candidates {@link createCandidateScan} allows and
+ *    in the order it prefers — a suffix-narrowed read for a `-{idSuffix}.md`
+ *    name, every markdown file ranked by title plausibility for a
+ *    human-readable one — and bounded by one shared {@link ScanBudget}:
+ *    2a. flat: listFiles(resolvedPath)
+ *    2b. recursive: when {@link LookupOptions.searchBasePath} differs from
+ *        resolvedPath (i.e. the vault-path template contains date variables),
+ *        walk subdirectories from searchBasePath. This lets append-mode find a
+ *        previous-month file even when the current resolved path points at a
+ *        not-yet-existing folder.
+ * 3. Not found, with {@link LookupMissReason} naming which negative occurred
  *
- * @param searchBasePath - Optional. When provided AND different from resolvedPath,
- *   triggers the recursive scan. Defaults to resolvedPath (preserves the legacy
- *   flat-scan behaviour for templates without date variables).
- * @param hintPath - Optional. Path where this conversation's file was previously
- *   found (caller-memoized). Tried before anything else so repeat appends after
- *   a calendar rollover cost one GET instead of a directory scan.
+ * The scan is what keeps a note findable after the two things that move it
+ * without changing its frontmatter id: a retitled conversation and a calendar
+ * rollover.
  */
 export async function lookupExistingFile(
   client: ObsidianApiClient,
@@ -275,16 +355,14 @@ export async function lookupExistingFile(
   }
 
   // Step 2: Directory scan, bounded by a shared request budget
-  const matches = createCandidateMatcher(note.fileName, filenameScheme);
-  if (!matches) return notFound(fullPath, 'no-candidate-suffix', directProbe);
-
+  const candidates = createCandidateScan(note, filenameScheme);
   const budget = createScanBudget(SCAN_MAX_REQUESTS);
   const useRecursive = searchBasePath !== resolvedPath && searchBasePath !== '';
 
   const scan = useRecursive
-    ? await recursiveIdScan(client, searchBasePath, matches, expectedId, fullPath, budget)
+    ? await recursiveScan(client, searchBasePath, candidates, expectedId, fullPath, budget)
     : resolvedPath
-      ? await flatIdScan(client, resolvedPath, matches, expectedId, fullPath, budget)
+      ? await flatScan(client, resolvedPath, candidates, expectedId, fullPath, budget)
       : NO_SCAN;
   if (scan.hit) return { ...scan.hit, directProbe };
 
@@ -293,16 +371,16 @@ export async function lookupExistingFile(
 }
 
 /**
- * Scan a single directory for a candidate `.md` file (per {@link matches})
+ * Scan a single directory for a candidate file (per {@link CandidateScan})
  * whose frontmatter id equals expectedId. Returns the first match, or null.
  *
- * Non-recursive sibling of {@link recursiveIdScan}, used when the vault path
+ * Non-recursive sibling of {@link recursiveScan}, used when the vault path
  * template has no date variables (legacy flat-scan behaviour).
  */
-async function flatIdScan(
+async function flatScan(
   client: ObsidianApiClient,
   dir: string,
-  matches: (entry: string) => boolean,
+  scan: CandidateScan,
   expectedId: string,
   skipPath: string,
   budget: ScanBudget
@@ -311,13 +389,12 @@ async function flatIdScan(
   const files = await client.listFiles(dir);
   let candidates = 0;
 
-  for (const file of files) {
+  for (const file of scan.order(files.filter(scan.matches))) {
     if (budget.exhausted) break;
-    if (!matches(file)) continue;
     const candidatePath = `${dir}/${file}`;
     if (candidatePath === skipPath) continue; // Already checked as direct match
     candidates++;
-    const hit = await readCandidate(client, candidatePath, expectedId, budget);
+    const hit = await readCandidate(client, candidatePath, expectedId, budget, scan.matchType);
     if (hit) return { hit, entries: files.length, candidates };
   }
 
@@ -326,16 +403,19 @@ async function flatIdScan(
 
 /**
  * Walk subdirectories from baseDir up to {@link RECURSIVE_SCAN_MAX_DEPTH},
- * looking for a candidate `.md` file (per {@link matches}) whose frontmatter id
+ * looking for a candidate file (per {@link CandidateScan}) whose frontmatter id
  * equals expectedId. Returns the first match, or null when exhausted.
  *
  * Depth is bounded by RECURSIVE_SCAN_MAX_DEPTH; total request count is bounded
  * by the shared {@link ScanBudget}, since breadth is not otherwise limited.
+ * Ranking is applied per directory listing rather than across the whole walk,
+ * so the cheap case (a flat platform folder) ranks globally and the recursive
+ * case keeps streaming instead of buffering every name in the subtree.
  */
-async function recursiveIdScan(
+async function recursiveScan(
   client: ObsidianApiClient,
   baseDir: string,
-  matches: (entry: string) => boolean,
+  scan: CandidateScan,
   expectedId: string,
   skipPath: string,
   budget: ScanBudget
@@ -350,6 +430,8 @@ async function recursiveIdScan(
     if (!budget.spend()) return { hit: null, entries: seen, candidates };
     const entries = await client.listEntries(dir);
     seen += entries.length;
+
+    const files: string[] = [];
     for (const entry of entries) {
       if (entry.endsWith('/')) {
         if (depth + 1 <= RECURSIVE_SCAN_MAX_DEPTH) {
@@ -358,11 +440,15 @@ async function recursiveIdScan(
         }
         continue;
       }
-      if (!matches(entry)) continue;
+      if (scan.matches(entry)) files.push(entry);
+    }
+
+    for (const entry of scan.order(files)) {
+      if (budget.exhausted) break;
       const candidatePath = `${dir}/${entry}`;
       if (candidatePath === skipPath) continue;
       candidates++;
-      const hit = await readCandidate(client, candidatePath, expectedId, budget);
+      const hit = await readCandidate(client, candidatePath, expectedId, budget, scan.matchType);
       if (hit) return { hit, entries: seen, candidates };
     }
   }

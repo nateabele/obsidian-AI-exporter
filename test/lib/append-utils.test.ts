@@ -337,7 +337,137 @@ describe('lookupExistingFile', () => {
     expect(result.path).toBe('AI/claude/2026/06/my-chat-2026-06-28.md');
   });
 
-  // ----- Request budget -----
+  // ----- Human-readable (suffix-less) file names -----
+  //
+  // `title-id` names no longer carry an `-{idPrefix}` suffix: identity lives in
+  // frontmatter, not in the file name. So nothing in the name narrows the
+  // candidate set, and the lookup has to verify frontmatter directly (reported
+  // as matchType 'frontmatter-scan'). Giving up instead — which is what a
+  // suffix-only scan did — made every migrated note unfindable and forked a
+  // duplicate note per conversation touched.
+
+  it('still narrows by id suffix and never opens every file when the filename has a suffix', async () => {
+    // Cheap path regression guard: with a suffix present, only the suffix-matching
+    // file should ever be opened, even when the folder has many other candidates.
+    mockClient.getFile.mockResolvedValueOnce(null); // direct miss
+    mockClient.listFiles.mockResolvedValue([
+      'unrelated-one.md',
+      'unrelated-two.md',
+      'old-title-abc12345.md', // the only name ending in -abc12345.md
+      'unrelated-three.md',
+    ]);
+    mockClient.getFile.mockResolvedValueOnce('---\nid: claude_abc-def-123\n---\nBody');
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/my-chat-abc12345.md',
+      'AI/claude',
+      testNote
+    );
+
+    expect(result.found).toBe(true);
+    expect(result.matchType).toBe('id-scan');
+    // Direct check + exactly one suffix-matching candidate — never the other 3 files.
+    expect(mockClient.getFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('finds an existing note by frontmatter id when the filename has no id suffix', async () => {
+    const unsuffixedNote = createTestNote({ fileName: 'Test Conversation.md' });
+    const existingContent = '---\nid: claude_test-id\n---\nBody';
+
+    mockClient.getFile.mockResolvedValueOnce(null); // direct miss
+    mockClient.listFiles.mockResolvedValue([
+      'Unrelated Note.md',
+      'Old Test Conversation.md', // pre-retitle name; still shares every title word
+      'Another Note.md',
+    ]);
+    // Ranked first (full title-token overlap), so it's the first (and only) read.
+    mockClient.getFile.mockResolvedValueOnce(existingContent);
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/Test Conversation.md',
+      'AI/claude',
+      unsuffixedNote
+    );
+
+    expect(result.found).toBe(true);
+    expect(result.matchType).toBe('frontmatter-scan');
+    expect(result.path).toBe('AI/claude/Old Test Conversation.md');
+    expect(mockClient.getFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns a distinguishable not-found result when no unsuffixed candidate matches', async () => {
+    const unsuffixedNote = createTestNote({ fileName: 'Test Conversation.md' });
+
+    mockClient.getFile.mockResolvedValueOnce(null); // direct miss
+    mockClient.listFiles.mockResolvedValue(['Some Other Chat.md', 'Yet Another Chat.md']);
+    mockClient.getFile.mockResolvedValue('---\nid: not-a-match\n---\nBody');
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/Test Conversation.md',
+      'AI/claude',
+      unsuffixedNote
+    );
+
+    expect(result.found).toBe(false);
+    expect(result.matchType).toBe('none');
+    expect(result.missReason).toBe('candidate-id-mismatch');
+    // A real (if unsuccessful) scan happened — not a silent skip.
+    expect(mockClient.getFile).toHaveBeenCalledTimes(1 + 2);
+  });
+
+  it('caps the reads of an unsuffixed scan at the shared request budget', async () => {
+    const unsuffixedNote = createTestNote({ fileName: 'Test Conversation.md' });
+    // None of these share a title token with "Test Conversation", so ranking leaves
+    // them in listing order and every one is an equally-plausible candidate.
+    const files = Array.from({ length: SCAN_MAX_REQUESTS + 50 }, (_, i) => `file-${i}.md`);
+
+    mockClient.getFile.mockResolvedValueOnce(null); // direct miss
+    mockClient.listFiles.mockResolvedValue(files);
+    mockClient.getFile.mockResolvedValue('---\nid: not-a-match\n---\nBody');
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/Test Conversation.md',
+      'AI/claude',
+      unsuffixedNote
+    );
+
+    expect(result.found).toBe(false);
+    expect(result.missReason).toBe('budget-exhausted');
+    // The direct-path GET plus at most the budgeted scan requests…
+    expect(mockClient.getFile.mock.calls.length).toBeLessThanOrEqual(SCAN_MAX_REQUESTS + 1);
+    // …and never the whole folder, which in a real vault runs to thousands.
+    expect(mockClient.getFile.mock.calls.length).toBeLessThan(files.length);
+  });
+
+  it('finds a retitled note across a date-rollover folder when the filename has no id suffix', async () => {
+    // Save target: AI/claude/2026/06/Test Conversation.md (June)
+    // Existing file lives in AI/claude/2026/05/Old Title.md (May), retitled since.
+    const unsuffixedNote = createTestNote({ fileName: 'Test Conversation.md' });
+    const existingContent = '---\nid: claude_test-id\n---\nBody';
+
+    mockClient.getFile.mockResolvedValueOnce(null); // direct miss (June folder)
+    mockClient.listEntries.mockResolvedValueOnce(['2026/']);
+    mockClient.listEntries.mockResolvedValueOnce(['05/', '06/']);
+    mockClient.listEntries.mockResolvedValueOnce(['Old Title.md']); // May folder
+    mockClient.listEntries.mockResolvedValueOnce([]); // June folder, empty so far
+    mockClient.getFile.mockResolvedValueOnce(existingContent);
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/2026/06/Test Conversation.md',
+      'AI/claude/2026/06',
+      unsuffixedNote,
+      { searchBasePath: 'AI/claude' }
+    );
+
+    expect(result.found).toBe(true);
+    expect(result.matchType).toBe('frontmatter-scan');
+    expect(result.path).toBe('AI/claude/2026/05/Old Title.md');
+  });
 
   // ===== miss diagnostics (issue #365) =====
   //
@@ -346,12 +476,18 @@ describe('lookupExistingFile', () => {
   // occurred, because every one of them produced the same silent `found:
   // false`. These pin the reason down without changing any behaviour.
 
-  it('reports missReason no-candidate-suffix when the file name carries no id suffix', async () => {
+  it('scans rather than reporting a suffix-less name as unscannable', async () => {
+    // This used to assert the opposite — missReason 'no-candidate-suffix' and
+    // listFiles never called — back when a `title-id` name always carried an id
+    // suffix. Human-readable names never do, so skipping the scan is precisely
+    // what forked a duplicate note per conversation; the miss must now be named
+    // by what the scan saw.
     const noSuffix = createTestNote({
       fileName: 'conversation.md',
       frontmatter: createTestFrontmatter({ id: 'claude_abc-def-123' }),
     });
     mockClient.getFile.mockResolvedValue(null);
+    mockClient.listFiles.mockResolvedValue([]);
 
     const result = await lookupExistingFile(
       mockClient as never,
@@ -361,8 +497,8 @@ describe('lookupExistingFile', () => {
     );
 
     expect(result.found).toBe(false);
-    expect(result.missReason).toBe('no-candidate-suffix');
-    expect(mockClient.listFiles).not.toHaveBeenCalled();
+    expect(mockClient.listFiles).toHaveBeenCalledWith('AI/claude');
+    expect(result.missReason).toBe('empty-directory');
   });
 
   it('reports missReason empty-directory when the listing comes back empty', async () => {

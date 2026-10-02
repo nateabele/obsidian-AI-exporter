@@ -10,7 +10,7 @@
 import { formatMessage, formatToolContent } from './markdown-formatting';
 import { convertDeepResearchContent } from './markdown-deep-research';
 import { generateHash } from '../lib/hash';
-import { MAX_FILENAME_BASE_LENGTH, FILENAME_ID_SUFFIX_LENGTH } from '../lib/constants';
+import { MAX_FILENAME_BASE_LENGTH } from '../lib/constants';
 import type {
   ConversationData,
   ObsidianNote,
@@ -31,37 +31,81 @@ export { htmlToMarkdown, escapeAngleBrackets, escapeUserText } from './markdown-
 export { convertDeepResearchContent } from './markdown-deep-research';
 
 /**
+ * Characters a filename/Obsidian cannot hold, plus Obsidian's own wikilink
+ * syntax (# ^ [ ]), plus control characters. Deliberately excludes the
+ * whitespace control characters (\t \n \r \v \f) \u2014 those fall through to the
+ * `\s+` collapse in {@link sanitizeFilenameTitle} and become a single
+ * ordinary space, rather than being silently deleted, so `"Foo\nBar"` reads
+ * as `"Foo Bar"` and not `"FooBar"`. Every character that could turn a title
+ * into a *path* (`/`, `\`, `:`) is in this set, so
+ * {@link sanitizeFilenameTitle}'s output can never contain a path separator
+ * or a drive letter \u2014 that is deliberate, not a side effect of lowercasing
+ * the way the scheme this replaces incidentally was.
+ *
+ * Must stay byte-for-byte in sync with FORBIDDEN_FILENAME_CHARS in
+ * mail-api/server/services/chat/chatSyncService.js.
+ */
+// Stripping control characters from a filename is the point; \t \n \r \v \f
+// are deliberately excluded (see above), and \x09-\x0d is exactly that gap.
+// eslint-disable-next-line no-control-regex
+const FORBIDDEN_FILENAME_CHARS = /[/\\:*?"<>|#^[\]\x00-\x08\x0e-\x1f\x7f]/g;
+
+/**
+ * Sanitize a conversation title into a human-readable filename base.
+ *
+ * Preserves case, spaces and non-Latin characters (CJK/Hangul included);
+ * strips only what a filename or Obsidian cannot hold; collapses whitespace
+ * runs left behind by stripping; trims leading/trailing spaces and dots (a
+ * leading dot hides the file, a trailing dot is invalid on some
+ * filesystems); truncates to {@link MAX_FILENAME_BASE_LENGTH}; and falls
+ * back to `'conversation'` for an empty or fully-stripped title.
+ *
+ * Must stay byte-for-byte in sync with sanitizeFilenameTitle() in
+ * mail-api/server/services/chat/chatSyncService.js \u2014 the extension writes
+ * the manual-export filename, mail-api writes the auto-sync filename, and
+ * they have to land on the same note or append/lookup silently forks into
+ * two files.
+ */
+function sanitizeFilenameTitle(title: string): string {
+  return (
+    (title || '')
+      .replace(FORBIDDEN_FILENAME_CHARS, '')
+      .replace(/\s+/g, ' ')
+      .replace(/^[\s.]+|[\s.]+$/g, '')
+      .substring(0, MAX_FILENAME_BASE_LENGTH)
+      .replace(/[\s.]+$/g, '') || 'conversation'
+  );
+}
+
+/**
  * Generate a sanitized note filename from the title, per the chosen scheme.
  *
- * The title is always slugified (lowercased, non-alphanumeric runs \u2192 `-`,
- * CJK/Hangul preserved) and truncated. The suffix depends on `scheme`:
- * - `title-id`   \u2192 the first 8 chars of the conversation id (default).
+ * The title is always run through {@link sanitizeFilenameTitle}. The suffix
+ * depends on `scheme`:
+ * - `title-id`   \u2192 none \u2014 identity is carried by frontmatter, not the
+ *   filename (default).
  * - `title-date` \u2192 the local `YYYY-MM-DD` of `date` (save date), matching the
  *   vault-path date tokens.
  *
  * @param title           Conversation title.
- * @param conversationId  Raw conversation id (used by the `title-id` scheme).
+ * @param _conversationId Raw conversation id. Unused by the `title-id`
+ *   scheme (identity is carried by frontmatter, not the filename \u2014 see
+ *   {@link sanitizeFilenameTitle}); kept for signature compatibility.
  * @param scheme          Naming scheme (default `title-id`).
  * @param date            Date for the `title-date` scheme (default: now).
  */
 export function generateFileName(
   title: string,
-  conversationId: string,
+  _conversationId: string,
   scheme: FilenameScheme = 'title-id',
   date: Date = new Date()
 ): string {
-  const slug =
-    title
-      .toLowerCase()
-      .replace(/[^a-z0-9\u3000-\u9fff\uac00-\ud7af]+/g, '-') // Keep Japanese/Korean chars
-      .replace(/^-+|-+$/g, '')
-      .substring(0, MAX_FILENAME_BASE_LENGTH) || 'conversation';
+  const slug = sanitizeFilenameTitle(title);
 
-  const suffix =
-    scheme === 'title-date'
-      ? dateSuffix(date)
-      : conversationId.substring(0, FILENAME_ID_SUFFIX_LENGTH);
-  return `${slug}-${suffix}.md`;
+  if (scheme === 'title-date') {
+    return `${slug}-${dateSuffix(date)}.md`;
+  }
+  return `${slug}.md`;
 }
 
 /** Local `YYYY-MM-DD` suffix for the `title-date` scheme. */

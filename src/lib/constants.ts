@@ -23,11 +23,17 @@ export const MAX_DEEP_RESEARCH_TITLE_LENGTH = 200;
 /** Maximum length for conversation title (characters) */
 export const MAX_CONVERSATION_TITLE_LENGTH = 100;
 
-/** Maximum length for filename base (characters) */
-export const MAX_FILENAME_BASE_LENGTH = 50;
-
-/** Length of conversation ID suffix in filenames */
-export const FILENAME_ID_SUFFIX_LENGTH = 8;
+/**
+ * Maximum length for filename base (characters). Must stay byte-for-byte in
+ * sync with NOTE_FILENAME_MAX_LENGTH in
+ * mail-api/server/services/chat/chatSyncService.js — see the note above
+ * generateFileName() in src/content/markdown.ts for why. 100 rather than the
+ * old 50: MAX_CONVERSATION_TITLE_LENGTH already caps titles at 100 before
+ * they reach here, so this cap now almost never actually truncates a real
+ * title, while staying well inside the 255-byte filesystem limit even for
+ * multi-byte (Japanese/Korean) titles.
+ */
+export const MAX_FILENAME_BASE_LENGTH = 100;
 
 /** Maximum length for a code block language hint (characters) */
 export const MAX_LANG_HINT_LENGTH = 30;
