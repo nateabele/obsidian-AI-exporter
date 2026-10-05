@@ -214,6 +214,10 @@
     "message": "Filename Scheme",
     "description": "Label for the note filename naming scheme select"
   },
+  "settings_filenameScheme_title": {
+    "message": "Title only",
+    "description": "Filename scheme option: sanitized title with no suffix"
+  },
   "settings_filenameScheme_titleId": {
     "message": "Title + conversation ID",
     "description": "Filename scheme option: slug plus conversation id suffix"

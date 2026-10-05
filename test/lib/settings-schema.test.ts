@@ -57,8 +57,22 @@ describe('normalizeSyncSettings', () => {
 
   it('resets an invalid filenameScheme enum to default', () => {
     const result = normalizeSyncSettings({ templateOptions: { filenameScheme: 'bogus' } });
-    expect(result.templateOptions.filenameScheme).toBe('title-id');
+    expect(result.templateOptions.filenameScheme).toBe('title');
   });
+
+  it("defaults filenameScheme to 'title' through validation, not just as a literal", () => {
+    expect(DEFAULT_TEMPLATE_OPTIONS.filenameScheme).toBe('title');
+    expect(normalizeSyncSettings({}).templateOptions.filenameScheme).toBe('title');
+    expect(normalizeSyncSettings(undefined).templateOptions.filenameScheme).toBe('title');
+  });
+
+  it.each(['title', 'title-id', 'title-date'] as const)(
+    'keeps a valid filenameScheme %s instead of coercing it',
+    scheme => {
+      const result = normalizeSyncSettings({ templateOptions: { filenameScheme: scheme } });
+      expect(result.templateOptions.filenameScheme).toBe(scheme);
+    }
+  );
 
   it('falls back to default templateOptions when the value is not an object', () => {
     const result = normalizeSyncSettings({ templateOptions: 'corrupt' });

@@ -148,6 +148,9 @@
   "settings_filenameScheme": {
     "message": "ファイル名スキーム"
   },
+  "settings_filenameScheme_title": {
+    "message": "タイトルのみ"
+  },
   "settings_filenameScheme_titleId": {
     "message": "タイトル + 会話 ID"
   },

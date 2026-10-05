@@ -82,6 +82,8 @@ function sanitizeFilenameTitle(title: string): string {
  *
  * The title is always run through {@link sanitizeFilenameTitle}. The suffix
  * depends on `scheme`:
+ * - `title`      \u2192 none \u2014 the sanitized title alone (default), byte-identical
+ *   to mail-api's notePathFor().
  * - `title-id`   \u2192 none \u2014 identity is carried by frontmatter, not the
  *   filename (default).
  * - `title-date` \u2192 the local `YYYY-MM-DD` of `date` (save date), matching the
@@ -91,13 +93,13 @@ function sanitizeFilenameTitle(title: string): string {
  * @param _conversationId Raw conversation id. Unused by the `title-id`
  *   scheme (identity is carried by frontmatter, not the filename \u2014 see
  *   {@link sanitizeFilenameTitle}); kept for signature compatibility.
- * @param scheme          Naming scheme (default `title-id`).
+ * @param scheme          Naming scheme (default `title`).
  * @param date            Date for the `title-date` scheme (default: now).
  */
 export function generateFileName(
   title: string,
   _conversationId: string,
-  scheme: FilenameScheme = 'title-id',
+  scheme: FilenameScheme = 'title',
   date: Date = new Date()
 ): string {
   const slug = sanitizeFilenameTitle(title);

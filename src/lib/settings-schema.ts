@@ -7,7 +7,13 @@
  * fail validation to their defaults (valid fields are preserved).
  */
 
-import type { AIPlatform, SyncSettings, TemplateOptions, OutputOptions } from './types';
+import type {
+  AIPlatform,
+  FilenameScheme,
+  SyncSettings,
+  TemplateOptions,
+  OutputOptions,
+} from './types';
 import {
   DEFAULT_OBSIDIAN_URL,
   DEFAULT_COMPANION_URL,
@@ -31,7 +37,7 @@ import {
 } from './tag-template';
 
 const MESSAGE_FORMATS = ['callout', 'plain', 'blockquote'] as const;
-const FILENAME_SCHEMES = ['title-id', 'title-date'] as const;
+const FILENAME_SCHEMES = ['title', 'title-id', 'title-date'] as const;
 
 export const DEFAULT_TEMPLATE_OPTIONS: TemplateOptions = {
   includeId: true,
@@ -44,7 +50,7 @@ export const DEFAULT_TEMPLATE_OPTIONS: TemplateOptions = {
   userCalloutType: 'QUESTION',
   assistantCalloutType: 'NOTE',
   includeQuestionHeaders: false,
-  filenameScheme: 'title-id',
+  filenameScheme: 'title',
   conversationTags: [...DEFAULT_CONVERSATION_TAGS],
   deepResearchTags: [...DEFAULT_DEEP_RESEARCH_TAGS],
 };
@@ -105,6 +111,11 @@ function asEnum<T extends string>(value: unknown, allowed: readonly T[], fallbac
   return typeof value === 'string' && (allowed as readonly string[]).includes(value)
     ? (value as T)
     : fallback;
+}
+
+/** Coerce an arbitrary string (e.g. a popup <select> value) to a valid scheme. */
+export function parseFilenameScheme(value: unknown): FilenameScheme {
+  return asEnum(value, FILENAME_SCHEMES, DEFAULT_TEMPLATE_OPTIONS.filenameScheme ?? 'title');
 }
 
 /**
@@ -170,7 +181,7 @@ function normalizeTemplateOptions(raw: unknown): TemplateOptions {
       raw.includeQuestionHeaders,
       d.includeQuestionHeaders ?? false
     ),
-    filenameScheme: asEnum(raw.filenameScheme, FILENAME_SCHEMES, d.filenameScheme ?? 'title-id'),
+    filenameScheme: asEnum(raw.filenameScheme, FILENAME_SCHEMES, d.filenameScheme ?? 'title'),
     conversationTags: asTagList(raw.conversationTags, DEFAULT_CONVERSATION_TAGS),
     deepResearchTags: asTagList(raw.deepResearchTags, DEFAULT_DEEP_RESEARCH_TAGS),
   };

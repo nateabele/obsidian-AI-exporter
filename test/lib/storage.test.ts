@@ -118,9 +118,9 @@ describe('storage', () => {
       expect(settings.templateOptions.includeId).toBe(true); // default preserved
     });
 
-    it('defaults filenameScheme to title-id (#328)', async () => {
+    it("defaults filenameScheme to 'title' (matches the migrated vault names)", async () => {
       const settings = await getSettings();
-      expect(settings.templateOptions.filenameScheme).toBe('title-id');
+      expect(settings.templateOptions.filenameScheme).toBe('title');
     });
 
     it('normalizes corrupted sync values to defaults (L-1)', async () => {

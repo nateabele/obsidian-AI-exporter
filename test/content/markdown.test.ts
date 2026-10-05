@@ -622,13 +622,21 @@ const FILENAME_CASES: Array<{ name: string; title: string; expected: string }> =
     title: '/\\:*?"<>|#^[]',
     expected: 'conversation.md',
   },
-  { name: 'non-forbidden punctuation is preserved, not hyphenated', title: '!!!@@@', expected: '!!!@@@.md' },
+  {
+    name: 'non-forbidden punctuation is preserved, not hyphenated',
+    title: '!!!@@@',
+    expected: '!!!@@@.md',
+  },
   {
     name: 'a several-hundred-character title truncates at 100, not 50',
     title: 'A'.repeat(300),
     expected: `${'A'.repeat(100)}.md`,
   },
-  { name: 'a title of only dots falls back to "conversation"', title: '.......', expected: 'conversation.md' },
+  {
+    name: 'a title of only dots falls back to "conversation"',
+    title: '.......',
+    expected: 'conversation.md',
+  },
   { name: 'an empty title falls back to "conversation"', title: '', expected: 'conversation.md' },
   {
     name: 'a realistic corpus duplicate ("New chat") gets no suffix',
@@ -647,6 +655,31 @@ describe('generateFileName — cross-repo agreement table', () => {
 
 describe('generateFileName — naming scheme (#328)', () => {
   const DATE = new Date(2026, 6, 5); // 2026-07-05, local time
+
+  it("'title' scheme emits the sanitized title with no suffix and no date", () => {
+    expect(generateFileName('Hello World', 'abc123def456', 'title', DATE)).toBe('Hello World.md');
+  });
+
+  it("'title' scheme keeps the conversation fallback for an empty or fully-stripped title", () => {
+    expect(generateFileName('', 'abc123def456', 'title', DATE)).toBe('conversation.md');
+    expect(generateFileName('///***', 'abc123def456', 'title', DATE)).toBe('conversation.md');
+  });
+
+  it("'title' scheme round-trips a real migrated vault name", () => {
+    expect(
+      generateFileName(
+        'Resumable transfer protocols in DuckDB extensions',
+        '58ff509f-aaaa',
+        'title'
+      )
+    ).toBe('Resumable transfer protocols in DuckDB extensions.md');
+  });
+
+  it("'title' is the default scheme when scheme is omitted", () => {
+    expect(generateFileName('Hello World', 'abc123def456')).toBe(
+      generateFileName('Hello World', 'abc123def456', 'title')
+    );
+  });
 
   it('defaults to the title-id scheme when scheme is omitted', () => {
     expect(generateFileName('Hello World', 'abc123def456')).toBe('Hello World.md');

@@ -23,6 +23,7 @@ import {
   validateApiKey,
   validateObsidianUrl,
 } from '../lib/validation';
+import { parseFilenameScheme } from '../lib/settings-schema';
 import {
   DEFAULT_CONVERSATION_TAGS,
   DEFAULT_DEEP_RESEARCH_TAGS,
@@ -311,7 +312,7 @@ function populateCompanionSettings(settings: ExtensionSettings): void {
 /** Message format, filename scheme and callout types */
 function populateTemplateOptions(templateOptions: ExtensionSettings['templateOptions']): void {
   elements.messageFormat.value = templateOptions.messageFormat || 'callout';
-  elements.filenameScheme.value = templateOptions.filenameScheme || 'title-id';
+  elements.filenameScheme.value = templateOptions.filenameScheme || 'title';
   elements.userCallout.value = templateOptions.userCalloutType || 'QUESTION';
   elements.assistantCallout.value = templateOptions.assistantCalloutType || 'NOTE';
   updateCalloutSettingsVisibility();
@@ -548,7 +549,7 @@ function collectSettings(): ExtensionSettings {
     includeDates: elements.includeDates.checked,
     includeMessageCount: elements.includeMessageCount.checked,
     timezone: elements.timezone.value || undefined,
-    filenameScheme: elements.filenameScheme.value === 'title-date' ? 'title-date' : 'title-id',
+    filenameScheme: parseFilenameScheme(elements.filenameScheme.value),
   };
 
   const outputOptions = collectOutputOptions();

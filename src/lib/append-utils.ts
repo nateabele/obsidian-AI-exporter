@@ -203,6 +203,10 @@ const LISTING_ORDER = (entries: string[]): string[] => entries;
  *   save, so instead the candidates are ranked by title plausibility — see
  *   {@link rankByTitlePlausibility} — and read until the shared
  *   {@link ScanBudget} runs out.
+ * - `title` — suffix-less by construction, so the same situation as the
+ *   `title-id` no-suffix case: nothing in the name narrows the scan. It takes
+ *   the every-note branch explicitly rather than relying on a note's name
+ *   happening to carry no id suffix.
  * - `title-date` — names end in the SAVE date, so a note written on the 3rd and
  *   re-saved on the 10th shares no file-name component beyond the title slug;
  *   every markdown file must be considered, in listing order as before.
@@ -211,6 +215,14 @@ function createCandidateScan(note: ObsidianNote, scheme: FilenameScheme): Candid
   const everyNote = (entry: string): boolean => entry.endsWith('.md');
   if (scheme === 'title-date') {
     return { matches: everyNote, order: LISTING_ORDER, matchType: 'id-scan' };
+  }
+  if (scheme === 'title') {
+    const { title } = note.frontmatter;
+    return {
+      matches: everyNote,
+      order: entries => rankByTitlePlausibility(entries, title),
+      matchType: 'frontmatter-scan',
+    };
   }
 
   const idSuffix = extractIdSuffix(note.fileName);

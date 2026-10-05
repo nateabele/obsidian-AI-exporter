@@ -301,10 +301,13 @@ export interface ContentScriptSettings extends SyncSettings {
 
 /**
  * Note filename naming scheme (issue #328).
- * - `title-id`   — `{slug}-{conversationId[:8]}.md` (default, current behavior)
+ * - `title`      — `{title}.md`, no suffix of any kind (default). Matches the
+ *   names mail-api's notePathFor() writes and the vault migration produced.
+ * - `title-id`   — historically `{slug}-{conversationId[:8]}.md`; currently
+ *   emits the same suffix-less name as `title`
  * - `title-date` — `{slug}-{YYYY}-{MM}-{DD}.md` using the local save date
  */
-export type FilenameScheme = 'title-id' | 'title-date';
+export type FilenameScheme = 'title' | 'title-id' | 'title-date';
 
 /**
  * Template customization options

@@ -311,6 +311,55 @@ describe('lookupExistingFile', () => {
     expect(result.matchType).toBe('none');
   });
 
+  // ----- filenameScheme: 'title' -----
+  // A suffix-less name gives the scan nothing to narrow on. A hyphenated title
+  // such as `Some-Title.md` even LOOKS like it has an id suffix ("Title"), which
+  // would narrow the scan to entries ending `-Title.md` and miss the real note.
+
+  it("scans every note when the scheme is 'title', even for a hyphen-lookalike name", async () => {
+    const titleNote = createTestNote({
+      fileName: 'Some-Title.md',
+      frontmatter: createTestFrontmatter({ id: 'claude_abc-def-123', title: 'Some-Title' }),
+    });
+
+    mockClient.getFile.mockResolvedValueOnce(null); // direct miss
+    mockClient.listFiles.mockResolvedValue(['Retitled note.md', 'Another.md']);
+    mockClient.getFile.mockResolvedValueOnce('---\nid: claude_abc-def-123\n---\nBody');
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/Some-Title.md',
+      'AI/claude',
+      titleNote,
+      { filenameScheme: 'title' }
+    );
+
+    expect(result.found).toBe(true);
+    expect(result.matchType).toBe('frontmatter-scan');
+    expect(result.path).toBe('AI/claude/Retitled note.md');
+  });
+
+  it("still narrows by id suffix for 'title-id' (unchanged)", async () => {
+    const idNote = createTestNote({
+      fileName: 'Some-Title.md',
+      frontmatter: createTestFrontmatter({ id: 'claude_abc-def-123', title: 'Some-Title' }),
+    });
+
+    mockClient.getFile.mockResolvedValueOnce(null);
+    mockClient.listFiles.mockResolvedValue(['Retitled note.md']);
+
+    const result = await lookupExistingFile(
+      mockClient as never,
+      'AI/claude/Some-Title.md',
+      'AI/claude',
+      idNote,
+      { filenameScheme: 'title-id' }
+    );
+
+    expect(result.found).toBe(false);
+    expect(mockClient.getFile).toHaveBeenCalledTimes(1); // only the direct probe
+  });
+
   it('finds a title-date file in a previous month folder (recursive scan)', async () => {
     const existingContent = '---\nid: claude_abc-def-123\n---\nBody';
     const dateNote = createTestNote({
