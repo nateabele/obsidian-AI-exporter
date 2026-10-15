@@ -229,6 +229,20 @@ describe('ClaudeExtractor', () => {
       setClaudeLocation('a1b2c3d4-e5f6-7890-abcd-ef1234567890');
       expect(extractor.getConversationId()).toBe('a1b2c3d4-e5f6-7890-abcd-ef1234567890');
     });
+
+    // The pages that actually produced 23 junk conversations in the corpus
+    // between 2026-09-29 and 2026-10-14. The content script matches all of
+    // claude.ai, so it runs here too, and the sign-in and pricing pages have
+    // enough prose to extract ("Your thinking partner for big ambitions",
+    // "Free", "Pro", "Max") -- which is why the id, not the content, is what
+    // has to stop a sync (see `awaitingConversationId` in bootstrap.ts).
+    it.each(['/login', '/pricing', '/new', '/recents', '/projects'])(
+      'yields no conversation id on %s',
+      path => {
+        defineLocation('claude.ai', path);
+        expect(extractor.getConversationId()).toBeNull();
+      }
+    );
   });
 
   // ========== 6.3.4 Title Extraction (4 tests) ==========
