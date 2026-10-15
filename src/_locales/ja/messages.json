@@ -42,6 +42,9 @@
   "syncIcon_notOnConversationPage": {
     "message": "このページに有効な会話が見つかりませんでした"
   },
+  "syncIcon_awaitingConversationId": {
+    "message": "この会話に URL が割り当てられるまで同期を待機しています"
+  },
   "syncIcon_extractionFailed": {
     "message": "抽出に失敗しました"
   },

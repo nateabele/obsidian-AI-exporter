@@ -371,6 +371,15 @@ describe('content/bootstrap', () => {
        * state, so reusing an href another test already synced would make the
        * sync here a no-op with no note path to open.
        */
+      /**
+       * Each id starts with a hex run on purpose. Gemini's
+       * `getConversationId()` captures only the LEADING `[a-f0-9]+` of the
+       * `/app/` segment, so a label beginning with a non-hex letter (`open-…`)
+       * resolves to NO conversation id at all -- and `runAutoSync` refuses to
+       * sync a page that has none, since extraction would otherwise invent a
+       * throwaway `gemini-<Date.now()>` one. The prefix also keeps the ids
+       * distinct from each other, which the paragraph above depends on.
+       */
       async function getHandler(conversationId: string): Promise<() => void> {
         setGeminiLocation(conversationId);
         loadFixture(
@@ -395,7 +404,7 @@ describe('content/bootstrap', () => {
           settings: { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] },
           chatSync: { ...okChatSync, notePath: 'AI/gemini/named-by-the-response.md' },
         });
-        const onSyncAndOpenTranscript = await getHandler('open-transcript-via-sync');
+        const onSyncAndOpenTranscript = await getHandler('0f8-open-transcript-via-sync');
 
         onSyncAndOpenTranscript();
 
@@ -421,7 +430,7 @@ describe('content/bootstrap', () => {
           superseded: 0,
           detail: 'syncIcon_notConfigured',
         });
-        const onSyncAndOpenTranscript = await getHandler('open-transcript-unconfigured');
+        const onSyncAndOpenTranscript = await getHandler('0f9-open-transcript-unconfigured');
 
         onSyncAndOpenTranscript();
 
@@ -438,7 +447,7 @@ describe('content/bootstrap', () => {
         // which is the one case with nothing specific to say — it must still
         // say something.
         mockMessaging({ settings: { isCompanionConfigured: false } });
-        const onSyncAndOpenTranscript = await getHandler('open-transcript-no-reason');
+        const onSyncAndOpenTranscript = await getHandler('0fa-open-transcript-no-reason');
 
         onSyncAndOpenTranscript();
 
@@ -1105,6 +1114,53 @@ describe('content/bootstrap', () => {
         .mock.calls.filter(([message]) => (message as { action: string }).action === 'chatSync');
     }
 
+    it('sends nothing while the page has no conversation id in its URL', async () => {
+      // A brand-new chat sits at /app with no id of its own. The DOM here is a
+      // complete, perfectly syncable conversation, so the ONLY thing that can
+      // stop the sync is the missing id -- which is the point: extraction
+      // would have succeeded, under a `gemini-<Date.now()>` id that mints a
+      // throwaway conversation the real one can never align with.
+      defineLocation('gemini.google.com', '/app');
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+      mockMessaging({ settings: { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] } });
+
+      const result = await runAutoSync();
+
+      expect(result).toBeNull();
+      expect(chatSyncCallsOf()).toHaveLength(0);
+      expect(recordSyncAttempt).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          outcome: 'blocked',
+          detail: 'syncIcon_awaitingConversationId',
+        })
+      );
+    });
+
+    it('syncs that same conversation as soon as its URL carries an id', async () => {
+      // The control for the test above. Same DOM, same settings, same mocks --
+      // the id in the URL is the only difference. Without it, a sync broken
+      // for any unrelated reason would satisfy that assertion just as well.
+      setGeminiLocation('ddd888');
+      loadFixture(
+        createGeminiConversationDOM([
+          { role: 'user', content: 'Hello Gemini' },
+          { role: 'assistant', content: '<p>Hi there!</p>' },
+        ])
+      );
+      mockMessaging({ settings: { isCompanionConfigured: true, autoSyncPlatforms: ['gemini'] } });
+
+      const result = await runAutoSync();
+
+      expect(result).toEqual(okChatSync);
+      expect(chatSyncCallsOf()).toHaveLength(1);
+    });
+
     it('does not advance the manifest after a failed sync, so the next attempt resends the same blocks', async () => {
       setGeminiLocation('auto-sync-retry');
       loadFixture(
@@ -1142,7 +1198,7 @@ describe('content/bootstrap', () => {
     });
 
     it('resends once with every block when the server asks for full content', async () => {
-      setGeminiLocation('needs-full-content');
+      setGeminiLocation('0f1-needs-full-content');
       loadFixture(
         createGeminiConversationDOM([
           { role: 'user', content: 'Hello Gemini' },
@@ -1196,7 +1252,7 @@ describe('content/bootstrap', () => {
     });
 
     it('treats a second needsFullContent in the same attempt as a failure, without looping', async () => {
-      setGeminiLocation('needs-full-content-loop');
+      setGeminiLocation('0f2-needs-full-content-loop');
       loadFixture(
         createGeminiConversationDOM([
           { role: 'user', content: 'Hello Gemini' },
@@ -1240,7 +1296,7 @@ describe('content/bootstrap', () => {
       // resend's response advances `previousManifest`. If it did not, every
       // later run would diff against an empty baseline and resend the whole
       // conversation, forever, behind a green icon.
-      setGeminiLocation('needs-full-content-baseline');
+      setGeminiLocation('0f3-needs-full-content-baseline');
       loadFixture(
         createGeminiConversationDOM([
           { role: 'user', content: 'Hello Gemini' },
@@ -1324,7 +1380,7 @@ describe('content/bootstrap', () => {
       // the check above the guard means the context updates synchronously
       // on every call, in-flight or not — only the actual sync work is
       // gated by the guard.
-      setGeminiLocation('inflight-nav-a');
+      setGeminiLocation('0f4-inflight-nav-a');
       loadFixture(
         createGeminiConversationDOM([
           { role: 'user', content: 'Hello Gemini' },
@@ -1348,7 +1404,7 @@ describe('content/bootstrap', () => {
 
       // A navigation arrives (e.g. the debounced mutation observer fires
       // again) while the first run is still in flight.
-      setGeminiLocation('inflight-nav-b');
+      setGeminiLocation('0f5-inflight-nav-b');
       const hrefB = location.href;
       vi.mocked(setIconContext).mockClear();
 
@@ -1847,7 +1903,7 @@ describe('content/bootstrap', () => {
       // Navigating to a platform the user excluded from auto-sync isolates the
       // disarm: establishAutoSyncContext runs ahead of every bail-out, so the
       // watcher is stopped and nothing re-arms in the same tick.
-      setGeminiLocation('watermark-after-navigation');
+      setGeminiLocation('0f6-watermark-after-navigation');
       loadFixture(
         createGeminiConversationDOM([{ role: 'user', content: 'A different conversation' }])
       );
@@ -2392,7 +2448,7 @@ describe('content/bootstrap', () => {
       expect(paintFor).toHaveBeenCalledWith(hrefA, 'syncing');
 
       // In-app navigation to B arrives before the settings promise resolves.
-      setGeminiLocation('handle-sync-nav-b');
+      setGeminiLocation('0f7-handle-sync-nav-b');
       const hrefB = location.href;
 
       resolveGetSettings({

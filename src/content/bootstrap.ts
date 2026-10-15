@@ -973,6 +973,38 @@ function attachNavigationWatcher(): void {
   });
 }
 
+/**
+ * Has this page not been assigned a conversation URL yet? If so, settle the
+ * icon on that reason and report `true` so the caller sends nothing.
+ *
+ * Extraction would NOT stop a sync here: `extract()` falls back to
+ * `${this.platform}-${Date.now()}` when `getConversationId()` comes back null
+ * (`BaseExtractor.extract`, and Gemini's own override). That fallback is right
+ * for a one-shot manual export, which only needs *a* frontmatter id for the
+ * file it is about to write — and poison for a sync, because it is not
+ * deterministic: every tick on a chat that has no URL of its own yet mints a
+ * brand-new conversation id, which the real conversation can never align with
+ * once its URL resolves. Nineteen single-block `claude_claude-<timestamp>`
+ * conversations accumulated in the companion's corpus that way, three of them
+ * on a single day.
+ *
+ * A wait, not a failure. `attachNavigationWatcher` polls this very value
+ * (`currentConversationKey`), so the moment the SPA swaps `/new` for
+ * `/chat/<uuid>` that null → id transition fires a sync of its own accord.
+ *
+ * Split out from `runAutoSync` purely to keep it under the line-count lint
+ * limit.
+ */
+function awaitingConversationId(
+  extractor: IConversationExtractor,
+  href: string,
+  trigger: SyncAttemptTrigger
+): boolean {
+  if (extractor.getConversationId()) return false;
+  settleBlocked(href, getMessage('syncIcon_awaitingConversationId'), trigger);
+  return true;
+}
+
 export async function runAutoSync(
   trigger: SyncAttemptTrigger = 'mutation'
 ): Promise<ChatSyncResponse | null> {
@@ -1015,6 +1047,8 @@ export async function runAutoSync(
       settleDisabled(startHref, trigger);
       return null;
     }
+
+    if (awaitingConversationId(extractor, startHref, trigger)) return null;
 
     // Auto-scroll is a good fit for the manual sync button (the user
     // triggered it and expects the page to move), but not for a background

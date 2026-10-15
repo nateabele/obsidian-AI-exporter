@@ -74,6 +74,10 @@
     "message": "Couldn't find an active conversation on this page",
     "description": "Blocked-reason detail when the extractor reports it can no longer handle the current page"
   },
+  "syncIcon_awaitingConversationId": {
+    "message": "Waiting for this chat to get its own URL before syncing",
+    "description": "Blocked-reason detail when the page carries no conversation id yet (a brand-new chat), so syncing would mint a throwaway timestamp id"
+  },
   "syncIcon_extractionFailed": {
     "message": "Extraction failed",
     "description": "Fallback blocked-reason detail when extraction yields no data and no specific error or warning is available"
