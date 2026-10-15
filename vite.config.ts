@@ -5,13 +5,29 @@ import { resolve } from 'path';
 import manifest from './src/manifest.json';
 
 /**
+ * The dev server's port, in ONE place.
+ *
+ * It is referenced three times over — `server.port`, `server.hmr.port`, and the
+ * dev CSP allowance below — and changing only one of them fails in a way that
+ * looks like a different bug entirely: the server moves, the CSP keeps allowing
+ * the old port, and the HMR socket is refused with a CSP violation rather than
+ * a connection error.
+ *
+ * 21783 is deliberate: clear of the 3000-9000 range every other dev server on
+ * this machine competes for, and below macOS's ephemeral floor (49152, see
+ * `sysctl net.inet.ip.portrange.first`) so the OS will never hand it to
+ * something else first. 5173 — Vite's default — collided.
+ */
+const DEV_PORT = 21783;
+
+/**
  * Dev-only manifest.
  *
  * The shipped CSP allows `connect-src 'self' http://127.0.0.1:* https://127.0.0.1:*`
  * — the companion listener and nothing else, deliberately. CRXJS's HMR client
- * opens `ws://localhost:5173`, and CSP scheme-matching does NOT treat an
+ * opens `ws://localhost:<DEV_PORT>`, and CSP scheme-matching does NOT treat an
  * `http://` allowance as covering `ws://`, so the socket is refused:
- *   Connecting to 'ws://localhost:5173/?token=…' violates the following
+ *   Connecting to 'ws://localhost:21783/?token=…' violates the following
  *   Content Security Policy directive: "connect-src 'self' http://127.0.0.1:* …"
  *
  * Widen it ONLY for `vite` (serve). The build path keeps the strict policy, so a
@@ -22,9 +38,15 @@ function devManifest(base: typeof manifest) {
   const dev = JSON.parse(JSON.stringify(base));
   const csp = dev.content_security_policy?.extension_pages;
   if (typeof csp === 'string') {
+    const origins = [
+      `ws://localhost:${DEV_PORT}`,
+      `http://localhost:${DEV_PORT}`,
+      `ws://127.0.0.1:${DEV_PORT}`,
+      `http://127.0.0.1:${DEV_PORT}`,
+    ].join(' ');
     dev.content_security_policy.extension_pages = csp.replace(
       /connect-src ([^;]*)/,
-      "connect-src $1 ws://localhost:5173 http://localhost:5173 ws://127.0.0.1:5173 http://127.0.0.1:5173"
+      `connect-src $1 ${origins}`
     );
   }
   return dev;
@@ -80,7 +102,7 @@ export default defineConfig(({ command }) => ({
     },
   },
   server: {
-    port: 5173,
+    port: DEV_PORT,
     strictPort: true,
     // Vite >=6 tightened the dev server's CORS defaults (it used to reflect any
     // Origin). A CRXJS dev build runs from chrome-extension://<id>, so the
@@ -98,7 +120,7 @@ export default defineConfig(({ command }) => ({
     // The HMR client connects from the extension origin too, so it needs a
     // host it can reach rather than whatever Vite infers.
     hmr: {
-      port: 5173,
+      port: DEV_PORT,
       host: 'localhost',
       protocol: 'ws',
     }
